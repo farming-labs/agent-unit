@@ -8,7 +8,7 @@ import type { StorageConfig } from "../config";
 import { createAgentUnit, type AgentUnit } from "../server/app";
 import { detectAdapters, type BuiltinAdapter } from "./adapters";
 import { loadProject } from "./load";
-import { DEFAULT_STORAGE } from "./nitro";
+import { DEFAULT_STORAGE, withSafeDefaults } from "./nitro";
 
 // Literal imports, so the package build keeps each adapter as its own chunk.
 const ADAPTER_MODULES: Record<BuiltinAdapter["entry"], () => Promise<Record<string, unknown>>> = {
@@ -19,7 +19,7 @@ const ADAPTER_MODULES: Record<BuiltinAdapter["entry"], () => Promise<Record<stri
 };
 
 async function loadDriver(root: string, config: StorageConfig): Promise<Driver> {
-  const { driver, ...options } = config;
+  const { driver, ...options } = withSafeDefaults(config);
   if (!/^[a-z0-9-]+$/.test(driver)) throw new Error(`Invalid storage driver name "${driver}".`);
   const module = (await import(`unstorage/drivers/${driver}`)) as { default: (options: unknown) => Driver };
   // Relative fs paths resolve against the app root, matching the built server's working directory.

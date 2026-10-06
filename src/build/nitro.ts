@@ -18,7 +18,12 @@ const PRESET_BUDGETS: [RegExp, string][] = [
   [/^deno-deploy/, "50s"],
 ];
 
-export const DEFAULT_STORAGE: StorageConfig = { driver: "fs-lite", base: ".data/agent-unit" };
+export const DEFAULT_STORAGE: StorageConfig = { driver: "fs-lite", base: ".data/agent-unit", atomic: true };
+
+/** Filesystem drivers write atomically (temp file and rename), so a crash never leaves a torn record. */
+export function withSafeDefaults(storage: StorageConfig): StorageConfig {
+  return /^(fs|fs-lite)$/.test(storage.driver) && storage.atomic === undefined ? { ...storage, atomic: true } : storage;
+}
 
 export function resolvePreset(project: LoadedProject, preset?: string): string {
   return preset ?? project.config.preset ?? process.env.NITRO_PRESET ?? "node-server";
@@ -33,7 +38,7 @@ export function resolveBudget(project: LoadedProject, preset: string): number | 
 }
 
 export function resolveStorage(project: LoadedProject, preset: string, warn: (message: string) => void): StorageConfig {
-  if (project.config.storage) return project.config.storage;
+  if (project.config.storage) return withSafeDefaults(project.config.storage);
   if (SERVER_PRESETS.test(preset)) return DEFAULT_STORAGE;
   warn(
     `The "${preset}" preset has no durable local disk, so runs would be lost between invocations. ` +
