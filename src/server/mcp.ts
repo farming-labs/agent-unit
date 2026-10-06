@@ -1,4 +1,4 @@
-import type { RunEngine } from "../runtime/engine";
+import type { RunService } from "./service";
 import type { RequestContext } from "./handler";
 
 // MCP over streamable HTTP with JSON responses (spec/manifest.md): each agent is one tool.
@@ -15,7 +15,7 @@ interface JsonRpcRequest {
 const rpcResult = (id: JsonRpcRequest["id"], result: unknown) => ({ jsonrpc: "2.0", id: id ?? null, result });
 const rpcError = (id: JsonRpcRequest["id"], code: number, message: string) => ({ jsonrpc: "2.0", id: id ?? null, error: { code, message } });
 
-function toolList(engine: RunEngine) {
+function toolList(engine: RunService) {
   return engine.manifest().agents.map((agent) => ({
     name: agent.name,
     description: agent.description ?? `Run the ${agent.name} agent (${agent.framework}).`,
@@ -30,7 +30,7 @@ function toolList(engine: RunEngine) {
   }));
 }
 
-async function callTool(engine: RunEngine, params: Record<string, unknown>, context: RequestContext) {
+async function callTool(engine: RunService, params: Record<string, unknown>, context: RequestContext) {
   const name = String(params.name ?? "");
   const args = (params.arguments ?? {}) as { message?: unknown; threadId?: unknown };
   if (typeof args.message !== "string") return { content: [{ type: "text", text: "`message` must be a string." }], isError: true };
@@ -54,7 +54,7 @@ async function callTool(engine: RunEngine, params: Record<string, unknown>, cont
   return { content: [{ type: "text", text }], structuredContent: parked };
 }
 
-async function respond(engine: RunEngine, message: JsonRpcRequest, context: RequestContext, version: string) {
+async function respond(engine: RunService, message: JsonRpcRequest, context: RequestContext, version: string) {
   switch (message.method) {
     case "initialize": {
       const requested = String(message.params?.protocolVersion ?? "");
@@ -80,7 +80,7 @@ async function respond(engine: RunEngine, message: JsonRpcRequest, context: Requ
   }
 }
 
-export async function handleMcp(engine: RunEngine, request: Request, context: RequestContext, version = "0.0.0"): Promise<Response> {
+export async function handleMcp(engine: RunService, request: Request, context: RequestContext, version = "0.0.0"): Promise<Response> {
   let payload: unknown;
   try {
     payload = await request.json();

@@ -1,7 +1,8 @@
-import { AgentUnitError, type RunEngine } from "../runtime/engine";
+import { AgentUnitError, RunEngine } from "../runtime/engine";
 import type { AgentEvent, RunInput, RunStatus } from "../types";
 import { agentCardDocument } from "./a2a";
 import { handleMcp } from "./mcp";
+import type { RunService } from "./service";
 
 export interface HandlerOptions {
   /** Path prefix the API is mounted under, e.g. `/api/agents`. Default: none. */
@@ -94,13 +95,13 @@ const RUN_STATUSES = new Set<RunStatus>(["running", "interrupted", "sleeping", "
  * The agent-unit HTTP API (spec/runs.md) as a Web `Request → Response` handler. Mount it in Nitro,
  * Bun.serve, Deno.serve, a Worker, Hono, or any Fetch-based server.
  */
-export function createHandler(engine: RunEngine, options: HandlerOptions = {}) {
+export function createHandler(engine: RunService, options: HandlerOptions = {}) {
   const base = (options.basePath ?? "").replace(/\/+$/, "");
   const secret = () => options.secret ?? engine.env().AGENT_UNIT_SECRET;
   let origin: string | undefined;
 
   // Serverless hosts continue a yielded run in a fresh invocation through the internal endpoint.
-  if (!engine.options.continueRun) {
+  if (engine instanceof RunEngine && !engine.options.continueRun && !engine.options.scheduleWake) {
     engine.options.continueRun = async (id) => {
       const token = secret();
       if (origin && token) {
@@ -151,11 +152,11 @@ export function createHandler(engine: RunEngine, options: HandlerOptions = {}) {
 
       if (segments[0] === "__agent-unit") {
         if (!internalAllowed(request)) return problem(401, "unauthorized", "Missing or invalid agent-unit secret.");
-        if (method === "POST" && segments[1] === "continue" && segments[2]) {
+        if (method === "POST" && segments[1] === "continue" && segments[2] && engine.continue) {
           await background(engine.continue(segments[2]));
           return json({ ok: true }, context.waitUntil ? 202 : 200);
         }
-        if (segments[1] === "sweep") {
+        if (segments[1] === "sweep" && engine.sweep) {
           const { woken, recovered, settled } = await engine.sweep();
           await background(settled);
           return json({ woken, recovered });
