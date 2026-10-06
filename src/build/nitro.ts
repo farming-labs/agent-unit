@@ -209,6 +209,12 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     ...userNitro,
   } as never);
   const outDir = nitro.options.output.dir;
+  // Some presets (Netlify, Stormkit) put static files beside the project, in `<root>/dist`. With an
+  // explicit output directory everything stays inside it, so builds for several presets can sit
+  // side by side (`dist/node`, `dist/netlify`, ...) without one cleaning another away.
+  if (options.outDir && relative(outDir, nitro.options.output.publicDir).startsWith("..")) {
+    nitro.options.output.publicDir = join(outDir, "public");
+  }
   try {
     await prepare(nitro);
     await copyPublicAssets(nitro);
