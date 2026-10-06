@@ -54,7 +54,7 @@ for (const runtime of RUNTIMES) {
       data = tempDir(`${runtime.preset}-data`);
       const result = await buildFixture(root, runtime.preset, out, { AGENT_UNIT_DATA: data });
       expect(result.preset).toBe(runtime.preset);
-      expect(result.storage).toEqual({ driver: "fs-lite", base: data });
+      expect(result.storage).toEqual({ driver: "fs-lite", base: data, atomic: true });
       server = await start();
     });
 
