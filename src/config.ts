@@ -28,6 +28,13 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
   /** Nitro preset to build for. Default: `node-server`, or the NITRO_PRESET environment variable. */
   preset?: string;
   /**
+   * What keeps runs alive. `"default"` stores runs with `storage` and wakes them with timers and a
+   * scheduled sweep. `"durable-objects"` (Cloudflare, `cloudflare-module` preset) gives every run its
+   * own Durable Object: strongly consistent storage, exactly one executor, and an alarm for every
+   * sleep, yield and recovery. `storage` and `sweep` are then not used.
+   */
+  runtime?: "default" | "durable-objects";
+  /**
    * Yield to a fresh invocation after this long, so long runs fit serverless limits. Default: chosen
    * per preset (25s on Workers, 240s on Vercel), unlimited on servers. `false` disables it.
    */

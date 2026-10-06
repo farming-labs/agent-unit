@@ -2,6 +2,7 @@ import { defineConfig } from "agent-unit";
 
 export default defineConfig({
   name: "basic",
+  runtime: process.env.AGENT_UNIT_RUNTIME === "durable-objects" ? "durable-objects" : "default",
   // Workers have no filesystem; the e2e suite runs workerd with in-isolate memory storage.
   storage:
     process.env.AGENT_UNIT_STORAGE === "memory"
