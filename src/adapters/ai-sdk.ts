@@ -1,0 +1,102 @@
+import { defineAdapter, type Durable } from "../adapter/types";
+import type { RunInput } from "../types";
+
+/** A ToolLoopAgent (`Agent` / `Experimental_Agent`) from the AI SDK. */
+interface ToolLoopAgentLike {
+  version: string;
+  stream(options: Record<string, unknown>): Promise<{ text: PromiseLike<string> }>;
+  settings?: Record<string, unknown>;
+  tools?: Record<string, unknown>;
+  id?: string;
+}
+
+/** A plain object of `streamText` settings: `{ model, tools, instructions, stopWhen, … }`. */
+export interface AiSdkAgentConfig {
+  model: unknown;
+  tools?: Record<string, unknown>;
+  instructions?: string;
+  system?: string;
+  description?: string;
+  [setting: string]: unknown;
+}
+
+type AiSdkAgent = ToolLoopAgentLike | AiSdkAgentConfig;
+
+function isToolLoopAgent(value: unknown): value is ToolLoopAgentLike {
+  return typeof value === "object" && value !== null && (value as ToolLoopAgentLike).version === "agent-v1" && typeof (value as ToolLoopAgentLike).stream === "function";
+}
+
+function isPlainConfig(value: unknown): value is AiSdkAgentConfig {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    Object.getPrototypeOf(value) === Object.prototype &&
+    "model" in value
+  );
+}
+
+function callInput(input: RunInput): Record<string, unknown> {
+  if (Array.isArray(input.messages)) return { messages: input.messages };
+  if (typeof input.prompt === "string") return { prompt: input.prompt };
+  if (typeof input.message === "string") return { prompt: input.message };
+  return { prompt: "" };
+}
+
+function toolCards(tools: Record<string, unknown> | undefined) {
+  return Object.entries(tools ?? {}).map(([name, tool]) => {
+    const description = (tool as { description?: unknown })?.description;
+    return typeof description === "string" ? { name, description } : { name };
+  });
+}
+
+// One durable copy per agent: wrappers resolve the current run when called.
+const durableAgents = new WeakMap<object, ToolLoopAgentLike>();
+
+function durableToolLoopAgent(agent: ToolLoopAgentLike, durable: Durable): ToolLoopAgentLike {
+  let copy = durableAgents.get(agent);
+  if (copy) return copy;
+  const settings = agent.settings;
+  if (!settings) return agent;
+  const Ctor = agent.constructor as new (settings: Record<string, unknown>) => ToolLoopAgentLike;
+  copy = new Ctor({
+    ...settings,
+    model: durable.model(settings.model),
+    tools: durable.tools((settings.tools as Record<string, unknown>) ?? {}),
+  });
+  durableAgents.set(agent, copy);
+  return copy;
+}
+
+/**
+ * The Vercel AI SDK: `ToolLoopAgent` instances and plain `streamText` settings objects. Model calls
+ * and tool calls become durable steps. (A model given as a gateway string id cannot be wrapped, so
+ * its calls repeat on replay; pass a provider model to make them durable too.)
+ */
+export const aiSdkAdapter = defineAdapter<AiSdkAgent>({
+  name: "ai-sdk",
+  match: (value): value is AiSdkAgent => isToolLoopAgent(value) || isPlainConfig(value),
+  describe(agent) {
+    if (isToolLoopAgent(agent)) {
+      return { tools: toolCards(agent.tools ?? (agent.settings?.tools as Record<string, unknown>)) };
+    }
+    return { description: agent.description, tools: toolCards(agent.tools) };
+  },
+  async run(agent, { input, signal, durable }) {
+    if (isToolLoopAgent(agent)) {
+      const result = await durableToolLoopAgent(agent, durable).stream({ ...callInput(input), abortSignal: signal });
+      return await result.text;
+    }
+    const { streamText } = await import("ai");
+    const { description: _description, ...settings } = agent;
+    const result = streamText({
+      ...settings,
+      model: durable.model(agent.model),
+      tools: durable.tools(agent.tools ?? {}),
+      ...callInput(input),
+      abortSignal: signal,
+    } as Parameters<typeof streamText>[0]);
+    return await result.text;
+  },
+});
+
+export default aiSdkAdapter;

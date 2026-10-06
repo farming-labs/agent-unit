@@ -137,9 +137,14 @@ export function durableTool<A extends unknown[], R>(
     try {
       const { value, replayed } = await run.durableCall<Awaited<R>>(key, async (): Promise<Awaited<R>> => {
         started = true;
-        run.emitEvent({ type: "TOOL_CALL_START", toolCallId, toolCallName: name });
-        run.emitEvent({ type: "TOOL_CALL_ARGS", toolCallId, delta: stringify(args[0]) });
-        run.emitEvent({ type: "TOOL_CALL_END", toolCallId });
+        // A call that paused (for an approval) and continues later was already announced.
+        const announced = `${key}:announced`;
+        if (!run.isReplay(announced)) {
+          run.emitEvent({ type: "TOOL_CALL_START", toolCallId, toolCallName: name });
+          run.emitEvent({ type: "TOOL_CALL_ARGS", toolCallId, delta: stringify(args[0]) });
+          run.emitEvent({ type: "TOOL_CALL_END", toolCallId });
+          await run.record(announced, true);
+        }
         const result: Awaited<R> = await execute(...args);
         return result;
       });
