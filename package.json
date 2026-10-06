@@ -58,6 +58,10 @@
       "types": "./dist/nitro.d.mts",
       "import": "./dist/nitro.mjs"
     },
+    "./cloudflare": {
+      "types": "./dist/cloudflare.d.mts",
+      "import": "./dist/cloudflare.mjs"
+    },
     "./client": {
       "types": "./dist/client.d.mts",
       "import": "./dist/client.mjs"

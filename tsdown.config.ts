@@ -6,6 +6,7 @@ export default defineConfig({
     cli: "src/cli.ts",
     build: "src/build/index.ts",
     nitro: "src/nitro.ts",
+    cloudflare: "src/cloudflare/index.ts",
     runtime: "src/runtime/index.ts",
     adapter: "src/adapter/index.ts",
     server: "src/server/index.ts",
@@ -26,5 +27,5 @@ export default defineConfig({
   // (Declaration entries are emitted as chunks too, flagged isEntry.)
   outputOptions: { chunkFileNames: (chunk) => (chunk.isEntry ? "[name].mjs" : "_chunks/[name]-[hash].mjs") },
   // Framework SDKs are optional peers: each adapter imports its own, nothing else does.
-  external: [/^node:/, "ai", /^@ai-sdk\//, /^@mastra\//, /^@langchain\//, /^@openai\//, "nitro", /^nitro\//, "h3", "unstorage", /^unstorage\//, "jiti", "citty", "srvx", /^srvx\//],
+  external: [/^node:/, /^cloudflare:/, "ai", /^@ai-sdk\//, /^@mastra\//, /^@langchain\//, /^@openai\//, "nitro", /^nitro\//, "h3", "unstorage", /^unstorage\//, "jiti", "citty", "srvx", /^srvx\//],
 });
