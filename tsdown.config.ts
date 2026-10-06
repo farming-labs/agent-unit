@@ -5,6 +5,7 @@ export default defineConfig({
     index: "src/index.ts",
     cli: "src/cli.ts",
     build: "src/build/index.ts",
+    nitro: "src/nitro.ts",
     runtime: "src/runtime/index.ts",
     adapter: "src/adapter/index.ts",
     server: "src/server/index.ts",

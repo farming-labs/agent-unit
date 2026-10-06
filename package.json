@@ -54,6 +54,10 @@
       "types": "./dist/build.d.mts",
       "import": "./dist/build.mjs"
     },
+    "./nitro": {
+      "types": "./dist/nitro.d.mts",
+      "import": "./dist/nitro.mjs"
+    },
     "./client": {
       "types": "./dist/client.d.mts",
       "import": "./dist/client.mjs"

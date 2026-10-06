@@ -53,7 +53,7 @@ const toImport = (from: string, file: string) => {
 };
 
 /** Writes the Nitro server entry, the shared runtime module and the sweep task into `dir`. */
-export function generateEntry(project: LoadedProject, dir: string, options: { budgetMs?: number }) {
+export function generateEntry(project: LoadedProject, dir: string, options: { budgetMs?: number; basePath?: string }) {
   mkdirSync(dir, { recursive: true });
   const adapters = detectAdapters(project.root);
   const imports = [
@@ -85,7 +85,7 @@ ${agentEntries.join("\n")}
   adapters: [...(config.adapters ?? []), ${adapters.map((adapter) => adapter.exportName).join(", ")}],
   storage: useStorage("agent-unit"),
   budget: ${options.budgetMs ?? "false"},
-  basePath: config.basePath,
+  basePath: ${options.basePath === undefined ? "config.basePath" : JSON.stringify(options.basePath)},
   authorize: config.authorize,
   env,
 });
