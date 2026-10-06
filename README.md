@@ -164,6 +164,21 @@ export default defineConfig({
 });
 ```
 
+In a [Farm](https://farmjs.dev) app, mount it with one catch-all API route, which works in
+`farm dev` and every production target (see [`examples/farm-app`](./examples/farm-app)):
+
+```ts
+// src/app/api/ai/[...path]/route.ts
+import { after } from "@farm.js/core/after";
+import { agents } from "../../../../agents/server"; // createAgentUnit({ …, basePath: "/api/ai" })
+
+const handle = (request: Request) =>
+  agents.handler(request, { waitUntil: (work) => after(async () => void (await work)) });
+
+export const GET = handle;
+export const POST = handle;
+```
+
 Anywhere else that speaks Fetch (Hono, Next.js route handlers, Bun.serve, Deno.serve, a Worker):
 
 ```ts
@@ -184,6 +199,13 @@ export const fetch = (request: Request, ctx?: { waitUntil(p: Promise<unknown>): 
 
 Pass the host's `waitUntil` where it has one. Without it, start and resume requests finish the work
 before they answer, which is the safe behaviour on hosts that freeze after a response.
+
+## Examples
+
+| Example | What it shows |
+| --- | --- |
+| [`examples/universal`](./examples/universal) | The universal build: one `agents/` folder built for Node, Bun, Deno, Cloudflare, Vercel, Netlify and AWS Lambda, then every build run through the same pause, restart and resume flow (`npm run try`). |
+| [`examples/farm-app`](./examples/farm-app) | Agents inside a Farm app at `/api/ai`, with an approvals inbox and live event stream at `/agents`, tested on the production server across a restart (`npm run smoke`). |
 
 ## Configuration
 
