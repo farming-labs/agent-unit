@@ -54,8 +54,12 @@ export interface RunningServer {
 }
 
 /** Starts a built server and resolves once it answers, failing fast if the process exits. */
-export async function startServer(command: string, args: string[], options: { cwd: string; env?: Record<string, string> }): Promise<RunningServer> {
-  const port = 20_000 + Math.floor(Math.random() * 20_000);
+export async function startServer(
+  command: string,
+  args: string[],
+  options: { cwd: string; env?: Record<string, string>; port?: number },
+): Promise<RunningServer> {
+  const port = options.port ?? 20_000 + Math.floor(Math.random() * 20_000);
   const child: ChildProcess = spawn(command, args, {
     cwd: options.cwd,
     env: { ...process.env, PORT: String(port), NITRO_PORT: String(port), HOST: "127.0.0.1", ...options.env },
