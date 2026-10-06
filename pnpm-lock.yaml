@@ -20,6 +20,9 @@ importers:
       nitro:
         specifier: 3.0.260903-beta
         version: 3.0.260903-beta
+      srvx:
+        specifier: 1.0.5
+        version: 1.0.5
       unstorage:
         specifier: 2.0.0-alpha.10
         version: 2.0.0-alpha.10

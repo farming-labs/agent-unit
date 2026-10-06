@@ -50,6 +50,10 @@
       "types": "./dist/server.d.mts",
       "import": "./dist/server.mjs"
     },
+    "./build": {
+      "types": "./dist/build.d.mts",
+      "import": "./dist/build.mjs"
+    },
     "./client": {
       "types": "./dist/client.d.mts",
       "import": "./dist/client.mjs"
@@ -77,6 +81,7 @@
     "h3": "2.0.1-rc.32",
     "jiti": "2.7.0",
     "nitro": "3.0.260903-beta",
+    "srvx": "1.0.5",
     "unstorage": "2.0.0-alpha.10"
   },
   "peerDependenciesMeta": {},

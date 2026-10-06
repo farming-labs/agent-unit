@@ -4,6 +4,7 @@ export default defineConfig({
   entry: {
     index: "src/index.ts",
     cli: "src/cli.ts",
+    build: "src/build/index.ts",
     runtime: "src/runtime/index.ts",
     adapter: "src/adapter/index.ts",
     server: "src/server/index.ts",
@@ -16,6 +17,8 @@ export default defineConfig({
   target: "es2022",
   dts: true,
   clean: true,
+  fixedExtension: true,
+  hash: false,
   // Framework SDKs are optional peers: each adapter imports its own, nothing else does.
-  external: [/^node:/, "ai", /^@ai-sdk\//, /^@mastra\//, /^@langchain\//, /^@openai\//, "nitro", /^nitro\//, "h3", "unstorage", /^unstorage\//, "jiti", "citty"],
+  external: [/^node:/, "ai", /^@ai-sdk\//, /^@mastra\//, /^@langchain\//, /^@openai\//, "nitro", /^nitro\//, "h3", "unstorage", /^unstorage\//, "jiti", "citty", "srvx", /^srvx\//],
 });
