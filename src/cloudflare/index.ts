@@ -206,21 +206,8 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
     async alarm(): Promise<void> {
       const id = await this.ctx.storage.get<string>(SELF_KEY);
       if (!id) return;
-      const engine = this.engine;
-      const run = await engine.store.getRun(id);
-      if (!run) return;
-      if (run.status === "sleeping") {
-        const due = run.wakeAt ? Date.parse(run.wakeAt) : 0;
-        if (due > Date.now()) return this.ctx.storage.setAlarm(due);
-        await (await engine.wakeRun(id))?.done;
-      } else if (run.status === "running") {
-        if (await engine.store.leaseExpired(id)) {
-          await engine.continue(id);
-        } else {
-          // An execution in this isolate still holds the run: check again when its lease lapses.
-          await this.ctx.storage.setAlarm(Date.now() + engine.leaseMs);
-        }
-      }
+      const next = await this.engine.handleWake(id);
+      if (next !== undefined) await this.ctx.storage.setAlarm(next);
     }
   }
 

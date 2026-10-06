@@ -405,6 +405,25 @@ export class RunEngine {
     return (await this.wakeRun(id)) !== undefined;
   }
 
+  /**
+   * What a scheduled wake-up (`scheduleWake`) should do for a run: wake it if its sleep is due,
+   * continue it if it yielded or its executor died. Returns when to check again, if ever.
+   */
+  async handleWake(id: string): Promise<number | undefined> {
+    const run = await this.store.getRun(id);
+    if (!run) return undefined;
+    if (run.status === "sleeping") {
+      const due = run.wakeAt ? Date.parse(run.wakeAt) : 0;
+      if (due > Date.now()) return due;
+      await (await this.wakeRun(id))?.done;
+    } else if (run.status === "running") {
+      // Still executing here or held by a live lease elsewhere: look again once that lease could lapse.
+      if (this.active.has(id) || !(await this.store.leaseExpired(id))) return Date.now() + this.leaseMs;
+      await this.continue(id);
+    }
+    return undefined;
+  }
+
   /** Wakes a sleeping run now and starts it; `done` settles when that execution stops. */
   async wakeRun(id: string): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
     const run = await this.store.getRun(id);

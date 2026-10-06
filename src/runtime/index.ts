@@ -3,3 +3,4 @@ export { RunEngine, AgentUnitError, type EngineOptions, type LoadedAgent } from 
 export { RunStore, type Journal, type JournalEntry, type KeyValueStore, type ListRunsFilter, type StateScope } from "./store";
 export { encode, decode } from "./serialize";
 export { parseDuration } from "./util";
+export { resolveAgent, type ResolvedAgent } from "../agents";

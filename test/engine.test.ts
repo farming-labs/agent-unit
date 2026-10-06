@@ -366,3 +366,45 @@ describe("host scheduling", () => {
     engine.close();
   });
 });
+
+describe("custom schedulers", () => {
+  it("drives sleeps and yields through handleWake from any scheduler", async () => {
+    // A stand-in for a queue or job runner: it records wake-ups, and the test fires them.
+    const scheduled: { id: string; at: number }[] = [];
+    let parts = 0;
+    const engine = createEngine(
+      {
+        nap: defineAgent(async (_input, run) => {
+          await run.sleep(30);
+          return "rested";
+        }),
+        long: defineAgent(async (_input, run) => {
+          for (let i = 0; i < 3; i++) await run.step(`part-${i}`, () => new Promise((resolve) => setTimeout(() => resolve(++parts), 15)));
+          return parts;
+        }),
+      },
+      { budgetMs: 10, scheduleWake: (id, at) => void scheduled.push({ id, at }) },
+    );
+    const fire = async (id: string) => {
+      const next = await engine.handleWake(id);
+      if (next !== undefined) scheduled.push({ id, at: next });
+    };
+
+    const nap = await engine.start("nap");
+    await nap.done;
+    // Too early: nothing happens, and it asks to be called again at the wake time.
+    await fire(nap.run.id);
+    expect((await engine.getRun(nap.run.id)).status).toBe("sleeping");
+    expect(scheduled.at(-1)!.at).toBe(Date.parse((await engine.getRun(nap.run.id)).wakeAt!));
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await fire(nap.run.id);
+    expect(await engine.getRun(nap.run.id)).toMatchObject({ status: "completed", output: "rested" });
+
+    const long = await engine.start("long");
+    await long.done;
+    for (let i = 0; i < 10 && (await engine.getRun(long.run.id)).status === "running"; i++) await fire(long.run.id);
+    expect(await engine.getRun(long.run.id)).toMatchObject({ status: "completed", output: 3 });
+    expect(await engine.handleWake(long.run.id)).toBeUndefined();
+    engine.close();
+  });
+});
