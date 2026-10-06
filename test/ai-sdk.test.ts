@@ -4,7 +4,34 @@ import { describe, expect, it } from "vitest";
 import { defineAgent } from "../src/agents";
 import { aiSdkAdapter } from "../src/adapters/ai-sdk";
 import { useRun } from "../src/runtime/context";
+import { createStorage, type Driver } from "unstorage";
+import { RunStore } from "../src/runtime/store";
 import { collect, createEngine, types } from "./helpers";
+
+/**
+ * Storage whose writes take two awaited chunks, like a non-atomic file write: two overlapping
+ * writes to one key interleave into a corrupt value, as they would on disk.
+ */
+const tornWrites = (): Driver => {
+  const data = new Map<string, string>();
+  const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
+  return {
+    name: "torn-writes",
+    hasItem: (key) => data.has(key),
+    getItem: (key) => data.get(key) ?? null,
+    async setItem(key, value) {
+      data.set(key, "");
+      const half = Math.ceil(value.length / 2);
+      for (const chunk of [value.slice(0, half), value.slice(half)]) {
+        await tick();
+        data.set(key, (data.get(key) ?? "") + chunk);
+      }
+    },
+    removeItem: (key) => void data.delete(key),
+    getKeys: () => [...data.keys()],
+    clear: () => data.clear(),
+  };
+};
 
 const usage = {
   inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
@@ -113,6 +140,21 @@ describe("AI SDK adapter", () => {
     expect(events.find((event) => event.type === "TOOL_CALL_START")).toMatchObject({ toolCallId: "call_1", toolCallName: "refund" });
     expect(events.find((event) => event.type === "TOOL_CALL_RESULT")).toMatchObject({ content: JSON.stringify({ status: "refunded", orderId: "123" }) });
     expect(events.filter((event) => event.type === "TEXT_MESSAGE_CONTENT").map((event) => (event as any).delta).join("")).toBe("Refunded order 123.");
+  });
+
+  it("keeps the journal intact when model and tool records are written at the same moment", async () => {
+    const { model } = refundModel();
+    const sideEffects = { count: 0 };
+    const store = new RunStore(createStorage({ driver: tornWrites() }));
+    const agent = new ToolLoopAgent({ model, tools: { refund: refundTool(sideEffects) } });
+    const engine = createEngine({ support: agent }, { store });
+    const { run, done } = await engine.start("support", { prompt: "Refund order 123" });
+    expect((await done)?.status).toBe("interrupted");
+    const journal = await store.getJournal(run.id);
+    expect(typeof journal).toBe("object");
+    expect(Object.keys(journal).sort()).toEqual(["model#0", "tool:refund:call_1:announced"]);
+    const resumed = await createEngine({ support: agent }, { store }).resume(run.id, { approved: true });
+    expect(await resumed.done).toMatchObject({ status: "completed", output: "Refunded order 123." });
   });
 
   it("runs plain streamText settings durably", async () => {

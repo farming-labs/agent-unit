@@ -104,8 +104,23 @@ class RunExecution implements RunInternals {
     await this.persistJournal();
   }
 
-  private async persistJournal() {
-    await this.engine.store.putJournal(this.run.id, this.journal);
+  private journalWrites: Promise<void> = Promise.resolve();
+  private journalDirty = false;
+
+  /**
+   * Writes the journal, one write at a time: model and tool records can land together, and two
+   * overlapping writes to one key are not safe on every driver (a file can end up interleaved).
+   * Each caller resolves once a write that includes its entry has finished.
+   */
+  private persistJournal(): Promise<void> {
+    this.journalDirty = true;
+    const write = async () => {
+      if (!this.journalDirty) return;
+      this.journalDirty = false;
+      await this.engine.store.putJournal(this.run.id, this.journal);
+    };
+    this.journalWrites = this.journalWrites.then(write, write);
+    return this.journalWrites;
   }
 
   /** Throws when the run may not start new live work: parked, cancelled or out of budget. */
