@@ -1,7 +1,7 @@
-import { existsSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, readFileSync } from "node:fs";
+import { join } from "node:path";
 
-/** Built-in adapters, included when their framework is installed in the app. */
+/** Built-in adapters, included when the app depends on their framework. Tried in this order. */
 export const BUILTIN_ADAPTERS = [
   { entry: "adapters/mastra", exportName: "mastraAdapter", package: "@mastra/core" },
   { entry: "adapters/openai-agents", exportName: "openAIAgentsAdapter", package: "@openai/agents" },
@@ -11,17 +11,19 @@ export const BUILTIN_ADAPTERS = [
 
 export type BuiltinAdapter = (typeof BUILTIN_ADAPTERS)[number];
 
-function isInstalled(root: string, name: string): boolean {
-  let dir = root;
-  while (true) {
-    if (existsSync(join(dir, "node_modules", name, "package.json"))) return true;
-    const parent = dirname(dir);
-    if (parent === dir) return false;
-    dir = parent;
-  }
-}
-
-/** The built-in adapters whose frameworks the app has installed, in match order. */
+/**
+ * The built-in adapters for frameworks the app's package.json declares. Declared dependencies, not
+ * whatever a hoisted node_modules happens to contain, so a server never bundles an SDK it does not use.
+ */
 export function detectAdapters(root: string): BuiltinAdapter[] {
-  return BUILTIN_ADAPTERS.filter((adapter) => isInstalled(root, adapter.package));
+  const manifest = join(root, "package.json");
+  if (!existsSync(manifest)) return [];
+  const pkg = JSON.parse(readFileSync(manifest, "utf8")) as Record<string, Record<string, string> | undefined>;
+  const declared = new Set([
+    ...Object.keys(pkg.dependencies ?? {}),
+    ...Object.keys(pkg.devDependencies ?? {}),
+    ...Object.keys(pkg.peerDependencies ?? {}),
+    ...Object.keys(pkg.optionalDependencies ?? {}),
+  ]);
+  return BUILTIN_ADAPTERS.filter((adapter) => declared.has(adapter.package));
 }
