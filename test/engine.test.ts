@@ -294,3 +294,22 @@ describe("serialisation", () => {
     expect(restored.error.name).toBe("RangeError");
   });
 });
+
+describe("module-scope construction", () => {
+  it("builds an engine without random values or timers (Workers forbid both at global scope)", () => {
+    const random = crypto.getRandomValues;
+    const realSetTimeout = globalThis.setTimeout;
+    crypto.getRandomValues = (() => {
+      throw new Error("random at global scope");
+    }) as typeof crypto.getRandomValues;
+    globalThis.setTimeout = (() => {
+      throw new Error("timer at global scope");
+    }) as unknown as typeof setTimeout;
+    try {
+      expect(() => createEngine({ agent: defineAgent(() => "ok") })).not.toThrow();
+    } finally {
+      crypto.getRandomValues = random;
+      globalThis.setTimeout = realSetTimeout;
+    }
+  });
+});

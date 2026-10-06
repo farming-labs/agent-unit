@@ -238,7 +238,11 @@ class RunExecution implements RunInternals {
  * later in any process, and never repeats completed work.
  */
 export class RunEngine {
-  readonly owner = randomId("worker", 10);
+  #owner: string | undefined;
+  /** This process's lease identity. Lazy: Workers forbid random values at module scope, where engines are built. */
+  get owner(): string {
+    return (this.#owner ??= randomId("worker", 10));
+  }
   readonly leaseMs: number;
   private readonly agents = new Map<string, LoadedAgent>();
   private readonly listeners = new Map<string, Set<(event: AgentEvent) => void>>();
