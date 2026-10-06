@@ -503,7 +503,16 @@ export class RunEngine {
       let failure: unknown;
       try {
         output = await runWithContext(execution, () =>
-          settle(loaded.adapter.run(loaded.agent, { input: execution.input, signal: execution.signal, run: execution, durable })),
+          settle(
+            loaded.adapter.run(loaded.agent, {
+              input: execution.input,
+              signal: execution.signal,
+              run: execution,
+              durable,
+              kv: this.store.kv(`adapter:${loaded.adapter.name}`),
+              emit: (event) => execution.emitEvent(event),
+            }),
+          ),
         );
       } catch (error) {
         failure = error;

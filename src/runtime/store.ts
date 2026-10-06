@@ -18,6 +18,14 @@ export interface ListRunsFilter {
   limit?: number;
 }
 
+export interface KeyValueStore {
+  get<T = unknown>(key: string): Promise<T | undefined>;
+  set(key: string, value: unknown): Promise<void>;
+  delete(key: string): Promise<void>;
+  /** Keys under a `:`-separated prefix, sorted, relative to the namespace. */
+  keys(prefix?: string): Promise<string[]>;
+}
+
 const pad = (seq: number) => String(seq).padStart(10, "0");
 
 /**
@@ -88,6 +96,28 @@ export class RunStore {
 
   async deleteState(scope: StateScope, owner: string, key: string): Promise<void> {
     await this.storage.removeItem(this.stateKey(scope, owner, key));
+  }
+
+  /**
+   * A persistent key-value namespace for adapters (a framework's own checkpoints, for example).
+   * Keys are `:`-separated segments; `keys(prefix)` lists the keys under a segment prefix.
+   */
+  kv(namespace: string): KeyValueStore {
+    const base = `kv:${namespace}`;
+    const full = (key: string) => `${base}:${key}`;
+    return {
+      get: async <T>(key: string) => ((await this.storage.getItem(full(key))) as T | null) ?? undefined,
+      set: async (key, value) => {
+        await this.storage.setItem(full(key), value as never);
+      },
+      delete: async (key) => {
+        await this.storage.removeItem(full(key));
+      },
+      keys: async (prefix = "") => {
+        const keys = await this.storage.getKeys(prefix ? full(prefix) : base);
+        return keys.map((key) => key.slice(base.length + 1)).sort();
+      },
+    };
   }
 
   /**

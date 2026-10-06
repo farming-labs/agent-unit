@@ -1,5 +1,6 @@
 import type { RunContext } from "../runtime/context";
-import type { AgentCard, RunInput } from "../types";
+import type { KeyValueStore } from "../runtime/store";
+import type { AgentCard, AgentEventBody, RunInput } from "../types";
 
 export interface Durable {
   /** Journals any call: runs once, replays from the journal afterwards. */
@@ -17,6 +18,16 @@ export interface AdapterContext {
   signal: AbortSignal;
   run: RunContext;
   durable: Durable;
+  /**
+   * Persistent storage private to this adapter, for state the framework keeps itself (LangGraph
+   * checkpoints, for example). Lives in the app's agent-unit storage.
+   */
+  kv: KeyValueStore;
+  /**
+   * Emits an AG-UI event. Call it from live work (inside a step): code outside steps runs again
+   * when a run continues, and would repeat its events.
+   */
+  emit(event: AgentEventBody): void;
 }
 
 export interface AgentAdapter<TAgent> {
