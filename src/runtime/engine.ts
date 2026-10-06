@@ -38,6 +38,12 @@ export interface EngineOptions {
   env?: Record<string, string | undefined>;
   /** How often a reader polls storage for events written by another process. */
   pollMs?: number;
+  /**
+   * Schedules `continue` or `wake` for a run at a time, on hosts with their own scheduler (a Durable
+   * Object alarm). It replaces in-process sleep timers and in-process continuation after a yield, and
+   * is armed as a watchdog while a run executes, so a run whose process dies is picked up again.
+   */
+  scheduleWake?: (runId: string, at: number) => void | Promise<void>;
 }
 
 export class AgentUnitError extends Error {
@@ -298,9 +304,14 @@ export class RunEngine {
   }
 
   /** Creates a run and starts executing it. `done` settles when this execution stops. */
-  async start(agentName: string, input: RunInput = {}, options: { threadId?: string } = {}) {
+  async start(agentName: string, input: RunInput = {}, options: { threadId?: string; id?: string } = {}) {
     this.agentCard(agentName);
-    const id = randomId("run");
+    // A caller may choose the id when it routes runs by id (one Durable Object per run).
+    const id = options.id ?? randomId("run");
+    if (options.id !== undefined) {
+      if (!/^run_[a-z0-9]{8,64}$/.test(id)) throw new AgentUnitError(400, "invalid_run_id", `Invalid run id "${id}".`);
+      if (await this.store.getRun(id)) throw new AgentUnitError(409, "run_exists", `Run "${id}" already exists.`);
+    }
     const createdAt = nowIso();
     const run: RunRecord = {
       id,
@@ -394,7 +405,8 @@ export class RunEngine {
     return (await this.wakeRun(id)) !== undefined;
   }
 
-  private async wakeRun(id: string): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
+  /** Wakes a sleeping run now and starts it; `done` settles when that execution stops. */
+  async wakeRun(id: string): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
     const run = await this.store.getRun(id);
     if (!run || run.status !== "sleeping") return undefined;
     const journal = await this.store.getJournal(id);
@@ -511,6 +523,8 @@ export class RunEngine {
     await this.store.putRun(run);
     const execution = new RunExecution(this, run, await this.store.getJournal(id));
     this.active.set(id, execution);
+    // Watchdog: if this process dies mid-run, the host's scheduler continues the run once the lease lapses.
+    await this.options.scheduleWake?.(id, Date.now() + this.leaseMs);
     let yielded = false;
     try {
       const durable = createDurable();
@@ -544,7 +558,7 @@ export class RunEngine {
         run.status = "sleeping";
         run.wakeAt = new Date(execution.parked.wakeAt).toISOString();
         execution.emitEvent({ type: "RUN_SLEEPING", wakeAt: run.wakeAt });
-        this.armTimer(id, execution.parked.wakeAt);
+        await this.armTimer(id, execution.parked.wakeAt);
       } else if (execution.parked?.kind === "yield") {
         yielded = true;
       } else if (failure !== undefined) {
@@ -565,12 +579,17 @@ export class RunEngine {
     }
     if (yielded) {
       if (this.options.continueRun) await this.options.continueRun(id);
+      else if (this.options.scheduleWake) await this.options.scheduleWake(id, Date.now());
       else return this.schedule(id);
     }
     return run;
   }
 
-  private armTimer(id: string, wakeAt: number) {
+  private async armTimer(id: string, wakeAt: number) {
+    if (this.options.scheduleWake) {
+      await this.options.scheduleWake(id, wakeAt);
+      return;
+    }
     const delay = wakeAt - Date.now();
     if (delay > MAX_LOCAL_SLEEP_MS) return;
     this.clearTimer(id);

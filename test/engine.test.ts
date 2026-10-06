@@ -313,3 +313,56 @@ describe("module-scope construction", () => {
     }
   });
 });
+
+describe("host scheduling", () => {
+  it("accepts a caller-chosen run id and rejects duplicates and malformed ids", async () => {
+    const engine = createEngine({ hello: defineAgent(() => "hi") });
+    const { run, done } = await engine.start("hello", {}, { id: "run_customid00000000000" });
+    expect(run.id).toBe("run_customid00000000000");
+    expect(await done).toMatchObject({ status: "completed" });
+    await expect(engine.start("hello", {}, { id: "run_customid00000000000" })).rejects.toMatchObject({ status: 409 });
+    await expect(engine.start("hello", {}, { id: "../escape" })).rejects.toMatchObject({ status: 400 });
+  });
+
+  it("uses scheduleWake for sleeps, yields and the execution watchdog instead of in-process timers", async () => {
+    const wakes: { id: string; at: number }[] = [];
+    let steps = 0;
+    const engine = createEngine(
+      {
+        nap: defineAgent(async (_input, run) => {
+          await run.step("before", () => ++steps);
+          await run.sleep("3h");
+          return "rested";
+        }),
+        long: defineAgent(async (_input, run) => {
+          for (let i = 0; i < 3; i++) await run.step(`part-${i}`, () => new Promise((resolve) => setTimeout(() => resolve(++steps), 15)));
+          return "done";
+        }),
+      },
+      { budgetMs: 10, scheduleWake: (id, at) => void wakes.push({ id, at }) },
+    );
+
+    const before = Date.now();
+    const nap = await engine.start("nap");
+    expect(await nap.done).toMatchObject({ status: "sleeping" });
+    // One watchdog while executing, then the wake time: no local timer, whatever the duration.
+    const napWakes = wakes.filter((wake) => wake.id === nap.run.id);
+    expect(napWakes).toHaveLength(2);
+    expect(napWakes[0]!.at).toBeGreaterThanOrEqual(before + engine.leaseMs);
+    expect(napWakes[1]!.at).toBeGreaterThanOrEqual(before + 3 * 3_600_000);
+
+    // A yield asks the host to continue now rather than continuing in this process.
+    const long = await engine.start("long");
+    expect(await long.done).toMatchObject({ status: "running" });
+    const yielded = wakes.filter((wake) => wake.id === long.run.id).at(-1)!;
+    expect(yielded.at).toBeLessThanOrEqual(Date.now());
+    // The host's alarm then continues it.
+    let run = await engine.continue(long.run.id);
+    while (run?.status === "running") {
+      await new Promise((resolve) => setTimeout(resolve, 0));
+      run = await engine.continue(long.run.id);
+    }
+    expect(run).toMatchObject({ status: "completed", output: "done" });
+    engine.close();
+  });
+});
