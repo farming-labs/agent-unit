@@ -1,0 +1,11 @@
+node_modules
+dist
+.output
+.agent-unit
+.data
+.nitro
+.vercel
+.netlify
+coverage
+*.log
+.DS_Store

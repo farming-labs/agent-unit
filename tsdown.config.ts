@@ -1,0 +1,21 @@
+import { defineConfig } from "tsdown";
+
+export default defineConfig({
+  entry: {
+    index: "src/index.ts",
+    cli: "src/cli.ts",
+    runtime: "src/runtime/index.ts",
+    adapter: "src/adapter/index.ts",
+    server: "src/server/index.ts",
+    client: "src/client/index.ts",
+    testing: "src/testing/index.ts",
+    "adapters/ai-sdk": "src/adapters/ai-sdk.ts",
+  },
+  format: "esm",
+  platform: "neutral",
+  target: "es2022",
+  dts: true,
+  clean: true,
+  // Framework SDKs are optional peers: each adapter imports its own, nothing else does.
+  external: [/^node:/, "ai", /^@ai-sdk\//, /^@mastra\//, /^@langchain\//, /^@openai\//, "nitro", /^nitro\//, "h3", "unstorage", /^unstorage\//, "jiti", "citty"],
+});
