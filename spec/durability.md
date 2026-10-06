@@ -63,3 +63,15 @@ a torn record, and an execution writes its journal one write at a time.
 Only one process executes a run at a time: an execution holds a lease, renews it while it works and
 releases it when it stops. A duplicate resume, a continuation and the sweep can race; the loser
 backs off.
+
+## Runtimes
+
+A runtime decides where runs live and what wakes them; agent code and the HTTP contract are the same
+in every runtime.
+
+- **Default:** runs, journals and events in any unstorage driver; leases for exclusivity; in-process
+  timers plus a scheduled sweep (or `POST /__agent-unit/sweep`) for wake-ups and recovery.
+- **Durable Objects** (Cloudflare): one object per run, named by its id, holds the journal and events
+  and is the only executor. The object's alarm is armed as a watchdog while the run executes, set to
+  the wake time when it sleeps, and set to now when it yields; when it fires, the object wakes,
+  continues or recovers the run. One shared index object holds `runs:`, `state:` and `kv:`.
