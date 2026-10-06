@@ -12,6 +12,7 @@ export default defineConfig({
     testing: "src/testing/index.ts",
     "adapters/ai-sdk": "src/adapters/ai-sdk.ts",
     "adapters/langgraph": "src/adapters/langgraph.ts",
+    "adapters/mastra": "src/adapters/mastra.ts",
     "adapters/openai-agents": "src/adapters/openai-agents.ts",
   },
   format: "esm",

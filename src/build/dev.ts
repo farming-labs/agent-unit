@@ -13,6 +13,7 @@ import { DEFAULT_STORAGE } from "./nitro";
 // Literal imports, so the package build keeps each adapter as its own chunk.
 const ADAPTER_MODULES: Record<BuiltinAdapter["entry"], () => Promise<Record<string, unknown>>> = {
   "adapters/ai-sdk": () => import("../adapters/ai-sdk"),
+  "adapters/mastra": () => import("../adapters/mastra"),
   "adapters/langgraph": () => import("../adapters/langgraph"),
   "adapters/openai-agents": () => import("../adapters/openai-agents"),
 };
