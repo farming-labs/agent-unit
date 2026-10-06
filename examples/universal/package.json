@@ -1,0 +1,14 @@
+{
+  "name": "agent-unit-universal",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "agent-unit dev",
+    "build": "agent-unit build",
+    "build:all": "node scripts/build-all.mjs",
+    "try": "node scripts/try-all.mjs"
+  },
+  "dependencies": {
+    "agent-unit": "file:../.."
+  }
+}
