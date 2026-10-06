@@ -347,36 +347,48 @@ export class RunEngine {
     return this.schedule(id);
   }
 
-  /** Wakes due sleepers and recovers stalled runs. Run it on a schedule on serverless hosts. */
+  /**
+   * Wakes due sleepers and recovers stalled runs. Run it on a schedule on serverless hosts.
+   * `settled` resolves when the executions it started stop; pass it to the host's `waitUntil`.
+   */
   async sweep(now = Date.now()) {
     const woken: string[] = [];
     const recovered: string[] = [];
+    const work: Promise<unknown>[] = [];
     for (const run of await this.store.listRuns({ status: "sleeping", limit: 1000 })) {
-      if (run.wakeAt && Date.parse(run.wakeAt) <= now && (await this.wake(run.id))) woken.push(run.id);
+      if (!run.wakeAt || Date.parse(run.wakeAt) > now) continue;
+      const execution = await this.wakeRun(run.id);
+      if (execution) {
+        woken.push(run.id);
+        work.push(execution.done);
+      }
     }
     for (const run of await this.store.listRuns({ status: "running", limit: 1000 })) {
       if (this.active.has(run.id) || !(await this.store.leaseExpired(run.id))) continue;
       recovered.push(run.id);
-      this.schedule(run.id);
+      work.push(this.schedule(run.id));
     }
-    return { woken, recovered };
+    return { woken, recovered, settled: Promise.allSettled(work).then(() => undefined) };
   }
 
   async wake(id: string): Promise<boolean> {
+    return (await this.wakeRun(id)) !== undefined;
+  }
+
+  private async wakeRun(id: string): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
     const run = await this.store.getRun(id);
-    if (!run || run.status !== "sleeping") return false;
+    if (!run || run.status !== "sleeping") return undefined;
     const journal = await this.store.getJournal(id);
-    const due = run.wakeAt ? Date.parse(run.wakeAt) : Infinity;
+    // A run parks on one sleep at a time, so waking it (on time or early) ends every pending sleep.
     for (const entry of Object.values(journal)) {
-      if (entry.kind === "sleep" && !entry.woke && entry.wakeAt <= due) entry.woke = true;
+      if (entry.kind === "sleep" && !entry.woke) entry.woke = true;
     }
     await this.store.putJournal(id, journal);
     run.status = "running";
     delete run.wakeAt;
     run.updatedAt = nowIso();
     await this.store.putRun(run);
-    this.schedule(id);
-    return true;
+    return { done: this.schedule(id) };
   }
 
   /** Events from `after`, then live ones, until the run settles. */
