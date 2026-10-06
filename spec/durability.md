@@ -51,3 +51,15 @@ Step results are stored as JSON with support for `undefined`, `Date`, `BigInt`, 
   in the journal.
 - **Crash:** a run left `running` without progress for longer than its lease is picked up by the
   sweep and continued from its journal.
+
+## Storage
+
+Everything lives in one unstorage namespace: `runs:`, `journal:`, `events:<run>:<seq>`, `state:`,
+`lease:` and `kv:` (adapter storage). Any driver works; serverless hosts need a shared one (Redis,
+Upstash, Cloudflare KV, Vercel KV, Netlify Blobs, a database), because their filesystem does not
+survive between invocations. Filesystem drivers write atomically by default, so a crash never leaves
+a torn record, and an execution writes its journal one write at a time.
+
+Only one process executes a run at a time: an execution holds a lease, renews it while it works and
+releases it when it stops. A duplicate resume, a continuation and the sweep can race; the loser
+backs off.

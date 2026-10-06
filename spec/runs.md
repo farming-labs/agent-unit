@@ -62,7 +62,11 @@ Accept: text/event-stream
 
 - With `Accept: text/event-stream` the response is the event stream (see [events.md](./events.md)),
   which ends when the run settles (finishes, fails, interrupts, sleeps or is cancelled).
-- Otherwise the response is `202` with the `RunRecord`, and the run continues in the background.
+- Otherwise, on hosts that keep work alive after the response (`waitUntil`: Node, Bun, Deno,
+  Cloudflare, Vercel), the response is `202` with the `RunRecord` and the run continues in the
+  background.
+- On hosts that freeze once the response is sent (AWS Lambda, Netlify Functions), the request carries
+  the run: the response is `200` with the `RunRecord` once it finishes or parks.
 
 ### Resume
 
@@ -72,10 +76,26 @@ POST /runs/run_…/resume
 ```
 
 Only valid while the run is `interrupted` (otherwise 409). Responds like the start request: a stream
-with `Accept: text/event-stream`, or `202` with the record.
+with `Accept: text/event-stream`, otherwise `202` (or `200` once settled, on hosts without
+`waitUntil`) with the record.
 
 ### Read events
 
 `GET /runs/:id/events?after=12` streams every stored event with `seq > 12`, then live events until
 the run settles. It also honours the SSE `Last-Event-ID` header, so a browser `EventSource` resumes
 where it left off after a dropped connection or a closed tab.
+
+## Internal endpoints
+
+Two endpoints let a host continue work without a long-lived process. Both require
+`Authorization: Bearer <AGENT_UNIT_SECRET>` and are disabled when no secret is configured. They are
+not affected by the app's `authorize` hook.
+
+| Method | Path | Purpose |
+| --- | --- | --- |
+| `POST` | `/__agent-unit/continue/:id` | Continue a run that yielded at its time budget |
+| `POST` | `/__agent-unit/sweep` | Wake due sleepers and recover stalled runs; returns `{ woken, recovered }` |
+
+The build schedules the sweep with the platform's own scheduler where Nitro supports one (Node, Bun,
+Deno, Cloudflare Cron Triggers, Vercel Cron) and generates a scheduled function on Netlify. Elsewhere
+(AWS Lambda), point a scheduler such as EventBridge at the sweep endpoint.
