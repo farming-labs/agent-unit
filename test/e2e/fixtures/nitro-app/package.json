@@ -1,0 +1,5 @@
+{
+  "name": "nitro-app",
+  "private": true,
+  "type": "module"
+}

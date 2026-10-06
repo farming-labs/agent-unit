@@ -57,7 +57,7 @@ export interface RunningServer {
 export async function startServer(
   command: string,
   args: string[],
-  options: { cwd: string; env?: Record<string, string>; port?: number },
+  options: { cwd: string; env?: Record<string, string>; port?: number; readyPath?: string },
 ): Promise<RunningServer> {
   const port = options.port ?? 20_000 + Math.floor(Math.random() * 20_000);
   const child: ChildProcess = spawn(command, args, {
@@ -78,7 +78,7 @@ export async function startServer(
       child.kill("SIGKILL");
       throw new Error(`Server did not answer within 20s:\n${output}`);
     }
-    const ready = await fetch(`${url}/.well-known/agent.json`).then((response) => response.ok, () => false);
+    const ready = await fetch(`${url}${options.readyPath ?? "/.well-known/agent.json"}`).then((response) => response.ok, () => false);
     if (ready) break;
     await new Promise((resolve) => setTimeout(resolve, 100));
   }
