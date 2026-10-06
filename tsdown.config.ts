@@ -18,7 +18,9 @@ export default defineConfig({
   dts: true,
   clean: true,
   fixedExtension: true,
-  hash: false,
+  // Shared chunks live apart from entries, so a chunk can never take an entry's file name.
+  // (Declaration entries are emitted as chunks too, flagged isEntry.)
+  outputOptions: { chunkFileNames: (chunk) => (chunk.isEntry ? "[name].mjs" : "_chunks/[name]-[hash].mjs") },
   // Framework SDKs are optional peers: each adapter imports its own, nothing else does.
   external: [/^node:/, "ai", /^@ai-sdk\//, /^@mastra\//, /^@langchain\//, /^@openai\//, "nitro", /^nitro\//, "h3", "unstorage", /^unstorage\//, "jiti", "citty", "srvx", /^srvx\//],
 });

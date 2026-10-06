@@ -105,6 +105,19 @@ describe("HTTP handler", () => {
     expect(raw).toContain('"result":"echo: hi"');
   });
 
+  it("finishes the work inside the request when the host has no waitUntil", async () => {
+    const { engine } = setup();
+    const handler = createHandler(engine);
+    const started = await handler(new Request(`${ORIGIN}/agents/refund/runs`, post({ input: { orderId: "o_2" } })));
+    expect(started.status).toBe(200);
+    const parked = await started.json();
+    expect(parked).toMatchObject({ status: "interrupted", interrupt: { name: "approve" } });
+
+    const resumed = await handler(new Request(`${ORIGIN}/runs/${parked.id}/resume`, post({ answer: { approved: false } })));
+    expect(resumed.status).toBe(200);
+    expect(await resumed.json()).toMatchObject({ status: "completed", output: "declined" });
+  });
+
   it("replays from Last-Event-ID", async () => {
     const { handle, pending } = setup();
     const run = await (await handle("/agents/refund/runs", post({}))).json();

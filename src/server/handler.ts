@@ -103,16 +103,21 @@ export function createHandler(engine: RunEngine, options: HandlerOptions = {}) {
   if (!engine.options.continueRun) {
     engine.options.continueRun = async (id) => {
       const token = secret();
-      if (!origin || !token) {
-        await engine.continue(id);
-        return;
+      if (origin && token) {
+        try {
+          const response = await fetch(`${origin}${base}/__agent-unit/continue/${encodeURIComponent(id)}`, {
+            method: "POST",
+            headers: { authorization: `Bearer ${token}` },
+            // A host without waitUntil answers only when the continuation stops; it is running by then.
+            signal: AbortSignal.timeout(5_000),
+          });
+          if (response.ok) return;
+        } catch (error) {
+          if ((error as Error).name === "TimeoutError") return;
+        }
       }
-      const response = await fetch(`${origin}${base}/__agent-unit/continue/${encodeURIComponent(id)}`, {
-        method: "POST",
-        headers: { authorization: `Bearer ${token}` },
-      }).catch(() => undefined);
-      // If the host cannot reach itself, continuing here is better than stalling until a sweep.
-      if (!response?.ok) await engine.continue(id);
+      // No secret, or the host cannot reach itself: continuing here beats stalling until a sweep.
+      await engine.continue(id);
     };
   }
 
@@ -122,6 +127,15 @@ export function createHandler(engine: RunEngine, options: HandlerOptions = {}) {
   };
 
   return async function handle(request: Request, context: RequestContext = {}): Promise<Response> {
+    // Hosts without waitUntil (AWS Lambda, Netlify Functions) freeze once the response is sent,
+    // so there the work finishes inside the request instead of in the background.
+    const background = async <T>(work: Promise<T>): Promise<T | undefined> => {
+      if (context.waitUntil) {
+        context.waitUntil(work);
+        return undefined;
+      }
+      return work;
+    };
     const url = new URL(request.url);
     origin ??= url.origin;
     if (base && !url.pathname.startsWith(base)) return problem(404, "not_found", "Not found.");
@@ -138,13 +152,12 @@ export function createHandler(engine: RunEngine, options: HandlerOptions = {}) {
       if (segments[0] === "__agent-unit") {
         if (!internalAllowed(request)) return problem(401, "unauthorized", "Missing or invalid agent-unit secret.");
         if (method === "POST" && segments[1] === "continue" && segments[2]) {
-          const done = engine.continue(segments[2]);
-          context.waitUntil?.(done);
-          return json({ ok: true }, 202);
+          await background(engine.continue(segments[2]));
+          return json({ ok: true }, context.waitUntil ? 202 : 200);
         }
         if (segments[1] === "sweep") {
           const { woken, recovered, settled } = await engine.sweep();
-          context.waitUntil?.(settled);
+          await background(settled);
           return json({ woken, recovered });
         }
         return problem(404, "not_found", "Not found.");
@@ -172,9 +185,12 @@ export function createHandler(engine: RunEngine, options: HandlerOptions = {}) {
           }
           const threadId = typeof body.threadId === "string" ? body.threadId : undefined;
           const { run, done } = await engine.start(agent, input, { threadId });
-          context.waitUntil?.(done);
-          if (wantsStream(request)) return eventStream(engine.events(run.id, 0, request.signal), request.signal, options.heartbeatMs);
-          return json(run, 202);
+          if (wantsStream(request)) {
+            context.waitUntil?.(done);
+            return eventStream(engine.events(run.id, 0, request.signal), request.signal, options.heartbeatMs);
+          }
+          const settled = await background(done);
+          return settled ? json(settled) : json(run, 202);
         }
       }
 
@@ -201,9 +217,12 @@ export function createHandler(engine: RunEngine, options: HandlerOptions = {}) {
           const body = await readJson(request);
           const before = (await engine.getRun(id)).eventCount;
           const { run, done } = await engine.resume(id, body.answer);
-          context.waitUntil?.(done);
-          if (wantsStream(request)) return eventStream(engine.events(id, before, request.signal), request.signal, options.heartbeatMs);
-          return json(run, 202);
+          if (wantsStream(request)) {
+            context.waitUntil?.(done);
+            return eventStream(engine.events(id, before, request.signal), request.signal, options.heartbeatMs);
+          }
+          const settled = await background(done);
+          return settled ? json(settled) : json(run, 202);
         }
         if (id && method === "POST" && segments[2] === "cancel") return json(await engine.cancel(id));
       }

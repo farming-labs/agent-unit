@@ -33,7 +33,7 @@ const build = defineCommand({
   args: {
     root,
     preset: { type: "string", description: "Nitro preset: node-server, bun, deno-server, cloudflare-module, vercel, netlify, aws-lambda, ..." },
-    out: { type: "string", description: "Output directory", default: ".output" },
+    out: { type: "string", description: "Output directory (default: the preset's own)" },
     minify: { type: "boolean", description: "Minify the server bundle", default: false },
   },
   async run({ args }) {

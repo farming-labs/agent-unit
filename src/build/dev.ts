@@ -46,7 +46,7 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
   const root = resolve(options.root ?? process.cwd());
 
   async function create(): Promise<AgentUnit> {
-    const project = await loadProject(root, { fresh: true });
+    const project = await loadProject(root);
     const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false });
     const agents = project.config.agents ?? {};
     for (const [name, file] of Object.entries(project.agentFiles)) agents[name] = await jiti.import(file);

@@ -93,8 +93,9 @@ ${agentEntries.join("\n")}
 import { defineHandler } from "nitro";
 import { unit } from "./runtime.mjs";
 
+// Only hosts that keep work alive after the response get waitUntil; the others finish work in the request.
 export default defineHandler((event) =>
-  unit.handler(event.req, { waitUntil: (promise) => event.waitUntil(promise) }),
+  unit.handler(event.req, typeof event.req.waitUntil === "function" ? { waitUntil: (promise) => event.req.waitUntil(promise) } : {}),
 );
 `,
   );
@@ -121,7 +122,7 @@ export default defineTask({
 export interface BuildOptions {
   root?: string;
   preset?: string;
-  /** Output directory. Default `.output`. */
+  /** Output directory. Default: the preset's own (`.output`, `.vercel/output`, ...). */
   outDir?: string;
   minify?: boolean;
   logger?: { info(message: string): void; warn(message: string): void };
@@ -145,7 +146,6 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
   const storage = resolveStorage(project, preset, logger.warn);
   const genDir = join(project.root, ".agent-unit");
   const { adapters } = generateEntry(project, genDir, { budgetMs });
-  const outDir = resolve(project.root, options.outDir ?? ".output");
 
   const tasks: Record<string, unknown> = {};
   const scheduledTasks: Record<string, string> = {};
@@ -164,7 +164,7 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     compatibilityDate: "2025-07-01",
     minify: options.minify ?? false,
     buildDir: join(genDir, "nitro"),
-    output: { dir: outDir },
+    ...(options.outDir ? { output: { dir: resolve(project.root, options.outDir) } } : {}),
     serverEntry: { handler: join(genDir, "entry.mjs"), format: "web" },
     storage: { "agent-unit": storage },
     experimental: { tasks: Object.keys(tasks).length > 0 },
@@ -173,6 +173,7 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     logLevel: 1,
     ...userNitro,
   } as never);
+  const outDir = nitro.options.output.dir;
   try {
     await prepare(nitro);
     await copyPublicAssets(nitro);

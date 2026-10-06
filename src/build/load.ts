@@ -72,13 +72,13 @@ function scanAgents(dir: string): Record<string, string> {
   return agents;
 }
 
-/** Loads `agent-unit.config.*` and discovers agents. `fresh` bypasses the module cache (dev reloads). */
-export async function loadProject(rootDir = process.cwd(), options: { fresh?: boolean } = {}): Promise<LoadedProject> {
+/** Loads `agent-unit.config.*` and discovers agents. Always re-evaluates, so dev reloads and repeated builds see edits and env. */
+export async function loadProject(rootDir = process.cwd()): Promise<LoadedProject> {
   const root = resolve(rootDir);
   const configFile = findConfigFile(root);
   let config: AgentUnitConfig = {};
   if (configFile) {
-    const jiti = createJiti(import.meta.url, { moduleCache: !options.fresh, fsCache: false });
+    const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false });
     const loaded = await jiti.import<AgentUnitConfig | { default: AgentUnitConfig }>(configFile);
     config = ((loaded as { default?: AgentUnitConfig }).default ?? loaded) as AgentUnitConfig;
     if (!config || typeof config !== "object") throw new Error(`${configFile} must export a config object (export default defineConfig({ ... })).`);
