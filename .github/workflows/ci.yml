@@ -27,7 +27,6 @@ jobs:
           cache: pnpm
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
-      # The e2e fixtures import the built package, so type-check after the build.
       - run: pnpm typecheck
       - run: pnpm test
 

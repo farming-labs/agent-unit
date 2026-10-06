@@ -3,8 +3,14 @@
     "target": "ES2022",
     "module": "ESNext",
     "moduleResolution": "Bundler",
-    "lib": ["ES2023", "DOM", "DOM.Iterable"],
-    "types": ["node"],
+    "lib": [
+      "ES2023",
+      "DOM",
+      "DOM.Iterable"
+    ],
+    "types": [
+      "node"
+    ],
     "strict": true,
     "noUncheckedIndexedAccess": true,
     "exactOptionalPropertyTypes": false,
@@ -12,7 +18,25 @@
     "verbatimModuleSyntax": true,
     "skipLibCheck": true,
     "noEmit": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "paths": {
+      "agent-unit": [
+        "./src/index.ts"
+      ],
+      "agent-unit/nitro": [
+        "./src/nitro.ts"
+      ],
+      "agent-unit/adapters/*": [
+        "./src/adapters/*.ts"
+      ],
+      "agent-unit/*": [
+        "./src/*/index.ts"
+      ]
+    }
   },
-  "include": ["src", "test", "*.config.ts"]
+  "include": [
+    "src",
+    "test",
+    "*.config.ts"
+  ]
 }
