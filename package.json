@@ -85,9 +85,10 @@
     "unstorage": "2.0.0-alpha.10"
   },
   "peerDependencies": {
-    "ai": ">=7",
     "@langchain/core": ">=1",
-    "@langchain/langgraph": ">=1"
+    "@langchain/langgraph": ">=1",
+    "ai": ">=7",
+    "@openai/agents": ">=0.19"
   },
   "peerDependenciesMeta": {
     "ai": {
@@ -98,11 +99,15 @@
     },
     "@langchain/langgraph": {
       "optional": true
+    },
+    "@openai/agents": {
+      "optional": true
     }
   },
   "devDependencies": {
     "@langchain/core": "1.2.14",
     "@langchain/langgraph": "1.4.19",
+    "@openai/agents": "0.19.0",
     "@types/node": "^20.19.43",
     "ai": "7.0.30",
     "tsdown": "0.15.7",

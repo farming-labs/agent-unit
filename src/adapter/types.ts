@@ -10,7 +10,11 @@ export interface Durable {
   /** Wraps a record of tools with `execute`: every call is a step that emits tool events. */
   tools<T extends Record<string, unknown>>(tools: T): T;
   /** Wraps one tool function. `toolCallId` (when the framework provides one) keys the step. */
-  tool<A extends unknown[], R>(name: string, execute: (...args: A) => R, options?: { toolCallId?: (...args: A) => string | undefined }): (...args: A) => Promise<Awaited<R>>;
+  tool<A extends unknown[], R>(
+    name: string,
+    execute: (...args: A) => R,
+    options?: { toolCallId?: (...args: A) => string | undefined; input?: (...args: A) => unknown },
+  ): (...args: A) => Promise<Awaited<R>>;
 }
 
 export interface AdapterContext {

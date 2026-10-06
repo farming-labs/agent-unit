@@ -14,6 +14,7 @@ import { DEFAULT_STORAGE } from "./nitro";
 const ADAPTER_MODULES: Record<BuiltinAdapter["entry"], () => Promise<Record<string, unknown>>> = {
   "adapters/ai-sdk": () => import("../adapters/ai-sdk"),
   "adapters/langgraph": () => import("../adapters/langgraph"),
+  "adapters/openai-agents": () => import("../adapters/openai-agents"),
 };
 
 async function loadDriver(root: string, config: StorageConfig): Promise<Driver> {

@@ -125,7 +125,11 @@ export function durableModel<M>(model: M): M {
 export function durableTool<A extends unknown[], R>(
   name: string,
   execute: (...args: A) => R,
-  options: { toolCallId?: (...args: A) => string | undefined } = {},
+  options: {
+    toolCallId?: (...args: A) => string | undefined;
+    /** The tool's input among the arguments, for the TOOL_CALL_ARGS event. Default: the first argument. */
+    input?: (...args: A) => unknown;
+  } = {},
 ): (...args: A) => Promise<Awaited<R>> {
   return async (...args: A): Promise<Awaited<R>> => {
     const run = currentInternals();
@@ -141,7 +145,8 @@ export function durableTool<A extends unknown[], R>(
         const announced = `${key}:announced`;
         if (!run.isReplay(announced)) {
           run.emitEvent({ type: "TOOL_CALL_START", toolCallId, toolCallName: name });
-          run.emitEvent({ type: "TOOL_CALL_ARGS", toolCallId, delta: stringify(args[0]) });
+          const input = options.input ? options.input(...args) : args[0];
+          run.emitEvent({ type: "TOOL_CALL_ARGS", toolCallId, delta: typeof input === "string" ? input : stringify(input) });
           run.emitEvent({ type: "TOOL_CALL_END", toolCallId });
           await run.record(announced, true);
         }
