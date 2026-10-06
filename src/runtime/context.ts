@@ -7,10 +7,18 @@ import type { StateScope } from "./store";
  * to a fresh invocation or cancelled. Frameworks may catch it (the AI SDK turns tool errors into
  * results), so the engine also records the reason on the run and refuses all further live work.
  */
+const HALTED = Symbol.for("agent-unit.halted");
+
 export class RunHalted extends Error {
+  readonly [HALTED] = true;
   constructor(readonly reason: "interrupt" | "sleep" | "yield" | "cancel") {
     super(`agent-unit run halted (${reason})`);
     this.name = "RunHalted";
+  }
+
+  // Branded, so `instanceof` holds when a bundler or loader duplicates this module.
+  static override [Symbol.hasInstance](value: unknown): boolean {
+    return typeof value === "object" && value !== null && (value as { [HALTED]?: boolean })[HALTED] === true;
   }
 }
 
@@ -56,7 +64,11 @@ export interface RunInternals extends RunContext {
   emitEvent(body: AgentEventBody): void;
 }
 
-const storage = new AsyncLocalStorage<RunInternals>();
+// One store per process, even when two copies of agent-unit are loaded (a dev loader and the
+// app's own install), so useRun() in agent code sees the run the engine started.
+const STORAGE = Symbol.for("agent-unit.context");
+const storage: AsyncLocalStorage<RunInternals> = ((globalThis as Record<symbol, unknown>)[STORAGE] ??=
+  new AsyncLocalStorage<RunInternals>()) as AsyncLocalStorage<RunInternals>;
 
 export function runWithContext<T>(context: RunInternals, fn: () => T): T {
   return storage.run(context, fn);
