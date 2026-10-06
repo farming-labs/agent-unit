@@ -3,6 +3,7 @@ import { dirname, join } from "node:path";
 
 /** Built-in adapters, included when their framework is installed in the app. */
 export const BUILTIN_ADAPTERS = [
+  { entry: "adapters/langgraph", exportName: "langGraphAdapter", package: "@langchain/langgraph" },
   { entry: "adapters/ai-sdk", exportName: "aiSdkAdapter", package: "ai" },
 ] as const;
 

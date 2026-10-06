@@ -84,8 +84,25 @@
     "srvx": "1.0.5",
     "unstorage": "2.0.0-alpha.10"
   },
-  "peerDependenciesMeta": {},
+  "peerDependencies": {
+    "ai": ">=7",
+    "@langchain/core": ">=1",
+    "@langchain/langgraph": ">=1"
+  },
+  "peerDependenciesMeta": {
+    "ai": {
+      "optional": true
+    },
+    "@langchain/core": {
+      "optional": true
+    },
+    "@langchain/langgraph": {
+      "optional": true
+    }
+  },
   "devDependencies": {
+    "@langchain/core": "1.2.14",
+    "@langchain/langgraph": "1.4.19",
     "@types/node": "^20.19.43",
     "ai": "7.0.30",
     "tsdown": "0.15.7",

@@ -13,6 +13,7 @@ import { DEFAULT_STORAGE } from "./nitro";
 // Literal imports, so the package build keeps each adapter as its own chunk.
 const ADAPTER_MODULES: Record<BuiltinAdapter["entry"], () => Promise<Record<string, unknown>>> = {
   "adapters/ai-sdk": () => import("../adapters/ai-sdk"),
+  "adapters/langgraph": () => import("../adapters/langgraph"),
 };
 
 async function loadDriver(root: string, config: StorageConfig): Promise<Driver> {
@@ -74,7 +75,7 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
     fetch: (request) => current.handler(request, { waitUntil: (promise) => server.waitUntil?.(promise) }),
   });
   await server.ready();
-  const url = server.url ?? `http://localhost:${options.port ?? 3000}/`;
+  const url = (server.url ?? `http://localhost:${options.port ?? 3000}/`).replace(/\/\/(\[::\]|0\.0\.0\.0)/, "//localhost");
 
   // Wake sleepers and recover stalled runs, as the scheduled sweep does in production.
   const sweep = setInterval(() => void current.engine.sweep().catch((error) => logger.error("agent-unit: sweep failed", error)), 60_000);

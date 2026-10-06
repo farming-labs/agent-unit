@@ -11,6 +11,7 @@ export default defineConfig({
     client: "src/client/index.ts",
     testing: "src/testing/index.ts",
     "adapters/ai-sdk": "src/adapters/ai-sdk.ts",
+    "adapters/langgraph": "src/adapters/langgraph.ts",
   },
   format: "esm",
   platform: "neutral",
