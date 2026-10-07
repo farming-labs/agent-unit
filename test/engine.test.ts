@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defineAgent } from "../src/agents";
 import { decode, encode } from "../src/runtime/serialize";
+import { RunStore } from "../src/runtime/store";
 import { collect, createEngine, memoryStore, types } from "./helpers";
 
 describe("durable run engine", () => {
@@ -666,5 +667,85 @@ describe("state keys", () => {
     expect(await store.getState("app", "shop", "counter")).toBe(7);
     await store.deleteState("app", "shop", "counter");
     expect(await store.getState("app", "shop", "counter")).toBeUndefined();
+  });
+});
+
+describe("two processes, one run", () => {
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const twoProcesses = (agents: Record<string, unknown>) => {
+    const shared = memoryStore().storage;
+    // Separate engines and stores over one storage: two servers sharing Redis, say.
+    return [createEngine(agents, { store: new RunStore(shared) }), createEngine(agents, { store: new RunStore(shared) })] as const;
+  };
+
+  it("lets one of two resumes from different processes win, with its own answer", async () => {
+    let charges = 0;
+    const [a, b] = twoProcesses({
+      refund: defineAgent(async (_input, run) => {
+        const decision = await run.interrupt<string>("approve");
+        await run.step("charge", () => ++charges);
+        return decision;
+      }),
+    });
+    const { run, done } = await a.start("refund");
+    await done;
+    const results = await Promise.allSettled([a.resume(run.id, "from-a"), b.resume(run.id, "from-b")]);
+    const winners = results.filter((result) => result.status === "fulfilled") as PromiseFulfilledResult<{ done: Promise<unknown> }>[];
+    expect(winners).toHaveLength(1);
+    expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: { status: 409 } });
+    await winners[0]!.value.done;
+    const final = await a.getRun(run.id);
+    expect(final.status).toBe("completed");
+    expect(final.output).toBe(results[0]!.status === "fulfilled" ? "from-a" : "from-b");
+    expect(charges).toBe(1);
+  });
+
+  it("never loses an approve or a cancel that race from different processes", async () => {
+    for (let round = 0; round < 5; round++) {
+      let finished = 0;
+      const [a, b] = twoProcesses({
+        refund: defineAgent(async (_input, run) => {
+          await run.interrupt("approve");
+          for (let i = 0; i < 30; i++) await run.step(`work-${i}`, () => pause(15));
+          return ++finished;
+        }),
+      });
+      const { run, done } = await a.start("refund");
+      await done;
+      const [resumed] = await Promise.allSettled([a.resume(run.id, "yes"), b.cancel(run.id)]);
+      if (resumed.status === "fulfilled") await (resumed.value as { done: Promise<unknown> }).done;
+      // Either the cancel came first (and the resume got 409), or the run took the cancel while working.
+      const final = await a.getRun(run.id);
+      expect(final.status).toBe("cancelled");
+      expect(finished).toBe(0);
+      const events = await a.store.readEvents(run.id, 0, final.eventCount);
+      const seqs = events.map((event) => event.seq);
+      expect(new Set(seqs).size).toBe(seqs.length);
+      expect(events.filter((event) => event.type === "RUN_CANCELLED")).toHaveLength(1);
+    }
+  });
+
+  it("refuses a write based on a stale read", async () => {
+    const store = memoryStore();
+    const now = new Date().toISOString();
+    const base = { id: "run_versioned000000000", agent: "x", threadId: "t", status: "interrupted" as const, input: {}, attempt: 1, eventCount: 2, createdAt: now, updatedAt: now };
+    expect(await store.putRun({ ...base }, null)).toBe(true);
+    const read = (await store.getRun(base.id))!;
+    expect(await store.putRun({ ...read, status: "running" }, read)).toBe(true);
+    // A second writer still holding the old read is refused instead of overwriting.
+    expect(await store.putRun({ ...read, status: "cancelled" }, read)).toBe(false);
+    expect((await store.getRun(base.id))!.status).toBe("running");
+    expect(await store.putRun({ ...base }, null)).toBe(false);
+  });
+});
+
+describe("storage leases", () => {
+  it("does not recreate a lease on renew once it was released", async () => {
+    const store = memoryStore();
+    expect(await store.acquireLease("run_a", "owner-1", 60_000)).toBe(true);
+    expect(await store.renewLease("run_a", "owner-1", 60_000)).toBe(true);
+    await store.releaseLease("run_a", "owner-1");
+    expect(await store.renewLease("run_a", "owner-1", 60_000)).toBe(false);
+    expect(await store.leaseExpired("run_a")).toBe(true);
   });
 });

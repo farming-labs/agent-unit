@@ -25,6 +25,8 @@ export interface RunRecord {
   /** Executions in a row that crashed. The run fails once this reaches the engine's `maxCrashes`. */
   crashes?: number;
   attempt: number;
+  /** Increases on every write. A write that expected another version is refused, so two processes never overwrite each other's change. */
+  version?: number;
   eventCount: number;
   createdAt: string;
   updatedAt: string;

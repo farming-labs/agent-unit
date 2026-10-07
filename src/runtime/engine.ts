@@ -378,7 +378,7 @@ export class RunEngine {
       updatedAt: createdAt,
     };
     const started = { type: "RUN_STARTED", threadId: run.threadId, agent: agentName, seq: 1, runId: id, timestamp: Date.now() } as AgentEvent;
-    await this.store.putRun(run);
+    if (!(await this.store.putRun(run, null))) throw new AgentUnitError(409, "run_exists", `Run "${id}" already exists.`);
     await this.store.appendEvents(id, [started]);
     this.publish(started);
     return { run, done: this.schedule(id) };
@@ -392,11 +392,17 @@ export class RunEngine {
         throw new AgentUnitError(409, "run_not_interrupted", `Run "${id}" is ${run.status}, not interrupted.`);
       }
       const previous = structuredClone(run);
-      await this.store.putJournalEntry(id, run.interrupt.key, { kind: "interrupt", answered: true, answer: encode(answer) });
+      const key = run.interrupt.key;
       delete run.interrupt;
       run.status = "running";
       run.updatedAt = nowIso();
-      await this.store.putRun(run, previous);
+      // Conditional: another process may have resumed or cancelled it since we read it.
+      if (!(await this.store.putRun(run, previous))) {
+        const current = await this.getRun(id);
+        throw new AgentUnitError(409, "run_not_interrupted", `Run "${id}" is ${current.status}, not interrupted; another request changed it first.`);
+      }
+      // Only the winner writes its answer, so a losing resume can never replace it.
+      await this.store.putJournalEntry(id, key, { kind: "interrupt", answered: true, answer: encode(answer) });
       return { run, done: this.schedule(id) };
     });
   }
@@ -405,9 +411,15 @@ export class RunEngine {
     return this.locked(id, () => this.cancelNow(id));
   }
 
-  private async cancelNow(id: string): Promise<RunRecord> {
+  private async cancelNow(id: string, tries = 0): Promise<RunRecord> {
     const run = await this.getRun(id);
     if (TERMINAL.has(run.status)) return run;
+    const previous = structuredClone(run);
+    // Another process changed the run between our read and our write: decide again on what it did.
+    const retry = () => {
+      if (tries >= 5) throw new AgentUnitError(409, "run_conflict", `Run "${id}" kept changing; try again.`);
+      return this.cancelNow(id, tries + 1);
+    };
     const execution = this.active.get(id);
     if (execution) {
       execution.cancel();
@@ -422,7 +434,7 @@ export class RunEngine {
     if (run.status === "running" && !(await this.store.leaseExpired(id))) {
       run.cancelRequested = true;
       run.updatedAt = nowIso();
-      await this.store.putRun(run);
+      if (!(await this.store.putRun(run, previous))) return retry();
       return run;
     }
     // Parked, or its executor died: cancel it here, after the last event actually stored.
@@ -430,11 +442,10 @@ export class RunEngine {
     delete run.interrupt;
     delete run.wakeAt;
     delete run.cancelRequested;
-    const previous = await this.store.getRun(id);
     run.eventCount = await this.store.lastEventSeq(id, run.eventCount);
     const event = { type: "RUN_CANCELLED", seq: ++run.eventCount, runId: id, timestamp: Date.now() } as AgentEvent;
     run.updatedAt = nowIso();
-    await this.store.putRun(run, previous);
+    if (!(await this.store.putRun(run, previous))) return retry();
     await this.store.appendEvents(id, [event]);
     this.publish(event);
     this.clearTimer(id);
@@ -521,15 +532,16 @@ export class RunEngine {
       const run = await this.store.getRun(id);
       if (!run || run.status !== "sleeping") return undefined;
       const previous = structuredClone(run);
+      run.status = "running";
+      delete run.wakeAt;
+      run.updatedAt = nowIso();
+      // Another process woke or cancelled it first: leave it to that one.
+      if (!(await this.store.putRun(run, previous))) return undefined;
       const journal = await this.store.getJournal(id);
       // A run parks on one sleep at a time, so waking it (on time or early) ends every pending sleep.
       for (const [key, entry] of Object.entries(journal)) {
         if (entry.kind === "sleep" && !entry.woke) await this.store.putJournalEntry(id, key, { ...entry, woke: true });
       }
-      run.status = "running";
-      delete run.wakeAt;
-      run.updatedAt = nowIso();
-      await this.store.putRun(run, previous);
       return { done: this.schedule(id) };
     });
   }
@@ -643,43 +655,62 @@ export class RunEngine {
     // start a second execution of the same run in this process.
     if (this.busy(id)) return this.store.getRun(id);
     this.claimed.add(id);
-    let execution: RunExecution | undefined;
+    let started: { execution: RunExecution } | { record: RunRecord | undefined };
     try {
       const run = await this.store.getRun(id);
       if (!run || run.status !== "running") return run;
-      const loaded = this.agents.get(run.agent);
-      if (!loaded) return run;
+      if (!this.agents.has(run.agent)) return run;
       const leaseOwner = `${this.owner}:${++this.executions}`;
       if (!(await this.store.acquireLease(id, leaseOwner, this.leaseMs))) return run;
-
-      const previous = structuredClone(run);
-      // An execution that started but never finished crashed (or its process was stopped).
-      if (run.executing) run.crashes = (run.crashes ?? 0) + 1;
-      run.attempt += 1;
-      // After a crash the record can lag the events already stored; numbering resumes after them.
-      run.eventCount = await this.store.lastEventSeq(id, run.eventCount);
-      run.updatedAt = nowIso();
-      if ((run.crashes ?? 0) >= (this.options.maxCrashes ?? 5)) {
-        // Retrying forever would never end; fail it so someone looks at it.
-        run.status = "failed";
-        run.error = { name: "RunCrashed", message: `The run crashed ${run.crashes} times in a row; giving up.` };
-        delete run.executing;
-        const event = { type: "RUN_ERROR", message: run.error.message, code: run.error.name, seq: ++run.eventCount, runId: id, timestamp: Date.now() } as AgentEvent;
-        await this.store.putRun(run, previous);
-        await this.store.appendEvents(id, [event]);
-        this.publish(event);
-        await this.store.releaseLease(id, leaseOwner);
-        return run;
-      }
-      run.executing = true;
-      await this.store.putRun(run, previous);
-      execution = new RunExecution(this, run, await this.store.getJournal(id), leaseOwner);
-      this.active.set(id, execution);
-      execution.startRenewing();
+      started = await this.startExecution(id, run, leaseOwner);
     } finally {
+      // Released once the execution is active (or did not start), so its own continuation can claim the run.
       this.claimed.delete(id);
     }
-    return this.runExecution(id, execution!);
+    return "execution" in started ? this.runExecution(id, started.execution) : started.record;
+  }
+
+  /** Records the start of an execution (attempt, crash count, event numbering), retrying if another write lands first. */
+  private async startExecution(
+    id: string,
+    run: RunRecord,
+    leaseOwner: string,
+    tries = 0,
+  ): Promise<{ execution: RunExecution } | { record: RunRecord | undefined }> {
+    const previous = structuredClone(run);
+    // An execution that started but never finished crashed (or its process was stopped).
+    if (run.executing) run.crashes = (run.crashes ?? 0) + 1;
+    run.attempt += 1;
+    // After a crash the record can lag the events already stored; numbering resumes after them.
+    run.eventCount = await this.store.lastEventSeq(id, run.eventCount);
+    run.updatedAt = nowIso();
+    if ((run.crashes ?? 0) >= (this.options.maxCrashes ?? 5)) {
+      // Retrying forever would never end; fail it so someone looks at it.
+      run.status = "failed";
+      run.error = { name: "RunCrashed", message: `The run crashed ${run.crashes} times in a row; giving up.` };
+      delete run.executing;
+      const event = { type: "RUN_ERROR", message: run.error.message, code: run.error.name, seq: ++run.eventCount, runId: id, timestamp: Date.now() } as AgentEvent;
+      if (await this.store.putRun(run, previous)) {
+        await this.store.appendEvents(id, [event]);
+        this.publish(event);
+      }
+      await this.store.releaseLease(id, leaseOwner);
+      return { record: await this.store.getRun(id) };
+    }
+    run.executing = true;
+    if (!(await this.store.putRun(run, previous))) {
+      // Changed underneath us (a cancel request, say): read it again and start from what it is now.
+      const current = await this.store.getRun(id);
+      if (!current || current.status !== "running" || tries >= 5) {
+        await this.store.releaseLease(id, leaseOwner);
+        return { record: current };
+      }
+      return this.startExecution(id, current, leaseOwner, tries + 1);
+    }
+    const execution = new RunExecution(this, run, await this.store.getJournal(id), leaseOwner);
+    this.active.set(id, execution);
+    execution.startRenewing();
+    return { execution };
   }
 
   private async runExecution(id: string, execution: RunExecution): Promise<RunRecord | undefined> {
@@ -746,7 +777,24 @@ export class RunEngine {
       run.updatedAt = nowIso();
       delete run.executing;
       delete run.crashes;
-      await this.store.putRun(run, latest);
+      let expected = latest;
+      for (let tries = 0; !(await this.store.putRun(run, expected)); tries++) {
+        // Only a cancel request can land while a run executes. A parked run takes it now; a finished one already finished.
+        expected = (await this.store.getRun(id)) ?? null;
+        if (expected?.cancelRequested && (run.status === "interrupted" || run.status === "sleeping" || yielded)) {
+          run.status = "cancelled";
+          delete run.interrupt;
+          delete run.wakeAt;
+          yielded = false;
+          execution.emitEvent({ type: "RUN_CANCELLED" });
+          await execution.flush();
+        }
+        if (tries >= 5) {
+          console.error(`[agent-unit] run ${id}: could not record the end of its execution after repeated conflicts; writing it anyway.`);
+          await this.store.putRun(run);
+          break;
+        }
+      }
     } finally {
       execution.stopRenewing();
       this.active.delete(id);

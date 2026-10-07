@@ -46,8 +46,22 @@ export interface LeaseBackend {
   expired(runId: string): Promise<boolean>;
 }
 
+/**
+ * Conditional writes of run records. `compareAndSet` must check and write in one atomic operation
+ * (a Redis script, a database `UPDATE … WHERE version = ?`, a Durable Object's single thread).
+ * Without one, the store checks then writes, which leaves a gap of one storage round trip.
+ */
+export interface AtomicWrites {
+  /**
+   * Writes `record` at `key` only if the stored record's version is `expectedVersion` (a record
+   * without one counts as 0), or, when `expectedVersion` is undefined, only if there is none.
+   */
+  compareAndSet(key: string, expectedVersion: number | undefined, record: RunRecord): Promise<boolean>;
+}
+
 export interface RunStoreOptions {
   leases?: LeaseBackend;
+  atomic?: AtomicWrites;
 }
 
 const TERMINAL: ReadonlySet<RunStatus> = new Set(["completed", "failed", "cancelled"]);
@@ -76,6 +90,7 @@ function decodeSegment(value: string): string {
  */
 export class RunStore {
   private readonly leases: LeaseBackend;
+  private readonly atomic: AtomicWrites;
   private indexReady: Promise<void> | undefined;
 
   constructor(
@@ -83,19 +98,43 @@ export class RunStore {
     options: RunStoreOptions = {},
   ) {
     this.leases = options.leases ?? storageLeases(storage);
+    this.atomic = options.atomic ?? checkThenWrite(storage);
+  }
+
+  /** True when conditional writes are atomic, not check-then-write. */
+  get atomicWrites(): boolean {
+    return !(this.atomic as { bestEffort?: boolean }).bestEffort;
   }
 
   async getRun(id: string): Promise<RunRecord | undefined> {
     return ((await this.storage.getItem(`runs:${id}`)) as RunRecord | null) ?? undefined;
   }
 
-  /** Writes a run and moves its index entries. Pass `previous` when it is already at hand. */
-  async putRun(run: RunRecord, previous?: RunRecord | null): Promise<void> {
-    const before = previous === undefined ? await this.getRun(run.id) : previous;
-    await this.storage.setItem(`runs:${run.id}`, run as never);
-    const next = this.indexKeys(run);
-    for (const key of before ? this.indexKeys(before) : []) if (!next.includes(key)) await this.storage.removeItem(key);
-    for (const key of next) await this.storage.setItem(key, run as never);
+  /**
+   * Writes a run and moves its index entries.
+   *
+   * With `previous` (the record as read, or `null` for a new run) the write is conditional: it
+   * happens only if the stored record is still that version, and returns false when another write
+   * got there first, so the caller can re-read instead of overwriting it. Without `previous` it
+   * writes unconditionally.
+   */
+  async putRun(run: RunRecord, previous?: RunRecord | null): Promise<boolean> {
+    const key = `runs:${run.id}`;
+    let before: RunRecord | null | undefined = previous;
+    if (previous === undefined) {
+      before = (await this.getRun(run.id)) ?? null;
+      run.version = (before?.version ?? 0) + 1;
+      await this.storage.setItem(key, run as never);
+    } else {
+      const expected = previous === null ? undefined : (previous.version ?? 0);
+      const next = { ...run, version: (expected ?? 0) + 1 };
+      if (!(await this.atomic.compareAndSet(key, expected, next))) return false;
+      run.version = next.version;
+    }
+    const keys = this.indexKeys(run);
+    for (const old of before ? this.indexKeys(before) : []) if (!keys.includes(old)) await this.storage.removeItem(old);
+    for (const indexKey of keys) await this.storage.setItem(indexKey, run as never);
+    return true;
   }
 
   /** Index entries carry a copy of the record, so a listing never reads the runs themselves. */
@@ -322,8 +361,9 @@ export function storageLeases(storage: Storage): LeaseBackend {
     },
     async renew(id, owner, ttlMs) {
       const current = await read(id);
-      // A lease another execution took over is not taken back.
-      if (current && current.owner !== owner) return false;
+      // A lease another execution took over is not taken back, and a released one is not recreated
+      // (a renewal still in flight when its execution ends would otherwise block the run for a whole lease).
+      if (!current || current.owner !== owner) return false;
       await storage.setItem(key(id), { owner, until: Date.now() + ttlMs } as never);
       return (await read(id))?.owner === owner;
     },
@@ -333,6 +373,46 @@ export function storageLeases(storage: Storage): LeaseBackend {
     async expired(id) {
       const current = await read(id);
       return !current || current.until <= Date.now();
+    },
+  };
+}
+
+/**
+ * Saves to one key queued per storage, process-wide: every RunStore over the same storage in this
+ * process (two engines, a test, a dev server) takes turns, so their check-then-write never interleaves.
+ */
+const queues = new WeakMap<object, Map<string, Promise<unknown>>>();
+function queued<T>(storage: object, key: string, work: () => Promise<T>): Promise<T> {
+  let keys = queues.get(storage);
+  if (!keys) queues.set(storage, (keys = new Map()));
+  const previous = keys.get(key) ?? Promise.resolve();
+  const current = previous.then(work, work);
+  const settled = current.then(
+    () => undefined,
+    () => undefined,
+  );
+  keys.set(key, settled);
+  void settled.then(() => {
+    if (keys.get(key) === settled) keys.delete(key);
+  });
+  return current;
+}
+
+/**
+ * Check, then write. Atomic within one process (writes to a key take turns); across processes the
+ * check and the write are one storage round trip apart. Pass `atomic` for stores that can do better.
+ */
+function checkThenWrite(storage: Storage): AtomicWrites & { bestEffort: true } {
+  return {
+    bestEffort: true,
+    compareAndSet(key, expectedVersion, record) {
+      return queued(storage, key, async () => {
+        const current = (await storage.getItem(key)) as RunRecord | null;
+        const currentVersion = current ? (current.version ?? 0) : undefined;
+        if (currentVersion !== expectedVersion) return false;
+        await storage.setItem(key, record as never);
+        return true;
+      });
     },
   };
 }

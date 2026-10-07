@@ -63,6 +63,7 @@ interface RunStub {
 }
 
 type Bindings = Record<string, unknown>;
+type IndexCas = (key: string, expectedVersion: number | null, value: string) => Promise<boolean>;
 
 /** A Durable Object class, typed without depending on the Workers type package. */
 export type DurableObjectClass = new (ctx: DurableObjectStateLike, env: any) => object;
@@ -122,6 +123,24 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
     async kvKeys(base?: string): Promise<string[]> {
       return [...(await this.ctx.storage.list(base ? { prefix: base } : {})).keys()];
     }
+    /** Atomic: an object handles one call at a time, so nothing lands between the check and the write. */
+    async kvCompareAndSet(key: string, expectedVersion: number | null, value: string): Promise<boolean> {
+      const current = (await this.ctx.storage.get(key)) as string | undefined;
+      if (current === undefined) {
+        if (expectedVersion !== null) return false;
+      } else {
+        if (expectedVersion === null) return false;
+        let version = 0;
+        try {
+          version = (JSON.parse(current) as { version?: number }).version ?? 0;
+        } catch {
+          return false;
+        }
+        if (version !== expectedVersion) return false;
+      }
+      await this.ctx.storage.put(key, value);
+      return true;
+    }
   }
 
   /** One run: executes it, stores its journal and events, and owns its alarm. */
@@ -135,7 +154,13 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
 
     get engine(): RunEngine {
       return (this.#engine ??= new RunEngine({
-        store: new RunStore(sharedStorage(this.env, durableStorageDriver(this.ctx.storage))),
+        store: new RunStore(sharedStorage(this.env, durableStorageDriver(this.ctx.storage)), {
+          // Run records live in the index object; it checks and writes them in one step.
+          atomic: {
+            compareAndSet: (key, expected, record) =>
+              (indexStub(this.env) as IndexStub & { kvCompareAndSet: IndexCas }).kvCompareAndSet(key, expected ?? null, JSON.stringify(record)),
+          },
+        }),
         agents: agents(),
         name: options.name,
         budgetMs: budget,

@@ -193,3 +193,26 @@ describe("Durable Objects runtime: deletion", () => {
     expect((await (await call("/runs")).json()).runs).toEqual([]);
   });
 });
+
+describe("Durable Objects runtime: versioned writes", () => {
+  it("changes run records in the index through an atomic compare-and-set", async () => {
+    const { call, settle, runs, index } = setup();
+    const run = await (await call("/agents/refund/runs", post({ input: { orderId: "o_5" } }))).json();
+    await settle();
+    const store = (runs.instance(run.id) as unknown as { engine: import("../src/runtime/engine").RunEngine }).engine.store;
+    expect(store.atomicWrites).toBe(true);
+    const read = (await store.getRun(run.id))!;
+    expect(read).toMatchObject({ status: "interrupted", version: expect.any(Number) });
+
+    // A write based on the current version lands; a second one based on the same read is refused.
+    expect(await store.putRun({ ...read, status: "cancelled" }, read)).toBe(true);
+    expect(await store.putRun({ ...read, status: "completed" }, read)).toBe(false);
+    expect(await store.putRun({ ...read }, null)).toBe(false);
+    expect(await (await call(`/runs/${run.id}`)).json()).toMatchObject({ status: "cancelled", version: read.version! + 1 });
+
+    const kv = index.instance("index") as unknown as { kvCompareAndSet(key: string, version: number | null, value: string): Promise<boolean> };
+    expect(await kv.kvCompareAndSet("runs:run_new000000000000", null, JSON.stringify({ version: 1 }))).toBe(true);
+    expect(await kv.kvCompareAndSet("runs:run_new000000000000", null, JSON.stringify({ version: 1 }))).toBe(false);
+    expect(await kv.kvCompareAndSet("runs:run_new000000000000", 1, JSON.stringify({ version: 2 }))).toBe(true);
+  });
+});
