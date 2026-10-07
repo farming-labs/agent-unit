@@ -897,8 +897,43 @@ describe("steps inside tool calls", () => {
     const store = memoryStore();
     const now = new Date().toISOString();
     const id = "run_legacy00000000000";
-    await store.putRun({ id, agent: "support", threadId: id, status: "interrupted", input: {}, attempt: 1, eventCount: 2, createdAt: now, updatedAt: now, interrupt: { key: "interrupt:approve#0", name: "approve" } });
+    await store.putRun({ id, agent: "support", threadId: id, status: "interrupted", input: {}, attempt: 1, eventCount: 2, createdAt: now, updatedAt: now, interrupt: { key: "interrupt:approve#0", name: "approve", payload: null } });
     const resumed = await createEngine({ support }, { store }).resume(id, "yes");
     expect(await resumed.done).toMatchObject({ status: "completed", output: "yes" });
+  });
+});
+
+describe("leases left behind", () => {
+  it("resumes at once when the process that paused the run stopped before releasing its lease", async () => {
+    const store = memoryStore();
+    const agents = {
+      refund: defineAgent(async (_input, run) => {
+        const answer = await run.interrupt<string>("approve");
+        return run.step("charge", () => `charged ${answer}`);
+      }),
+    };
+    // The first process is killed after saving the pause but before releasing its lease.
+    const dying = new RunStore(store.storage);
+    dying.releaseLease = async () => {};
+    const { run, done } = await createEngine(agents, { store: dying }).start("refund");
+    expect(await done).toMatchObject({ status: "interrupted" });
+    expect(await store.leaseExpired(run.id)).toBe(false);
+
+    const next = createEngine(agents, { store });
+    const resumed = await next.resume(run.id, "yes");
+    expect(await resumed.done).toMatchObject({ status: "completed", output: "charged yes" });
+  });
+
+  it("still waits for the lease of an execution that never recorded its end", async () => {
+    const store = memoryStore();
+    const agents = { long: defineAgent(async (_input, run) => run.step("work", () => "done")) };
+    const now = new Date().toISOString();
+    const id = "run_crashed0000000000";
+    // Crashed mid-run: still marked executing, its lease still live.
+    await store.putRun({ id, agent: "long", threadId: id, status: "running", input: {}, attempt: 1, eventCount: 1, executing: true, lastLease: "old:1", createdAt: now, updatedAt: now });
+    await store.acquireLease(id, "old:2", 60_000);
+    const engine = createEngine(agents, { store });
+    expect(await engine.continue(id)).toMatchObject({ status: "running" });
+    expect(await store.leaseExpired(id)).toBe(false);
   });
 });

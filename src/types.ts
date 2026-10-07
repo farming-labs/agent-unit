@@ -27,6 +27,11 @@ export interface RunRecord {
   attempt: number;
   /** Increases on every write. A write that expected another version is refused, so two processes never overwrite each other's change. */
   version?: number;
+  /**
+   * The lease token of the execution that last recorded its end. Its lease can outlive it (the
+   * process stopped between saving and releasing); the next execution releases exactly that one.
+   */
+  lastLease?: string;
   /** "scoped": steps inside a tool call or framework task are numbered within it. Runs without it (started before 0.1.7) number steps across the run. */
   stepKeys?: "scoped";
   eventCount: number;

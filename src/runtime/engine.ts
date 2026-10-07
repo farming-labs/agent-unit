@@ -685,6 +685,9 @@ export class RunEngine {
       if (!run || run.status !== "running") return run;
       if (!this.agents.has(run.agent)) return run;
       const leaseOwner = `${this.owner}:${++this.executions}`;
+      // The last execution saved its end, so a lease it still holds is left over (its process stopped
+      // before releasing it): release it rather than wait it out. The release is owner-checked.
+      if (run.lastLease && !run.executing) await this.store.releaseLease(id, run.lastLease);
       if (!(await this.store.acquireLease(id, leaseOwner, this.leaseMs))) return run;
       started = await this.startExecution(id, run, leaseOwner);
     } finally {
@@ -799,6 +802,7 @@ export class RunEngine {
       }
       await execution.flush();
       run.updatedAt = nowIso();
+      run.lastLease = execution.leaseOwner;
       delete run.executing;
       delete run.crashes;
       let expected = latest;
