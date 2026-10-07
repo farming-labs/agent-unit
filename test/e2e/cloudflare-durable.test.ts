@@ -8,7 +8,11 @@ import { buildFixture, cleanup, collect, createAgentClient, prepareFixture, star
 
 // The binary itself, not the package's Node launcher: killing the launcher would leave the
 // runtime running, and a "restart" would quietly keep talking to the old process.
-const workerd: string | undefined = await import("workerd").then((module) => module.default, () => undefined);
+const workerd: string | undefined = await import("workerd").then(
+  // Node's CommonJS interop wraps the export; Vite's unwraps it.
+  (module) => (typeof module.default === "string" ? module.default : (module.default as unknown as { default: string }).default),
+  () => undefined,
+);
 
 const TOKEN = "e2e-token";
 const files = (dir: string): string[] =>

@@ -24,7 +24,8 @@ if (AGENTS.length === 0) {
 }
 
 // The workerd binary itself (its package's default export), so killing it really stops the runtime.
-const workerd = (await import("workerd")).default;
+const workerdModule = await import("workerd");
+const workerd = typeof workerdModule.default === "string" ? workerdModule.default : workerdModule.default.default;
 const disk = mkdtempSync(join(tmpdir(), "agent-unit-do-"));
 const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
