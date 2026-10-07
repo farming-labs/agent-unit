@@ -114,7 +114,8 @@ Inside any run, `useRun()` (or the `run` argument of `defineAgent`) gives you:
 
 | Primitive | |
 | --- | --- |
-| `run.step(name, fn)` | Run `fn` once; replays return the journaled result |
+| `run.step(name, fn)` | Run `fn` once; replays return the journaled result. `fn` receives `{ idempotencyKey }` |
+| `run.idempotencyKey()` | The key of the step or tool call running now |
 | `run.interrupt(name, payload)` | Park until `POST /runs/:id/resume` answers, then return the answer |
 | `run.sleep("10m")` | Park until the time passes |
 | `run.state.get/set/delete(key, { scope })` | State scoped to the `thread` (default), the `agent` or the `app` |
@@ -126,8 +127,18 @@ The one rule: between steps, code must make the same decisions given the same jo
 Put anything with side effects or randomness in a step. Model and tool calls already are.
 
 A step is recorded when it finishes. If the process dies while a step is still running, that step
-runs again when the run recovers, so give side effects that must never repeat an idempotency key,
-such as `` `${run.id}:charge` ``.
+runs again when the run recovers. Every step gets an idempotency key that stays the same when it
+runs again and differs for every other step and run; hand it to the API the step calls, and the
+repeat has no second effect:
+
+```ts
+await run.step("charge", ({ idempotencyKey }) =>
+  stripe.refunds.create({ payment_intent: order.paymentId }, { idempotencyKey }),
+);
+```
+
+Inside a tool the framework calls (AI SDK, Mastra, OpenAI Agents), `useRun().idempotencyKey()`
+returns the tool call's key. In a LangGraph node, wrap the side effect in `useRun().step(…)`.
 
 ## Deploy anywhere
 

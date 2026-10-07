@@ -10,7 +10,7 @@ import {
   type RunInput,
   type RunRecord,
 } from "../types";
-import { RunHalted, runWithContext, type RunInternals, type RunState, type StepOptions } from "./context";
+import { currentFrame, idempotencyKey, RunHalted, runInFrame, runWithContext, type RunInternals, type RunState, type StepInfo, type StepOptions } from "./context";
 import { decode, encode, toJsonSafe } from "./serialize";
 import type { Journal, ListRunsFilter, RunStore, StateScope } from "./store";
 import { errorInfo, nowIso, parseDuration, randomId, settle } from "./util";
@@ -130,10 +130,21 @@ class RunExecution implements RunInternals {
   get input() { return this.run.input as RunInput; }
   get signal() { return this.controller.signal; }
 
+  private taskScope?: () => string | undefined;
+
+  scopeSteps(resolve: () => string | undefined) {
+    this.taskScope = resolve;
+  }
+
   allocate(name: string): string {
-    const n = this.counters.get(name) ?? 0;
-    this.counters.set(name, n + 1);
-    return `${name}#${n}`;
+    // Runs started before scoped keys keep numbering steps across the whole run, so their journals still match.
+    const frame = this.run.stepKeys === "scoped" ? currentFrame() : undefined;
+    const task = frame ? this.taskScope?.() : undefined;
+    const prefix = frame ? `${frame.scope}/${task ? `${task}/` : ""}` : "";
+    const counter = `${prefix}${name}`;
+    const n = this.counters.get(counter) ?? 0;
+    this.counters.set(counter, n + 1);
+    return `${counter}#${n}`;
   }
 
   isReplay(key: string): boolean {
@@ -179,16 +190,18 @@ class RunExecution implements RunInternals {
 
   async durableCall<T>(
     key: string | { name: string },
-    fn: () => T | Promise<T>,
-    options: { journalErrors?: boolean } = {},
+    fn: (step: StepInfo) => T | Promise<T>,
+    options: { journalErrors?: boolean; step?: boolean } = {},
   ): Promise<{ value: T; replayed: boolean }> {
     const stepKey = typeof key === "string" ? key : this.allocate(key.name);
     const replayed = this.readStep(stepKey);
     if (replayed) return { value: replayed.value as T, replayed: true };
     await this.assertLive();
+    const step = { idempotencyKey: await idempotencyKey(this.run.id, stepKey) };
     let value: T;
     try {
-      value = await fn();
+      // Only a single step or tool call exposes its key; a call spanning a whole turn does not.
+      value = await runInFrame({ scope: stepKey, step: options.step ? step : undefined }, () => fn(step));
     } catch (error) {
       if (error instanceof RunHalted || this.parked || this.cancelled) throw error;
       if (options.journalErrors !== false) {
@@ -201,13 +214,23 @@ class RunExecution implements RunInternals {
     return { value, replayed: false };
   }
 
-  async step<T>(name: string, fn: () => T | Promise<T>, options: StepOptions = {}): Promise<T> {
+  async step<T>(name: string, fn: (step: StepInfo) => T | Promise<T>, options: StepOptions = {}): Promise<T> {
     const key = this.allocate(name);
     const announce = options.announce !== false && !this.isReplay(key);
     if (announce) this.emitEvent({ type: "STEP_STARTED", stepName: name });
-    const { value } = await this.durableCall(key, fn);
+    const { value } = await this.durableCall(key, fn, { step: true });
     if (announce) this.emitEvent({ type: "STEP_FINISHED", stepName: name });
     return value;
+  }
+
+  idempotencyKey(): string {
+    const step = currentFrame()?.step;
+    if (!step) {
+      throw new Error(
+        "useRun().idempotencyKey() is only available inside run.step() or a tool call agent-unit journals. Wrap the side effect in run.step().",
+      );
+    }
+    return step.idempotencyKey;
   }
 
   async interrupt<T>(name: string, payload?: unknown): Promise<T> {
@@ -374,6 +397,7 @@ export class RunEngine {
       input: toJsonSafe(input),
       attempt: 0,
       eventCount: 1,
+      stepKeys: "scoped",
       createdAt,
       updatedAt: createdAt,
     };

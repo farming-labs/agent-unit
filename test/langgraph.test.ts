@@ -6,6 +6,7 @@ import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { functionAdapter } from "../src/agents";
+import { useRun } from "../src/runtime/context";
 import { langGraphAdapter } from "../src/adapters/langgraph";
 import { collect, createEngine, memoryStore, types } from "./helpers";
 
@@ -171,5 +172,50 @@ describe("LangGraph adapter", () => {
     expect(calls).toEqual({ plan: 1, act: 1 });
     const messages = (recovered?.output as { messages: { content: string }[] }).messages.map((message) => message.content);
     expect(messages).toEqual(["go", "planned", "done"]);
+  });
+});
+
+describe("LangGraph adapter: steps inside nodes", () => {
+  it("keeps each node's run.step separate when a crashed turn resumes from its checkpoint", async () => {
+    const charges: string[] = [];
+    const keys: Record<string, string> = {};
+    let crash = true;
+    const charge = (node: string) => async () => {
+      const result = await useRun().step("charge", ({ idempotencyKey }) => {
+        keys[node] ??= idempotencyKey;
+        charges.push(node);
+        return `charged by ${node}`;
+      });
+      return { messages: [new AIMessage(result)] };
+    };
+    const graph = new StateGraph(MessagesAnnotation)
+      .addNode("first", charge("first"))
+      .addNode("second", async () => {
+        if (crash) {
+          crash = false;
+          throw new Error("process died");
+        }
+        return charge("second")();
+      })
+      .addEdge(START, "first")
+      .addEdge("first", "second")
+      .addEdge("second", END)
+      .compile();
+    const store = memoryStore();
+    const engine = createEngine({ pay: graph }, { store }, adapters);
+    const { run, done } = await engine.start("pay", { prompt: "go" });
+    expect((await done)?.status).toBe("failed");
+    expect(() => useRun()).toThrow();
+
+    const record = (await store.getRun(run.id))!;
+    await store.putRun({ ...record, status: "running", error: undefined });
+    await store.deleteJournalEntry(run.id, "step:langgraph#0");
+    const recovered = await engine.continue(run.id);
+    expect(recovered?.status).toBe("completed");
+    const messages = (recovered?.output as { messages: { content: string }[] }).messages.map((message) => message.content);
+    // The second node's charge must run, not replay the first node's result.
+    expect(messages).toEqual(["go", "charged by first", "charged by second"]);
+    expect(charges).toEqual(["first", "second"]);
+    expect(keys.first).not.toBe(keys.second);
   });
 });

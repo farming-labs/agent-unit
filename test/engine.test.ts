@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { defineAgent } from "../src/agents";
+import { durableTool } from "../src/adapter/durable";
+import { useRun } from "../src/runtime/context";
 import { decode, encode } from "../src/runtime/serialize";
 import { RunStore } from "../src/runtime/store";
 import { collect, createEngine, memoryStore, types } from "./helpers";
@@ -747,5 +749,156 @@ describe("storage leases", () => {
     await store.releaseLease("run_a", "owner-1");
     expect(await store.renewLease("run_a", "owner-1", 60_000)).toBe(false);
     expect(await store.leaseExpired("run_a")).toBe(true);
+  });
+});
+
+describe("idempotency keys", () => {
+  /** A stand-in for a payment API that honours idempotency keys, like Stripe. */
+  function paymentProvider() {
+    const charges = new Map<string, number>();
+    return {
+      charges,
+      charge(amount: number, key: string) {
+        if (!charges.has(key)) charges.set(key, amount);
+        return { id: `ch_${key.slice(0, 6)}`, amount: charges.get(key)! };
+      },
+    };
+  }
+
+  it("gives a step the same key when it runs again after a crash, so the provider charges once", async () => {
+    const provider = paymentProvider();
+    const keys: string[] = [];
+    const store = memoryStore();
+    const engine = createEngine(
+      {
+        pay: defineAgent(async (_input, run) =>
+          run.step("charge", ({ idempotencyKey }) => {
+            keys.push(idempotencyKey);
+            return provider.charge(42, idempotencyKey);
+          }),
+        ),
+      },
+      { store },
+    );
+    const { run, done } = await engine.start("pay");
+    expect(await done).toMatchObject({ status: "completed" });
+
+    // The process died after the charge but before the step was journaled: the step runs again.
+    await store.deleteJournalEntry(run.id, "charge#0");
+    const record = (await store.getRun(run.id))!;
+    await store.putRun({ ...record, status: "running", output: undefined });
+    expect(await engine.continue(run.id)).toMatchObject({ status: "completed" });
+
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+    expect(keys[0]).toMatch(/^[A-Za-z0-9_-]{32}$/);
+    expect(provider.charges.size).toBe(1);
+  });
+
+  it("gives every step, repeat and run its own key", async () => {
+    const keys: string[] = [];
+    const engine = createEngine({
+      many: defineAgent(async (_input, run) => {
+        await run.step("a", ({ idempotencyKey }) => void keys.push(idempotencyKey));
+        await run.step("a", ({ idempotencyKey }) => void keys.push(idempotencyKey));
+        await run.step("b", ({ idempotencyKey }) => void keys.push(idempotencyKey));
+        // Inside a step, useRun() reports the same key the step received.
+        await run.step("c", ({ idempotencyKey }) => void keys.push(idempotencyKey === useRun().idempotencyKey() ? idempotencyKey : "mismatch"));
+      }),
+    });
+    await (await engine.start("many")).done;
+    await (await engine.start("many")).done;
+    expect(keys).toHaveLength(8);
+    expect(keys).not.toContain("mismatch");
+    expect(new Set(keys).size).toBe(8);
+  });
+
+  it("exposes the key inside journaled tool calls, and refuses outside a step", async () => {
+    const provider = paymentProvider();
+    const keys: string[] = [];
+    const store = memoryStore();
+    // A tool the framework calls with its own tool call id, as AI SDK, Mastra and OpenAI Agents do.
+    const refund = durableTool("refund", async (amount: number, _options: { toolCallId: string }) => {
+      keys.push(useRun().idempotencyKey());
+      return provider.charge(-amount, useRun().idempotencyKey());
+    }, { toolCallId: (_amount, options) => options.toolCallId });
+    let outside: unknown;
+    const engine = createEngine(
+      {
+        support: defineAgent(async () => {
+          try {
+            useRun().idempotencyKey();
+          } catch (error) {
+            outside = error;
+          }
+          return refund(42, { toolCallId: "call_1" });
+        }),
+      },
+      { store },
+    );
+    const { run, done } = await engine.start("support");
+    expect(await done).toMatchObject({ status: "completed" });
+    expect(String(outside)).toMatch(/only available inside run\.step\(\) or a tool call/);
+
+    await store.deleteJournalEntry(run.id, "tool:refund:call_1");
+    const record = (await store.getRun(run.id))!;
+    await store.putRun({ ...record, status: "running", output: undefined });
+    expect(await engine.continue(run.id)).toMatchObject({ status: "completed" });
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).toBe(keys[1]);
+    expect(provider.charges.size).toBe(1);
+  });
+});
+
+describe("steps inside tool calls", () => {
+  const refundTool = (charges: string[]) =>
+    durableTool("refund", async (order: string, _options: { toolCallId: string }) =>
+      useRun().step("charge", () => {
+        charges.push(order);
+        return `refunded ${order}`;
+      }),
+    { toolCallId: (_order, options) => options.toolCallId });
+
+  it("numbers steps within their tool call, so a replayed tool cannot hand its step to the next one", async () => {
+    const charges: string[] = [];
+    const refund = refundTool(charges);
+    const store = memoryStore();
+    const engine = createEngine(
+      {
+        support: defineAgent(async () => [await refund("o_1", { toolCallId: "call_1" }), await refund("o_2", { toolCallId: "call_2" })]),
+      },
+      { store },
+    );
+    const { run, done } = await engine.start("support");
+    expect(await done).toMatchObject({ status: "completed" });
+
+    // The process died during the second tool call: its outcome was never journaled.
+    const journal = await store.getJournal(run.id);
+    for (const key of Object.keys(journal).filter((key) => key.startsWith("tool:refund:call_2"))) await store.deleteJournalEntry(run.id, key);
+    const record = (await store.getRun(run.id))!;
+    await store.putRun({ ...record, status: "running", output: undefined });
+    // On recovery the first tool replays without running its body; the second one must still charge o_2.
+    expect(await engine.continue(run.id)).toMatchObject({ status: "completed", output: ["refunded o_1", "refunded o_2"] });
+    expect(charges).toEqual(["o_1", "o_2", "o_2"]);
+  });
+
+  it("keeps run-wide numbering for runs started before scoped keys, so their journals still match", async () => {
+    const support = defineAgent(async () => {
+      const ask = durableTool("ask", async (_options: { toolCallId: string }) => useRun().interrupt<string>("approve"), {
+        toolCallId: (options) => options.toolCallId,
+      });
+      return ask({ toolCallId: "call_1" });
+    });
+    const engine = createEngine({ support });
+    const { done } = await engine.start("support");
+    expect(await done).toMatchObject({ status: "interrupted", interrupt: { key: "tool:ask:call_1/interrupt:approve#0" } });
+
+    // A run paused by 0.1.6: no stepKeys on the record, and the interrupt under its run-wide key.
+    const store = memoryStore();
+    const now = new Date().toISOString();
+    const id = "run_legacy00000000000";
+    await store.putRun({ id, agent: "support", threadId: id, status: "interrupted", input: {}, attempt: 1, eventCount: 2, createdAt: now, updatedAt: now, interrupt: { key: "interrupt:approve#0", name: "approve" } });
+    const resumed = await createEngine({ support }, { store }).resume(id, "yes");
+    expect(await resumed.done).toMatchObject({ status: "completed", output: "yes" });
   });
 });

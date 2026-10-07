@@ -22,6 +22,17 @@ export class RunHalted extends Error {
   }
 }
 
+/** What a step's function receives. */
+export interface StepInfo {
+  /**
+   * A key that is the same every time this step runs, including when it runs again after a crash,
+   * and different for every other step and run. Pass it to the API the step calls (Stripe's
+   * `idempotencyKey`, an `Idempotency-Key` header, a unique column) so a repeated call has no
+   * second effect. 32 characters from `A-Z a-z 0-9 - _`.
+   */
+  idempotencyKey: string;
+}
+
 export interface StepOptions {
   /** Emit STEP_STARTED / STEP_FINISHED for this step. Default: true for `run.step`. */
   announce?: boolean;
@@ -42,7 +53,12 @@ export interface RunContext {
   readonly input: RunInput;
   readonly signal: AbortSignal;
   /** Runs `fn` once; on replay returns its journaled result. */
-  step<T>(name: string, fn: () => T | Promise<T>, options?: StepOptions): Promise<T>;
+  step<T>(name: string, fn: (step: StepInfo) => T | Promise<T>, options?: StepOptions): Promise<T>;
+  /**
+   * The idempotency key of the step or tool call running now (see `StepInfo`). Use it inside a tool
+   * the framework calls for you. Throws outside a step or tool call, where no stable key exists.
+   */
+  idempotencyKey(): string;
   /** Parks the run until `POST /runs/:id/resume` answers; returns the answer. */
   interrupt<T = unknown>(name: string, payload?: unknown): Promise<T>;
   /** Parks the run until the duration passes. */
@@ -55,8 +71,17 @@ export interface RunContext {
 
 /** Internal surface the durable wrappers use. */
 export interface RunInternals extends RunContext {
-  durableCall<T>(key: string | { name: string }, fn: () => T | Promise<T>, options?: { journalErrors?: boolean }): Promise<{ value: T; replayed: boolean }>;
+  durableCall<T>(
+    key: string | { name: string },
+    fn: (step: StepInfo) => T | Promise<T>,
+    options?: { journalErrors?: boolean; step?: boolean },
+  ): Promise<{ value: T; replayed: boolean }>;
   allocate(name: string): string;
+  /**
+   * For adapters whose framework resumes mid-turn from its own checkpoint (LangGraph): names the
+   * framework task running now, so steps inside it are numbered per task, not per turn.
+   */
+  scopeSteps(resolve: () => string | undefined): void;
   isReplay(key: string): boolean;
   readStep(key: string): { value: unknown; replayed: true } | undefined;
   record(key: string, value: unknown): Promise<void>;
@@ -71,7 +96,41 @@ const storage: AsyncLocalStorage<RunInternals> = ((globalThis as Record<symbol, 
   new AsyncLocalStorage<RunInternals>()) as AsyncLocalStorage<RunInternals>;
 
 export function runWithContext<T>(context: RunInternals, fn: () => T): T {
-  return storage.run(context, fn);
+  return storage.run(context, () => frames.run(undefined, fn));
+}
+
+/**
+ * The journaled call running now. `scope` is its journal key: steps started inside it are numbered
+ * within it, so they keep their keys whatever else replays. `step` is set only for a single step or
+ * tool call, for useRun().idempotencyKey(); calls that span many side effects (a framework turn)
+ * leave it unset, so those never share one key.
+ */
+export interface Frame {
+  scope: string;
+  step?: StepInfo;
+}
+
+const FRAME = Symbol.for("agent-unit.frame");
+const frames: AsyncLocalStorage<Frame | undefined> = ((globalThis as Record<symbol, unknown>)[FRAME] ??=
+  new AsyncLocalStorage<Frame | undefined>()) as AsyncLocalStorage<Frame | undefined>;
+
+/** @internal */
+export function runInFrame<T>(frame: Frame | undefined, fn: () => T): T {
+  return frames.run(frame, fn);
+}
+
+/** @internal */
+export function currentFrame(): Frame | undefined {
+  return frames.getStore();
+}
+
+/** An idempotency key for one step of one run: SHA-256, base64url, 32 characters. */
+export async function idempotencyKey(runId: string, stepKey: string): Promise<string> {
+  const bytes = new TextEncoder().encode(`agent-unit\0${runId}\0${stepKey}`);
+  const digest = new Uint8Array(await crypto.subtle.digest("SHA-256", bytes));
+  let binary = "";
+  for (const byte of digest.subarray(0, 24)) binary += String.fromCharCode(byte);
+  return btoa(binary).replace(/\+/g, "-").replace(/\//g, "_");
 }
 
 /** The current run. Throws outside a run. */

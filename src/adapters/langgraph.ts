@@ -1,6 +1,7 @@
-import { BaseCheckpointSaver, Command, type Checkpoint, type CheckpointMetadata, type CheckpointTuple } from "@langchain/langgraph";
+import { BaseCheckpointSaver, Command, getConfig, type Checkpoint, type CheckpointMetadata, type CheckpointTuple } from "@langchain/langgraph";
 import type { RunnableConfig } from "@langchain/core/runnables";
 import { defineAdapter, type AdapterContext } from "../adapter/types";
+import type { RunInternals } from "../runtime/context";
 import type { KeyValueStore } from "../runtime/store";
 import type { AgentEventBody } from "../types";
 
@@ -302,6 +303,15 @@ export const langGraphAdapter = defineAdapter<CompiledGraph>({
   async run(source, ctx: AdapterContext) {
     const graph = withCheckpointer(source, ctx.kv);
     const config = { configurable: { thread_id: ctx.run.threadId } };
+    // A crashed turn resumes from the graph's last checkpoint, skipping finished nodes, so steps in a
+    // node are numbered per task. Task ids are derived from the checkpoint and stay the same on retry.
+    (ctx.run as RunInternals).scopeSteps(() => {
+      try {
+        return (getConfig()?.configurable as { checkpoint_ns?: string } | undefined)?.checkpoint_ns || undefined;
+      } catch {
+        return undefined;
+      }
+    });
     let resume: { answer: unknown } | undefined;
 
     for (let turn = 0; ; turn++) {

@@ -1,4 +1,4 @@
-import { currentInternals, RunHalted, type RunInternals } from "../runtime/context";
+import { currentInternals, RunHalted, type RunInternals, type StepInfo } from "../runtime/context";
 import type { Durable } from "./types";
 
 // Wrappers are created once per agent and find the current run through async context when they
@@ -152,7 +152,7 @@ export function durableTool<A extends unknown[], R>(
         }
         const result: Awaited<R> = await execute(...args);
         return result;
-      });
+      }, { step: true });
       if (!replayed) run.emitEvent({ type: "TOOL_CALL_RESULT", toolCallId, content: stringify(value) });
       return value;
     } catch (error) {
@@ -187,9 +187,13 @@ export function durableTools<T extends Record<string, unknown>>(tools: T): T {
   return out as T;
 }
 
-export function durableStep<T>(name: string, fn: () => T | Promise<T>): Promise<T> {
+export function durableStep<T>(name: string, fn: (step: StepInfo) => T | Promise<T>): Promise<T> {
   const run = currentInternals();
-  if (!run) return Promise.resolve(fn());
+  // Outside a run nothing is journaled or retried: a fresh key per call.
+  if (!run) return Promise.resolve(fn({ idempotencyKey: crypto.randomUUID() }));
+  // Adapters journal a whole framework turn this way, so useRun().idempotencyKey() stays unavailable
+  // inside (one key for many side effects would make a provider drop all but the first); the
+  // function still receives the key for a step that is one side effect.
   return run.durableCall({ name: `step:${name}` }, fn).then((result) => result.value);
 }
 

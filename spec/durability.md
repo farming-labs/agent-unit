@@ -27,8 +27,22 @@ repeat.
 
 ## Step identity
 
-A step is identified by its name and how many times that name has run before in this run:
-`charge#0`, `charge#1`, … The same code path produces the same identities on replay.
+A step is identified by its name and how many times that name has run before in its scope:
+`charge#0`, `charge#1`, … At the top level of the agent the scope is the run. Inside a journaled
+call (a tool call, a framework turn) the scope is that call, and inside a LangGraph turn it is also
+the graph task, so a step's identity does not depend on whether earlier calls replayed or ran:
+`tool:refund:call_1/charge#0`. The same code path produces the same identities on replay. Runs
+started before 0.1.7 keep run-wide numbering, so their journals still match.
+
+## Idempotency keys
+
+A step is journaled when it finishes, so a step that was running when its process died runs again
+on recovery. Every step and tool call has an idempotency key: the first 24 bytes of
+SHA-256(`agent-unit`, run id, step identity), base64url, 32 characters. It is the same on every
+attempt of that step and different for every other step and run. A step's function receives it
+(`run.step(name, ({ idempotencyKey }) => …)`); `useRun().idempotencyKey()` returns it inside a step
+or a journaled tool call. A framework turn spans many side effects and has no key of its own:
+`useRun().idempotencyKey()` throws there.
 
 ## The determinism rule
 

@@ -1,10 +1,10 @@
-import type { RunContext } from "../runtime/context";
+import type { RunContext, StepInfo } from "../runtime/context";
 import type { KeyValueStore } from "../runtime/store";
 import type { AgentCard, AgentEventBody, RunInput } from "../types";
 
 export interface Durable {
   /** Journals any call: runs once, replays from the journal afterwards. */
-  step<T>(name: string, fn: () => T | Promise<T>): Promise<T>;
+  step<T>(name: string, fn: (step: StepInfo) => T | Promise<T>): Promise<T>;
   /** Wraps an AI SDK provider model (`doGenerate` / `doStream`): every call is a step that streams text events. */
   model<M>(model: M): M;
   /** Wraps a record of tools with `execute`: every call is a step that emits tool events. */
