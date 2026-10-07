@@ -42,6 +42,26 @@ const build = defineCommand({
   },
 });
 
+const add = defineCommand({
+  meta: { name: "add", description: "Install an adapter package and add it to agent-unit.config.ts" },
+  args: {
+    packages: { type: "positional", description: "Adapter packages, e.g. agent-unit-adapter-tiny", required: true },
+    root,
+    yes: { type: "boolean", description: "Do not ask for confirmation", default: false },
+  },
+  async run({ args }) {
+    const { addAdapters } = await import("./build/add");
+    const packages = [args.packages, ...((args._ as string[] | undefined) ?? [])].filter((name, index, all) => name && all.indexOf(name) === index);
+    try {
+      await addAdapters({ root: args.root, packages, yes: args.yes });
+    } catch (error) {
+      // Problems here are the user's to fix (a typo, not an adapter, no --yes): say what, without a stack.
+      console.error(`agent-unit add: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+  },
+});
+
 const manifest = defineCommand({
   meta: { name: "manifest", description: "Print the agents, frameworks and tools agent-unit finds" },
   args: { root },
@@ -56,6 +76,6 @@ const manifest = defineCommand({
 void runMain(
   defineCommand({
     meta: { name: "agent-unit", version, description: "Durable runs for any agent framework, on any host" },
-    subCommands: { dev, build, manifest },
+    subCommands: { dev, build, add, manifest },
   }),
 );
