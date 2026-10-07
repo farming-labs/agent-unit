@@ -26,7 +26,8 @@ refund_order: tool({
 ## Deploy
 
 ```sh
-npm install
+npm install                                   # agent-unit, the AI SDK, wrangler
+npx wrangler login
 npx wrangler secret put OPENAI_API_KEY       # and/or ANTHROPIC_API_KEY
 npm run deploy                                # agent-unit build && wrangler deploy
 ```

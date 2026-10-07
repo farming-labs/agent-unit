@@ -67,6 +67,13 @@ jobs:
       - name: Universal build on every host
         working-directory: examples/universal
         run: npm ci && npm run try
+      - name: AI SDK on Cloudflare, Durable Objects build
+        working-directory: examples/cloudflare-ai-sdk
+        run: |
+          rm -rf .output
+          npm ci && npm run build
+          node -e 'const w=require("./.output/server/wrangler.json"); if (w.durable_objects.bindings.length !== 2 || w.compatibility_date < "2025-09-01") process.exit(1)'
+          npx wrangler deploy --dry-run --outdir "$RUNNER_TEMP/wrangler-dry-run"
       - name: Farm app, production build and restart
         working-directory: examples/farm-app
         run: npm ci && npm run smoke

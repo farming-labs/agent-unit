@@ -11,8 +11,12 @@
   "dependencies": {
     "@ai-sdk/anthropic": "4.0.74",
     "@ai-sdk/openai": "4.0.86",
-    "agent-unit": "file:../..",
+    "agent-unit": "0.1.2",
     "ai": "7.0.30",
     "zod": "4.3.6"
+  },
+  "devDependencies": {
+    "workerd": "1.20261006.1",
+    "wrangler": "4.148.0"
   }
 }
