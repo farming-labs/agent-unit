@@ -208,6 +208,35 @@ export const config = { schedule: ${JSON.stringify(schedule)} };
   );
 }
 
+interface CloudflareOptions {
+  exports?: string;
+  wrangler?: Record<string, unknown>;
+  [key: string]: unknown;
+}
+
+/**
+ * Workers settings: a compatibility date recent enough for the Node APIs agent SDKs reach for
+ * (the AI SDK's gateway reads files through `node:fs`), and in the Durable Objects runtime the
+ * exported classes, their bindings and their migration. The app's own `nitro.cloudflare` is merged over.
+ */
+function cloudflareConfig(genDir: string, durable: boolean, user: CloudflareOptions = {}): CloudflareOptions {
+  const wrangler: Record<string, unknown> = { compatibility_date: "2025-09-15" };
+  if (durable) {
+    wrangler.durable_objects = {
+      bindings: [
+        { name: "AGENT_UNIT_RUNS", class_name: "AgentUnitRun" },
+        { name: "AGENT_UNIT_INDEX", class_name: "AgentUnitIndex" },
+      ],
+    };
+    wrangler.migrations = [{ tag: "agent-unit-v1", new_sqlite_classes: ["AgentUnitRun", "AgentUnitIndex"] }];
+  }
+  return {
+    ...(durable ? { exports: join(genDir, "durable.mjs") } : {}),
+    ...user,
+    wrangler: { ...wrangler, ...user.wrangler },
+  };
+}
+
 export interface BuildOptions {
   root?: string;
   preset?: string;
@@ -252,7 +281,8 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
   }
 
   const { createNitro, prepare, copyPublicAssets, build: buildNitro } = await import("nitro/builder");
-  const userNitro = project.config.nitro ?? {};
+  const { cloudflare: userCloudflare, ...userNitro } = project.config.nitro ?? {};
+  const cloudflare = /^cloudflare/.test(preset);
   const nitro = await createNitro({
     rootDir: project.root,
     dev: false,
@@ -263,22 +293,8 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     buildDir: join(genDir, "nitro"),
     ...(options.outDir ? { output: { dir: resolve(project.root, options.outDir) } } : {}),
     serverEntry: { handler: join(genDir, "entry.mjs"), format: "web" },
-    ...(durable
-      ? {
-          cloudflare: {
-            exports: join(genDir, "durable.mjs"),
-            wrangler: {
-              durable_objects: {
-                bindings: [
-                  { name: "AGENT_UNIT_RUNS", class_name: "AgentUnitRun" },
-                  { name: "AGENT_UNIT_INDEX", class_name: "AgentUnitIndex" },
-                ],
-              },
-              migrations: [{ tag: "agent-unit-v1", new_sqlite_classes: ["AgentUnitRun", "AgentUnitIndex"] }],
-            },
-          },
-        }
-      : { storage: { "agent-unit": storage } }),
+    ...(durable ? {} : { storage: { "agent-unit": storage } }),
+    ...(cloudflare ? { cloudflare: cloudflareConfig(genDir, durable, userCloudflare as CloudflareOptions | undefined) } : {}),
     experimental: { tasks: Object.keys(tasks).length > 0 },
     tasks,
     scheduledTasks,
