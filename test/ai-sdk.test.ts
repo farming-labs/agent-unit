@@ -199,3 +199,16 @@ describe("AI SDK adapter", () => {
     expect(providerCalls).toBe(1);
   });
 });
+
+describe("AI SDK adapter errors", () => {
+  it("fails the run with the provider's error, not a generic 'no output'", async () => {
+    const model = new MockLanguageModelV4({
+      doStream: async () => {
+        throw Object.assign(new Error("Incorrect API key provided: sk-fake"), { name: "AI_APICallError", statusCode: 401 });
+      },
+    }) as any;
+    const engine = createEngine({ support: new ToolLoopAgent({ model }) });
+    const { done } = await engine.start("support", { prompt: "hi" });
+    expect(await done).toMatchObject({ status: "failed", error: { message: "Incorrect API key provided: sk-fake" } });
+  });
+});

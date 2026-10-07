@@ -1,10 +1,32 @@
 import { defineAdapter, type Durable } from "../adapter/types";
 import type { RunInput } from "../types";
 
+interface StreamResult {
+  text: PromiseLike<string>;
+  fullStream?: AsyncIterable<{ type: string; error?: unknown }>;
+}
+
+/**
+ * Drains a stream result and returns its text. When the stream fails, the AI SDK reports only "No
+ * output generated"; the cause (a 401 from the provider, a rate limit…) is in the stream's error
+ * part, so that is what the run fails with.
+ */
+async function finish(result: StreamResult): Promise<string> {
+  let cause: unknown;
+  if (result.fullStream) {
+    for await (const part of result.fullStream) if (part.type === "error" && cause === undefined) cause = part.error;
+  }
+  try {
+    return await result.text;
+  } catch (error) {
+    throw cause ?? error;
+  }
+}
+
 /** A ToolLoopAgent (`Agent` / `Experimental_Agent`) from the AI SDK. */
 interface ToolLoopAgentLike {
   version: string;
-  stream(options: Record<string, unknown>): Promise<{ text: PromiseLike<string> }>;
+  stream(options: Record<string, unknown>): Promise<StreamResult>;
   settings?: Record<string, unknown>;
   tools?: Record<string, unknown>;
   id?: string;
@@ -84,7 +106,7 @@ export const aiSdkAdapter = defineAdapter<AiSdkAgent>({
   async run(agent, { input, signal, durable }) {
     if (isToolLoopAgent(agent)) {
       const result = await durableToolLoopAgent(agent, durable).stream({ ...callInput(input), abortSignal: signal });
-      return await result.text;
+      return finish(result);
     }
     const { streamText } = await import("ai");
     const { description: _description, ...settings } = agent;
@@ -95,7 +117,7 @@ export const aiSdkAdapter = defineAdapter<AiSdkAgent>({
       ...callInput(input),
       abortSignal: signal,
     } as Parameters<typeof streamText>[0]);
-    return await result.text;
+    return finish(result);
   },
 });
 
