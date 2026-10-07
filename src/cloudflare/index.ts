@@ -31,6 +31,8 @@ export interface DurableAgentUnitOptions
    * an alarm invocation. `false` never yields.
    */
   budget?: string | number | false;
+  /** Delete finished runs, with their journal and events, this long after they finish (`"30d"`). Each run's alarm does it. */
+  retention?: string | number;
   /** Binding names in wrangler.json. Default `AGENT_UNIT_RUNS` and `AGENT_UNIT_INDEX`. */
   bindings?: { runs?: string; index?: string };
 }
@@ -92,6 +94,7 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
   let loaded: LoadedAgent[] | undefined;
   const agents = () => (loaded ??= Object.entries(options.agents).map(([name, agent]) => resolveAgent(name, agent, adapters)));
   const budget = options.budget === false ? undefined : parseDuration(options.budget ?? "10m");
+  const retention = options.retention === undefined ? undefined : parseDuration(options.retention);
 
   const namespace = <Stub>(env: Bindings, binding: string) => {
     const value = env[binding] as DurableObjectNamespaceLike<Stub> | undefined;
@@ -164,6 +167,7 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
         agents: agents(),
         name: options.name,
         budgetMs: budget,
+        retentionMs: retention,
         env: this.env as Record<string, string | undefined>,
         waitUntil: (promise) => this.ctx.waitUntil(promise),
         scheduleWake: (_id, at) => this.ctx.storage.setAlarm(at),
@@ -245,6 +249,8 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
       if (!id) return;
       const next = await this.engine.handleWake(id);
       if (next !== undefined) await this.ctx.storage.setAlarm(next);
+      // Deleted by retention: drop the last key too, so the object holds nothing at all.
+      else if (!(await this.engine.store.getRun(id))) await this.ctx.storage.delete(SELF_KEY);
     }
   }
 

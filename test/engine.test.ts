@@ -996,3 +996,31 @@ describe("streamed deltas", () => {
     expect((await store.readEvents(run.id, 0, final.eventCount)).filter((event) => event.type === "TEXT_MESSAGE_CONTENT")).toHaveLength(200);
   });
 });
+
+describe("retention with a host scheduler", () => {
+  it("schedules a finished run's deletion and deletes it when the wake comes due", async () => {
+    const wakes: { id: string; at: number }[] = [];
+    const engine = createEngine(
+      {
+        hi: defineAgent(() => "hi"),
+        ask: defineAgent(async (_input, run) => run.interrupt("approve")),
+      },
+      { retentionMs: 40, scheduleWake: (id, at) => void wakes.push({ id, at }) },
+    );
+    const { run, done } = await engine.start("hi");
+    const finished = (await done)!;
+    expect(wakes.at(-1)).toEqual({ id: run.id, at: Date.parse(finished.updatedAt) + 40 });
+
+    // Early: it only asks to be woken again at the due time.
+    expect(await engine.handleWake(run.id)).toBe(Date.parse(finished.updatedAt) + 40);
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    expect(await engine.handleWake(run.id)).toBeUndefined();
+    await expect(engine.getRun(run.id)).rejects.toMatchObject({ status: 404 });
+
+    // A parked run cancelled by hand finishes too, and is scheduled the same way.
+    const asked = await engine.start("ask");
+    await asked.done;
+    const cancelled = await engine.cancel(asked.run.id);
+    expect(wakes.at(-1)).toEqual({ id: asked.run.id, at: Date.parse(cancelled.updatedAt) + 40 });
+  });
+});

@@ -514,6 +514,7 @@ export class RunEngine {
     await this.store.appendEvents(id, [event]);
     this.publish(event);
     this.clearTimer(id);
+    await this.scheduleExpiry(run);
     return run;
   }
 
@@ -587,6 +588,10 @@ export class RunEngine {
       // Still executing here or held by a live lease elsewhere: look again once that lease could lapse.
       if (this.busy(id) || !(await this.store.leaseExpired(id))) return Date.now() + this.leaseMs;
       await this.continue(id);
+    } else if (TERMINAL.has(run.status) && this.options.retentionMs !== undefined) {
+      const due = Date.parse(run.updatedAt) + this.options.retentionMs;
+      if (due > Date.now()) return due;
+      await this.deleteRun(id);
     }
     return undefined;
   }
@@ -763,6 +768,7 @@ export class RunEngine {
         this.publish(event);
       }
       await this.store.releaseLease(id, leaseOwner);
+      await this.scheduleExpiry(run);
       return { record: await this.store.getRun(id) };
     }
     run.executing = true;
@@ -874,7 +880,21 @@ export class RunEngine {
       else if (this.options.scheduleWake) await this.options.scheduleWake(id, Date.now());
       else return this.schedule(id);
     }
+    await this.scheduleExpiry(run);
     return run;
+  }
+
+  /**
+   * With `retentionMs` and a host scheduler (a Durable Object alarm), a finished run asks to be woken
+   * when it is due for deletion; `handleWake` deletes it then. Elsewhere the sweep deletes it.
+   */
+  private async scheduleExpiry(run: RunRecord) {
+    if (!TERMINAL.has(run.status) || this.options.retentionMs === undefined || !this.options.scheduleWake) return;
+    try {
+      await this.options.scheduleWake(run.id, Date.parse(run.updatedAt) + this.options.retentionMs);
+    } catch (error) {
+      console.error(`[agent-unit] run ${run.id}: could not schedule its deletion:`, error);
+    }
   }
 
   private async armTimer(id: string, wakeAt: number) {

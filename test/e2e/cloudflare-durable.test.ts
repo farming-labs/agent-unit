@@ -88,3 +88,40 @@ describe.skipIf(!workerd)("Durable Objects runtime in workerd", () => {
     expect(call.result.content).toEqual([{ type: "text", text: "hey mcp" }]);
   });
 });
+
+describe.skipIf(!workerd)("Durable Objects runtime in workerd: retention", () => {
+  let out: string;
+  let disk: string;
+  let server: RunningServer;
+
+  beforeAll(async () => {
+    const root = prepareFixture("basic");
+    out = tempDir("cf-retention-out");
+    disk = tempDir("cf-retention-disk");
+    await buildFixture(root, "cloudflare-module", out, { AGENT_UNIT_RUNTIME: "durable-objects", AGENT_UNIT_RETENTION: "1s" });
+    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const { config } = writeDurableConfig(out, disk, port, { API_TOKEN: TOKEN, GREETING: "hey", AGENT_UNIT_RETENTION: "1s" });
+    server = await startServer(workerd!, ["serve", config], { cwd: out, port, readyPath: "/.well-known/agent.json" });
+  });
+
+  afterAll(async () => {
+    await server?.stop();
+    cleanup(out, disk);
+  });
+
+  it("deletes a finished run from its alarm once retention passes", async () => {
+    const client = createAgentClient({ baseUrl: server.url, headers: { authorization: `Bearer ${TOKEN}` } });
+    const finished = await collect(client.run("greeter", { name: "retention" }));
+    const runId = finished[0]!.runId;
+    expect(await client.get(runId)).toMatchObject({ status: "completed" });
+    // Its own alarm deletes it; nothing else touches the run.
+    const deadline = Date.now() + 15_000;
+    let status = 200;
+    while (status !== 404 && Date.now() < deadline) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      status = (await fetch(`${server.url}/runs/${runId}`, { headers: { authorization: `Bearer ${TOKEN}` } })).status;
+    }
+    expect(status).toBe(404);
+    expect((await client.list()).map((run) => run.id)).not.toContain(runId);
+  });
+});

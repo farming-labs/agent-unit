@@ -101,6 +101,7 @@ export const unit = createDurableAgentUnit({
   budget: ${options.budgetMs ?? "false"},
   basePath: ${basePath},
   authorize: config.authorize,
+  retention: config.retention,
   maxBodyBytes: config.maxBodyBytes,
 });
 `,

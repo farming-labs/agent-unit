@@ -216,3 +216,25 @@ describe("Durable Objects runtime: versioned writes", () => {
     expect(await kv.kvCompareAndSet("runs:run_new000000000000", 1, JSON.stringify({ version: 2 }))).toBe(true);
   });
 });
+
+describe("Durable Objects runtime: retention", () => {
+  it("deletes a finished run from its own alarm once retention passes", async () => {
+    const unit = createDurableAgentUnit({ agents: { hi: defineAgent(() => "hi") }, retention: 30 });
+    const runs = new FakeNamespace(unit.AgentUnitRun as never);
+    const index = new FakeNamespace(unit.AgentUnitIndex as never);
+    const env = { AGENT_UNIT_RUNS: runs, AGENT_UNIT_INDEX: index };
+    runs.env = env;
+    index.env = env;
+    const call = (path: string, init?: RequestInit) => unit.fetch(new Request(`${ORIGIN}${path}`, init), env);
+    const run = await (await call("/agents/hi/runs", post({}))).json();
+    expect(run.status).toBe("completed");
+    const alarm = runs.storages.get(run.id)!.alarm!;
+    expect(alarm).toBe(Date.parse(run.updatedAt) + 30);
+
+    await new Promise((resolve) => setTimeout(resolve, Math.max(0, alarm - Date.now() + 5)));
+    await runs.fireAlarm(run.id);
+    expect((await call(`/runs/${run.id}`)).status).toBe(404);
+    expect([...runs.storages.get(run.id)!.data.keys()]).toEqual([]);
+    expect((await (await call("/runs")).json()).runs).toEqual([]);
+  });
+});
