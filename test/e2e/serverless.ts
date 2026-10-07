@@ -3,19 +3,13 @@ import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
 import { buildFixture, cleanup, prepareFixture, tempDir } from "./helpers";
+import type { FunctionHost } from "./hosts";
 
 const SECRET = "e2e-secret";
 const TOKEN = "e2e-token";
 const ORIGIN = "https://agents.example.com";
 
-export interface ServerlessHost {
-  preset: string;
-  /** Path of the function module inside the output directory. */
-  entry: string;
-  /** Whether the platform keeps work alive after the response (waitUntil). */
-  waitUntil: boolean;
-  /** Calls the built function with a Web request, the way the platform would. */
-  invoke(module: Record<string, any>, request: Request, waitUntil: (promise: Promise<unknown>) => void): Promise<Response>;
+export interface ServerlessHost extends FunctionHost {
   /** Fires the platform's scheduled trigger, when the preset wires one up. */
   cron?(module: Record<string, any>, out: string, call: (request: Request) => Promise<Response>): Promise<void>;
 }

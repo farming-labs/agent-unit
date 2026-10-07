@@ -1,61 +1,12 @@
-import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { join, relative } from "node:path";
+import { mkdirSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildFixture, cleanup, collect, createAgentClient, prepareFixture, startServer, tempDir, waitForStatus, type RunningServer } from "./helpers";
+import { workerd, writeDurableConfig } from "./hosts";
 
 // The cloudflare-module build with runtime "durable-objects", in workerd with Durable Objects kept on
 // disk, so the runtime can be killed mid-run and started again from the same storage.
 
-// The binary itself, not the package's Node launcher: killing the launcher would leave the
-// runtime running, and a "restart" would quietly keep talking to the old process.
-const workerd: string | undefined = await import("workerd").then(
-  // Node's CommonJS interop wraps the export; Vite's unwraps it.
-  (module) => (typeof module.default === "string" ? module.default : (module.default as unknown as { default: string }).default),
-  () => undefined,
-);
-
 const TOKEN = "e2e-token";
-const files = (dir: string): string[] =>
-  readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? files(join(dir, entry.name)) : [join(dir, entry.name)]));
-
-/** A workerd config from the generated wrangler.json: its Durable Object bindings, kept on local disk. */
-function writeConfig(out: string, disk: string, port: number) {
-  const serverDir = join(out, "server");
-  const wrangler = JSON.parse(readFileSync(join(serverDir, "wrangler.json"), "utf8"));
-  const modules = files(serverDir)
-    .filter((file) => /\.m?js$/.test(file))
-    .map((file) => relative(serverDir, file).replaceAll("\\", "/"))
-    .sort((a, b) => (a === wrangler.main ? -1 : b === wrangler.main ? 1 : a.localeCompare(b)))
-    .map((name) => `(name = ${JSON.stringify(name)}, esModule = embed ${JSON.stringify(`server/${name}`)})`);
-  const objects: { name: string; class_name: string }[] = wrangler.durable_objects.bindings;
-  const sqlite = new Set<string>(wrangler.migrations.flatMap((migration: { new_sqlite_classes?: string[] }) => migration.new_sqlite_classes ?? []));
-  const bindings = [
-    ...objects.map((object) => `(name = ${JSON.stringify(object.name)}, durableObjectNamespace = ${JSON.stringify(object.class_name)})`),
-    ...Object.entries({ API_TOKEN: TOKEN, GREETING: "hey" }).map(([name, value]) => `(name = ${JSON.stringify(name)}, text = ${JSON.stringify(value)})`),
-  ];
-  const namespaces = objects.map(
-    (object) => `(className = ${JSON.stringify(object.class_name)}, uniqueKey = ${JSON.stringify(`e2e-${object.class_name}`)}, enableSql = ${sqlite.has(object.class_name)})`,
-  );
-  const config = join(out, "workerd.capnp");
-  writeFileSync(
-    config,
-    `using Workerd = import "/workerd/workerd.capnp";
-const config :Workerd.Config = (
-  services = [(name = "main", worker = .worker), (name = "do-disk", disk = (path = ${JSON.stringify(disk)}, writable = true))],
-  sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")],
-);
-const worker :Workerd.Worker = (
-  modules = [${modules.join(",\n    ")}],
-  compatibilityDate = ${JSON.stringify(wrangler.compatibility_date)},
-  compatibilityFlags = ${JSON.stringify(wrangler.compatibility_flags)},
-  bindings = [${bindings.join(", ")}],
-  durableObjectNamespaces = [${namespaces.join(", ")}],
-  durableObjectStorage = (localDisk = "do-disk"),
-);
-`,
-  );
-  return { config, wrangler };
-}
 
 describe.skipIf(!workerd)("Durable Objects runtime in workerd", () => {
   let out: string;
@@ -79,7 +30,7 @@ describe.skipIf(!workerd)("Durable Objects runtime in workerd", () => {
     mkdirSync(disk, { recursive: true });
     result = await buildFixture(root, "cloudflare-module", out, { AGENT_UNIT_RUNTIME: "durable-objects" });
     port = 20_000 + Math.floor(Math.random() * 20_000);
-    ({ config, wrangler } = writeConfig(out, disk, port));
+    ({ config, wrangler } = writeDurableConfig(out, disk, port, { API_TOKEN: TOKEN, GREETING: "hey" }));
     server = await start();
   });
 

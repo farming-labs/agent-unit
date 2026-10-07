@@ -1,12 +1,10 @@
 import { describe, expect } from "vitest";
+import { vercel } from "./hosts";
 import { serverlessSuite } from "./serverless";
 
 describe("vercel function", () => {
   serverlessSuite({
-    preset: "vercel",
-    entry: "functions/__server.func/index.mjs",
-    waitUntil: true,
-    invoke: (module, request, waitUntil) => module.default.fetch(request, { waitUntil }),
+    ...vercel,
     // Vercel Cron calls this route with the schedule and CRON_SECRET; Nitro runs the sweep task.
     async cron(_module, _out, call) {
       const response = await call(

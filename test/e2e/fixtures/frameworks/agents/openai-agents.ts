@@ -1,6 +1,6 @@
 import { Agent, tool, Usage, type Model, type ModelRequest } from "@openai/agents";
 import { z } from "zod";
-import { countEffect } from "../lib/effects";
+import { countEffect, recordKey } from "../lib/effects";
 
 const usage = { requests: 1, inputTokens: 10, outputTokens: 5, totalTokens: 15 };
 
@@ -41,6 +41,7 @@ export default new Agent({
       needsApproval: true,
       execute: async ({ orderId }) => {
         await countEffect("refund:openai-agents");
+        await recordKey("key:openai-agents");
         return `refunded ${orderId}`;
       },
     }),

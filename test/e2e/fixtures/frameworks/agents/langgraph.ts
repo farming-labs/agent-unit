@@ -1,6 +1,7 @@
 import { AIMessage } from "@langchain/core/messages";
 import { END, interrupt, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph";
-import { countEffect } from "../lib/effects";
+import { useRun } from "agent-unit";
+import { countEffect, recordKey } from "../lib/effects";
 
 export default new StateGraph(MessagesAnnotation)
   .addNode("plan", async () => {
@@ -12,7 +13,11 @@ export default new StateGraph(MessagesAnnotation)
     return { messages: [new AIMessage(decision.approved ? "approved" : "declined")] };
   })
   .addNode("refund", async () => {
-    await countEffect("refund:langgraph");
+    // Graph nodes are not journaled one by one: a side effect in a node goes in a step.
+    await useRun().step("refund", async ({ idempotencyKey }) => {
+      await countEffect("refund:langgraph");
+      await recordKey("key:langgraph", idempotencyKey);
+    });
     return { messages: [new AIMessage("Refunded o_42.")] };
   })
   .addEdge(START, "plan")

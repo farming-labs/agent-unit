@@ -8,6 +8,11 @@ export async function countEffect(name: string): Promise<number> {
   return count;
 }
 
-export async function readEffect(name: string): Promise<number> {
-  return (await useRun().state.get<number>(name, { scope: "app" })) ?? 0;
+/** Records the idempotency key of the step or tool call running now, so tests can check it exists on every host. */
+export async function recordKey(name: string, key = useRun().idempotencyKey()): Promise<void> {
+  await useRun().state.set(name, key, { scope: "app" });
+}
+
+export async function readEffect(name: string): Promise<number | string> {
+  return (await useRun().state.get<number | string>(name, { scope: "app" })) ?? 0;
 }

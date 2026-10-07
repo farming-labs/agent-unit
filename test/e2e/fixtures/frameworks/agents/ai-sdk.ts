@@ -1,7 +1,7 @@
 import { useRun } from "agent-unit";
 import { jsonSchema, tool, ToolLoopAgent } from "ai";
 import { scriptedModel } from "../lib/ai-model";
-import { countEffect } from "../lib/effects";
+import { countEffect, recordKey } from "../lib/effects";
 
 export default new ToolLoopAgent({
   model: scriptedModel("ai-sdk"),
@@ -13,6 +13,7 @@ export default new ToolLoopAgent({
         const decision = await useRun().interrupt<{ approved: boolean }>("approve-refund", { orderId });
         if (!decision.approved) return { status: "declined" };
         await countEffect("refund:ai-sdk");
+        await recordKey("key:ai-sdk");
         return { status: "refunded", orderId };
       },
     }),
