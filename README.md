@@ -149,7 +149,9 @@ npx agent-unit build --preset <preset>
 Any other [Nitro preset](https://nitro.build/deploy) works too. Serverless hosts need shared
 storage, because their filesystem does not survive between invocations; the build warns when one is
 missing. Set `AGENT_UNIT_SECRET` in production: it protects the internal continue and sweep
-endpoints, which serverless hosts use to continue long runs.
+endpoints, which serverless hosts use to continue long runs. A long run continues in a fresh
+invocation at the deployment's own URL, read from `AGENT_UNIT_URL` (or `VERCEL_URL`, Netlify's `URL`,
+or the `origin` option) and never from an incoming request; without one it continues in-process.
 
 ### Cloudflare Durable Objects
 
@@ -385,9 +387,11 @@ See [spec/adapters.md](./spec/adapters.md) for native adapters that bring their 
 
 ## Limits
 
-- Leases make one process execute a run at a time. On eventually consistent stores (Cloudflare KV)
-  this is best effort; use Redis, Upstash or the Durable Objects runtime where strict exclusivity
-  matters.
+- Leases make one execution run a run at a time, renewed while it works. The default lease lives in
+  the run storage with a read, a write and a read back, which is best effort when two processes race
+  within milliseconds. Where executions must never overlap, pass `new RunStore(storage, { leases })`
+  with leases backed by an atomic operation (Redis `SET NX PX`, a database row lock), or use the
+  Durable Objects runtime, where each run's object is its only executor.
 - Mastra's own suspend and tool-approval flows need Mastra storage and are left to Mastra; pause
   Mastra agents with `useRun().interrupt()` in tools.
 - OpenAI Agents handoffs declared with `handoff(agent, …)` keep their agent as is; plain agent

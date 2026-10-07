@@ -20,6 +20,7 @@ interface RunRecord {
   error?: { name: string; message: string };   // when failed
   interrupt?: { key: string; name: string; payload: unknown };   // when interrupted
   wakeAt?: string;           // ISO time, when sleeping
+  cancelRequested?: boolean; // a cancel reached another process while this run executed
   attempt: number;           // how many times the run has been (re)started
   eventCount: number;        // events stored so far; the next event's seq is eventCount + 1
   createdAt: string;
@@ -45,7 +46,7 @@ or run) or 409 (wrong run state, for example resuming a run that is not interrup
 | `GET` | `/runs/:id` | One `RunRecord` |
 | `GET` | `/runs/:id/events` | The run's events (SSE), from `after` or `Last-Event-ID` |
 | `POST` | `/runs/:id/resume` | Answer the pending interrupt |
-| `POST` | `/runs/:id/cancel` | Cancel a running, interrupted or sleeping run |
+| `POST` | `/runs/:id/cancel` | Cancel a running, interrupted or sleeping run (see below) |
 | `GET` | `/manifest.json` | The manifest |
 | `GET` | `/.well-known/agent.json` | The A2A agent card |
 | `POST` | `/mcp` | MCP (JSON-RPC over streamable HTTP) |
@@ -79,6 +80,13 @@ Only valid while the run is `interrupted` (otherwise 409). Responds like the sta
 with `Accept: text/event-stream`, otherwise `202` (or `200` once settled, on hosts without
 `waitUntil`) with the record.
 
+### Cancel
+
+A parked run, or one whose executor has died, is cancelled at once: the response has
+`status: "cancelled"` and a `RUN_CANCELLED` event follows the last stored event. A run that another
+process is executing gets `cancelRequested: true` instead; that executor notices within a second, at
+its next step, emits `RUN_CANCELLED` and records `cancelled`. If it finishes first, the run completes.
+
 ### Read events
 
 `GET /runs/:id/events?after=12` streams every stored event with `seq > 12`, then live events until
@@ -87,7 +95,9 @@ where it left off after a dropped connection or a closed tab.
 
 ## Internal endpoints
 
-Two endpoints let a host continue work without a long-lived process. Both require
+Two endpoints let a host continue work without a long-lived process. A yielded run is continued by
+POSTing to this deployment's own URL, which comes from configuration (`AGENT_UNIT_URL`, the
+platform's URL variable or the `origin` option), never from a request header. Both require
 `Authorization: Bearer <AGENT_UNIT_SECRET>` and are disabled when no secret is configured. They are
 not affected by the app's `authorize` hook.
 

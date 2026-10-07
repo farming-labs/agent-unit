@@ -60,9 +60,13 @@ Upstash, Cloudflare KV, Vercel KV, Netlify Blobs, a database), because their fil
 survive between invocations. Filesystem drivers write atomically by default, so a crash never leaves
 a torn record, and an execution writes its journal one write at a time.
 
-Only one process executes a run at a time: an execution holds a lease, renews it while it works and
-releases it when it stops. A duplicate resume, a continuation and the sweep can race; the loser
-backs off.
+Only one execution runs a run at a time. Within a process, an execution claims the run before its
+first await. Across processes, it holds a lease under its own token, renews it on a timer for as long
+as it works (including during one long step), and releases it when it stops. An execution whose
+lease was taken over stops at once and writes nothing more. When an execution starts, event
+numbering resumes after the highest event already stored, so events from a crashed execution are
+never overwritten. Leases are pluggable (`LeaseBackend`); the default is best effort, and an atomic
+backend or the Durable Objects runtime makes overlap impossible.
 
 ## Runtimes
 
