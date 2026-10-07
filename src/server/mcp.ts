@@ -32,13 +32,15 @@ function toolList(engine: RunService) {
   }));
 }
 
-async function callTool(engine: RunService, params: Record<string, unknown>, context: RequestContext) {
+async function callTool(engine: RunService, params: Record<string, unknown>, context: RequestContext, limits: McpLimits) {
   const name = String(params.name ?? "");
   const args = (params.arguments ?? {}) as { message?: unknown; threadId?: unknown };
   if (typeof args.message !== "string") return { content: [{ type: "text", text: "`message` must be a string." }], isError: true };
-  const { run, done } = await engine.start(name, { messages: [{ role: "user", content: args.message }] }, {
-    threadId: typeof args.threadId === "string" ? args.threadId : undefined,
-  });
+  const threadId = typeof args.threadId === "string" ? args.threadId : undefined;
+  if (limits.authorizeStart && !(await limits.authorizeStart(name, threadId))) {
+    return { content: [{ type: "text", text: "Not allowed to run this agent on this thread." }], isError: true };
+  }
+  const { run, done } = await engine.start(name, { messages: [{ role: "user", content: args.message }] }, { threadId });
   context.waitUntil?.(done);
   const final = (await done) ?? (await engine.getRun(run.id));
   if (final.status === "completed") {
@@ -56,7 +58,14 @@ async function callTool(engine: RunService, params: Record<string, unknown>, con
   return { content: [{ type: "text", text }], structuredContent: parked };
 }
 
-async function respond(engine: RunService, message: JsonRpcRequest, context: RequestContext, version: string) {
+interface McpLimits {
+  maxBodyBytes?: number;
+  maxBatch?: number;
+  /** Checks a tools/call the way a run start is checked. */
+  authorizeStart?: (agent: string, threadId: string | undefined) => Promise<boolean>;
+}
+
+async function respond(engine: RunService, message: JsonRpcRequest, context: RequestContext, version: string, limits: McpLimits) {
   switch (message.method) {
     case "initialize": {
       const requested = String(message.params?.protocolVersion ?? "");
@@ -72,7 +81,7 @@ async function respond(engine: RunService, message: JsonRpcRequest, context: Req
       return rpcResult(message.id, { tools: toolList(engine) });
     case "tools/call": {
       try {
-        return rpcResult(message.id, await callTool(engine, message.params ?? {}, context));
+        return rpcResult(message.id, await callTool(engine, message.params ?? {}, context, limits));
       } catch (error) {
         return rpcError(message.id, -32602, error instanceof Error ? error.message : String(error));
       }
@@ -87,7 +96,7 @@ export async function handleMcp(
   request: Request,
   context: RequestContext,
   version = "0.0.0",
-  limits: { maxBodyBytes?: number; maxBatch?: number } = {},
+  limits: McpLimits = {},
 ): Promise<Response> {
   let payload: unknown;
   try {
@@ -109,7 +118,7 @@ export async function handleMcp(
     }
     // Notifications (no id) get no response.
     if (message.id === undefined) continue;
-    responses.push(await respond(engine, message, context, version));
+    responses.push(await respond(engine, message, context, version, limits));
   }
   if (responses.length === 0) return new Response(null, { status: 202 });
   return Response.json(Array.isArray(payload) ? responses : responses[0], {

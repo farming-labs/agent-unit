@@ -1,5 +1,5 @@
 import { AgentUnitError, RunEngine } from "../runtime/engine";
-import type { AgentEvent, RunInput, RunStatus } from "../types";
+import type { AgentEvent, RunInput, RunRecord, RunStatus } from "../types";
 import { agentCardDocument } from "./a2a";
 import { readBody } from "./body";
 import { handleMcp } from "./mcp";
@@ -8,8 +8,12 @@ import type { RunService } from "./service";
 export interface HandlerOptions {
   /** Path prefix the API is mounted under, e.g. `/api/agents`. Default: none. */
   basePath?: string;
-  /** Returns false (or a Response) to reject a request. Runs before every route except the agent card. */
-  authorize?: (request: Request) => boolean | Response | Promise<boolean | Response>;
+  /**
+   * Returns false (or a Response) to reject a request. Runs before every route except the agent
+   * card, with what the request does: for a run, the agent and thread come from the stored run, so an
+   * app can check that this caller owns the thread rather than trusting an id it was sent.
+   */
+  authorize?: (request: Request, context: AuthorizeContext) => boolean | Response | Promise<boolean | Response>;
   /**
    * Secret for the internal continuation and sweep endpoints. Default: the AGENT_UNIT_SECRET
    * environment variable. Without one those endpoints are disabled.
@@ -38,6 +42,17 @@ function safeEqual(a: string, b: string): boolean {
   for (let i = 0; i < Math.max(left.length, right.length); i++) diff |= (left[i] ?? 0) ^ (right[i] ?? 0);
   return diff === 0;
 }
+
+/** What a request does, for `authorize`. */
+export interface AuthorizeContext {
+  action: "manifest" | "list" | "start" | "read" | "events" | "resume" | "cancel" | "delete" | "mcp";
+  agent?: string;
+  runId?: string;
+  threadId?: string;
+}
+
+/** Thread ids name shared state, so they are plain text of a sensible length. */
+const THREAD_ID = /^[^\u0000-\u001f\u007f]{1,256}$/;
 
 export interface RequestContext {
   /** Keeps work alive after the response (serverless `waitUntil`). */
@@ -170,10 +185,36 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
     const url = new URL(request.url);
     if (base && !url.pathname.startsWith(base)) return problem(404, "not_found", "Not found.");
     const path = url.pathname.slice(base.length).replace(/\/+$/, "") || "/";
-    const segments = path.split("/").filter(Boolean).map(decodeURIComponent);
     const method = request.method.toUpperCase();
 
+    /** undefined when allowed; otherwise the response to send. */
+    const guard = async (authorization: AuthorizeContext): Promise<Response | undefined> => {
+      if (!options.authorize) return undefined;
+      const verdict = await options.authorize(request, authorization);
+      if (verdict instanceof Response) return verdict;
+      return verdict ? undefined : problem(401, "unauthorized", "Unauthorized.");
+    };
+    /** Authorizes an action on a stored run, with its agent and thread; unauthorized callers learn nothing about whether it exists. */
+    const guardRun = async (action: AuthorizeContext["action"], id: string) => {
+      let record: RunRecord | undefined;
+      try {
+        record = await engine.getRun(id);
+      } catch (error) {
+        if (!(error instanceof AgentUnitError) || error.status !== 404) throw error;
+      }
+      const denied = await guard({ action, runId: id, agent: record?.agent, threadId: record?.threadId });
+      if (denied) return { denied };
+      if (!record) throw new AgentUnitError(404, "run_not_found", `No run with id "${id}".`);
+      return { record };
+    };
+
     try {
+      let segments: string[];
+      try {
+        segments = path.split("/").filter(Boolean).map(decodeURIComponent);
+      } catch {
+        throw new AgentUnitError(400, "invalid_path", "The request path is not valid percent-encoding.");
+      }
       // Discovery documents are public so registries can find the agents.
       if (method === "GET" && path === "/.well-known/agent.json") {
         return json(agentCardDocument(engine.manifest(), `${url.origin}${base}`, options.version));
@@ -193,29 +234,37 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
         return problem(404, "not_found", "Not found.");
       }
 
-      if (options.authorize) {
-        const verdict = await options.authorize(request);
-        if (verdict instanceof Response) return verdict;
-        if (!verdict) return problem(401, "unauthorized", "Unauthorized.");
+      if (method === "GET" && (path === "/" || path === "/manifest.json")) {
+        return (await guard({ action: "manifest" })) ?? json(engine.manifest());
       }
-
-      if (method === "GET" && (path === "/" || path === "/manifest.json")) return json(engine.manifest());
       if (method === "POST" && path === "/mcp") {
-        return await handleMcp(engine, request, context, options.version, { maxBodyBytes: options.maxBodyBytes, maxBatch: options.maxBatch });
+        const denied = await guard({ action: "mcp" });
+        if (denied) return denied;
+        return await handleMcp(engine, request, context, options.version, {
+          maxBodyBytes: options.maxBodyBytes,
+          maxBatch: options.maxBatch,
+          // Each tool call starts a run: authorized like a start, per agent and thread.
+          authorizeStart: async (agent, threadId) => !(await guard({ action: "start", agent, threadId })),
+        });
       }
       if (method === "GET" && path === "/mcp") return problem(405, "method_not_allowed", "Use POST for MCP requests.");
 
       if (segments[0] === "agents") {
-        if (method === "GET" && segments.length === 1) return json({ agents: engine.manifest().agents });
+        if (method === "GET" && segments.length === 1) return (await guard({ action: "manifest" })) ?? json({ agents: engine.manifest().agents });
         const agent = segments[1];
-        if (agent && method === "GET" && segments.length === 2) return json(engine.agentCard(agent));
+        if (agent && method === "GET" && segments.length === 2) return (await guard({ action: "manifest", agent })) ?? json(engine.agentCard(agent));
         if (agent && method === "POST" && segments[2] === "runs" && segments.length === 3) {
           const body = await readJson(request, options.maxBodyBytes);
           const input = (body.input ?? {}) as RunInput;
           if (typeof input !== "object" || input === null || Array.isArray(input)) {
             throw new AgentUnitError(400, "invalid_input", "`input` must be an object.");
           }
-          const threadId = typeof body.threadId === "string" ? body.threadId : undefined;
+          if (body.threadId !== undefined && (typeof body.threadId !== "string" || !THREAD_ID.test(body.threadId))) {
+            throw new AgentUnitError(400, "invalid_thread_id", "`threadId` must be a string of 1 to 256 printable characters.");
+          }
+          const threadId = body.threadId as string | undefined;
+          const denied = await guard({ action: "start", agent, threadId });
+          if (denied) return denied;
           const { run, done } = await engine.start(agent, input, { threadId });
           if (wantsStream(request)) {
             context.waitUntil?.(done);
@@ -231,6 +280,12 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
         if (!id && method === "GET") {
           const status = url.searchParams.get("status");
           if (status && !RUN_STATUSES.has(status as RunStatus)) throw new AgentUnitError(400, "invalid_status", `Unknown status "${status}".`);
+          const denied = await guard({
+            action: "list",
+            agent: url.searchParams.get("agent") ?? undefined,
+            threadId: url.searchParams.get("threadId") ?? undefined,
+          });
+          if (denied) return denied;
           const limit = Number(url.searchParams.get("limit") ?? 50);
           const runs = await engine.listRuns({
             agent: url.searchParams.get("agent") ?? undefined,
@@ -240,14 +295,21 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
           });
           return json({ runs });
         }
-        if (id && method === "GET" && segments.length === 2) return json(await engine.getRun(id));
+        if (id && method === "GET" && segments.length === 2) {
+          const checked = await guardRun("read", id);
+          return checked.denied ?? json(checked.record);
+        }
         if (id && method === "GET" && segments[2] === "events") {
+          const checked = await guardRun("events", id);
+          if (checked.denied) return checked.denied;
           const after = Number(url.searchParams.get("after") ?? request.headers.get("last-event-id") ?? 0);
           return eventStream(engine.events(id, Number.isFinite(after) ? after : 0, request.signal), request.signal, options.heartbeatMs);
         }
         if (id && method === "POST" && segments[2] === "resume") {
+          const checked = await guardRun("resume", id);
+          if (checked.denied) return checked.denied;
           const body = await readJson(request, options.maxBodyBytes);
-          const before = (await engine.getRun(id)).eventCount;
+          const before = checked.record.eventCount;
           const { run, done } = await engine.resume(id, body.answer);
           if (wantsStream(request)) {
             context.waitUntil?.(done);
@@ -256,9 +318,14 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
           const settled = await background(done);
           return settled ? json(settled) : json(run, 202);
         }
-        if (id && method === "POST" && segments[2] === "cancel") return json(await engine.cancel(id));
+        if (id && method === "POST" && segments[2] === "cancel") {
+          const checked = await guardRun("cancel", id);
+          return checked.denied ?? json(await engine.cancel(id));
+        }
         if (id && method === "DELETE" && segments.length === 2) {
           if (!engine.deleteRun) return problem(405, "method_not_allowed", "This runtime does not delete runs.");
+          const checked = await guardRun("delete", id);
+          if (checked.denied) return checked.denied;
           await engine.deleteRun(id);
           return new Response(null, { status: 204 });
         }

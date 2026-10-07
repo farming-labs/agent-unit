@@ -195,6 +195,48 @@ describe("HTTP handler", () => {
     expect(await retained.listRuns()).toEqual([]);
   });
 
+  it("lets authorize scope runs to the caller's own threads, from the stored run", async () => {
+    const seen: string[] = [];
+    // Each user may only touch threads named "<user>:…".
+    const { handle, pending } = setup({
+      authorize: (request, context) => {
+        seen.push(context.action);
+        const user = request.headers.get("x-user");
+        if (!user) return false;
+        return context.threadId === undefined || context.threadId.startsWith(`${user}:`);
+      },
+    });
+    const as = (user: string, init: RequestInit = {}) => ({ ...init, headers: { ...(init.headers as Record<string, string>), "x-user": user } });
+
+    expect((await handle("/agents/refund/runs", as("alice", post({ threadId: "bob:1" })))).status).toBe(401);
+    const bobs = await (await handle("/agents/refund/runs", as("bob", post({ threadId: "bob:1" })))).json();
+    await Promise.all(pending);
+
+    // Alice cannot read, resume, cancel or stream Bob's run: its thread comes from storage, not from her.
+    expect((await handle(`/runs/${bobs.id}`, as("alice"))).status).toBe(401);
+    expect((await handle(`/runs/${bobs.id}/resume`, as("alice", post({ answer: { approved: true } })))).status).toBe(401);
+    expect((await handle(`/runs/${bobs.id}/cancel`, as("alice", { method: "POST" }))).status).toBe(401);
+    expect((await handle(`/runs/${bobs.id}/events`, as("alice"))).status).toBe(401);
+    expect((await handle(`/runs/${bobs.id}`, as("bob"))).status).toBe(200);
+    // Unauthorized callers learn nothing about whether a run exists.
+    expect((await handle("/runs/run_doesnotexist000000")).status).toBe(401);
+    expect((await handle("/runs/run_doesnotexist000000", as("bob"))).status).toBe(404);
+    expect((await handle("/runs?threadId=bob:1", as("alice"))).status).toBe(401);
+
+    const mcp = await (
+      await handle("/mcp", as("alice", post({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "echo", arguments: { message: "hi", threadId: "bob:2" } } })))
+    ).json();
+    expect(mcp.result.isError).toBe(true);
+    expect(new Set(seen)).toEqual(new Set(["start", "read", "resume", "cancel", "events", "list", "mcp"]));
+  });
+
+  it("rejects malformed thread ids and percent-encoding", async () => {
+    const { handle } = setup();
+    expect((await handle("/agents/echo/runs", post({ threadId: "bad\u0000id" }))).status).toBe(400);
+    expect((await handle("/agents/echo/runs", post({ threadId: 42 }))).status).toBe(400);
+    expect((await handle("/runs/%E0%A4%A")).status).toBe(400);
+  });
+
   it("honours basePath and authorize", async () => {
     const { handle } = setup({
       basePath: "/api/agents/",
