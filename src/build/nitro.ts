@@ -141,6 +141,7 @@ export const unit = createAgentUnit({
   budget: ${options.budgetMs ?? "false"},
   basePath: ${basePath},
   authorize: config.authorize,
+  origin: config.origin,
   env,
 });
 `,

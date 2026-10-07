@@ -218,7 +218,7 @@ describe("HTTP handler", () => {
       { budgetMs: 10, env: { AGENT_UNIT_SECRET: "k" } },
     );
     const continued: string[] = [];
-    const handler = createHandler(engine);
+    const handler = createHandler(engine, { origin: ORIGIN });
     const realFetch = globalThis.fetch;
     globalThis.fetch = (async (input: RequestInfo | URL, init?: RequestInit) => {
       const request = new Request(input, init);
@@ -234,6 +234,41 @@ describe("HTTP handler", () => {
       expect(steps).toBe(3);
     } finally {
       globalThis.fetch = realFetch;
+    }
+  });
+
+  it("never sends the secret to a host named by a request", async () => {
+    const engine = createEngine(
+      {
+        long: defineAgent(async (_input, run) => {
+          for (let i = 0; i < 3; i++) await run.step(`part-${i}`, () => new Promise((resolve) => setTimeout(resolve, 15)));
+          return "done";
+        }),
+      },
+      { budgetMs: 10, env: { AGENT_UNIT_SECRET: "k" } },
+    );
+    const calls: string[] = [];
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = (async (input: RequestInfo | URL) => {
+      calls.push(String(input instanceof Request ? input.url : input));
+      return new Response(null, { status: 503 });
+    }) as typeof fetch;
+    try {
+      const handler = createHandler(engine);
+      // The first request names an attacker's host; continuations must not go there.
+      const response = await handler(new Request("http://evil.example/agents/long/runs", post({}, { accept: "text/event-stream" })));
+      const events = await sse(response);
+      expect(events.at(-1)).toMatchObject({ type: "RUN_FINISHED", result: "done" });
+      expect(calls).toEqual([]);
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+  });
+
+  it("rejects internal requests with a wrong secret of any length", async () => {
+    const { handle } = setup({ secret: "s3cret" });
+    for (const value of ["", "Bearer ", "Bearer s3cre", "Bearer s3cret!", "Bearer S3CRET"]) {
+      expect((await handle("/__agent-unit/sweep", { method: "POST", headers: { authorization: value } })).status).toBe(401);
     }
   });
 });

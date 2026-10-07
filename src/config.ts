@@ -7,7 +7,7 @@ export interface StorageConfig {
   [option: string]: unknown;
 }
 
-export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "authorize"> {
+export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "authorize" | "origin"> {
   /** App name for the manifest, MCP server info and A2A card. Default: package.json name. */
   name?: string;
   /**

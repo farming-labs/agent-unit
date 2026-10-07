@@ -14,9 +14,24 @@ export interface HandlerOptions {
    * environment variable. Without one those endpoints are disabled.
    */
   secret?: string;
+  /**
+   * This deployment's own URL, used to continue a long run in a fresh invocation. Default: the
+   * AGENT_UNIT_URL environment variable, or the platform's (VERCEL_URL, Netlify's URL). It is never
+   * taken from a request, whose Host header anyone can set. Without one, runs continue in-process.
+   */
+  origin?: string;
   /** Interval for SSE keep-alive comments. Default 15s. */
   heartbeatMs?: number;
   version?: string;
+}
+
+/** Compares secrets in constant time, so response timing reveals nothing about the expected value. */
+function safeEqual(a: string, b: string): boolean {
+  const left = new TextEncoder().encode(a);
+  const right = new TextEncoder().encode(b);
+  let diff = left.length ^ right.length;
+  for (let i = 0; i < Math.max(left.length, right.length); i++) diff |= (left[i] ?? 0) ^ (right[i] ?? 0);
+  return diff === 0;
 }
 
 export interface RequestContext {
@@ -98,12 +113,22 @@ const RUN_STATUSES = new Set<RunStatus>(["running", "interrupted", "sleeping", "
 export function createHandler(engine: RunService, options: HandlerOptions = {}) {
   const base = (options.basePath ?? "").replace(/\/+$/, "");
   const secret = () => options.secret ?? engine.env().AGENT_UNIT_SECRET;
-  let origin: string | undefined;
+  const selfOrigin = (): string | undefined => {
+    const env = engine.env();
+    const candidate = options.origin ?? env.AGENT_UNIT_URL ?? (env.VERCEL_URL ? `https://${env.VERCEL_URL}` : undefined) ?? env.URL;
+    if (!candidate) return undefined;
+    try {
+      return new URL(candidate).origin;
+    } catch {
+      return undefined;
+    }
+  };
 
   // Serverless hosts continue a yielded run in a fresh invocation through the internal endpoint.
   if (engine instanceof RunEngine && !engine.options.continueRun && !engine.options.scheduleWake) {
     engine.options.continueRun = async (id) => {
       const token = secret();
+      const origin = selfOrigin();
       if (origin && token) {
         try {
           const response = await fetch(`${origin}${base}/__agent-unit/continue/${encodeURIComponent(id)}`, {
@@ -124,7 +149,7 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
 
   const internalAllowed = (request: Request) => {
     const token = secret();
-    return Boolean(token) && request.headers.get("authorization") === `Bearer ${token}`;
+    return Boolean(token) && safeEqual(request.headers.get("authorization") ?? "", `Bearer ${token}`);
   };
 
   return async function handle(request: Request, context: RequestContext = {}): Promise<Response> {
@@ -138,7 +163,6 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
       return work;
     };
     const url = new URL(request.url);
-    origin ??= url.origin;
     if (base && !url.pathname.startsWith(base)) return problem(404, "not_found", "Not found.");
     const path = url.pathname.slice(base.length).replace(/\/+$/, "") || "/";
     const segments = path.split("/").filter(Boolean).map(decodeURIComponent);
