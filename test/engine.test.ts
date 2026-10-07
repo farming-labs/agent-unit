@@ -946,3 +946,53 @@ describe("leases left behind", () => {
     expect(await store.leaseExpired(id)).toBe(false);
   });
 });
+
+describe("streamed deltas", () => {
+  const streaming = (gapMs = 0) =>
+    defineAgent(async (_input, run) => {
+      const internals = run as unknown as { emitEvent(body: unknown): void };
+      for (let i = 0; i < 200; i++) {
+        internals.emitEvent({ type: "TEXT_MESSAGE_CONTENT", messageId: "m1", delta: `w${i} ` });
+        if (i === 99) internals.emitEvent({ type: "TOOL_CALL_ARGS", toolCallId: "c1", delta: "{}" });
+        if (gapMs) await new Promise((resolve) => setTimeout(resolve, gapMs));
+      }
+      return "done";
+    });
+  const text = Array.from({ length: 200 }, (_, i) => `w${i} `).join("");
+
+  it("merges deltas that arrive together into a few stored events, keeping text and order", async () => {
+    const store = memoryStore();
+    const engine = createEngine({ talk: streaming() }, { store });
+    const { run, done } = await engine.start("talk");
+    const live = collect(engine.events(run.id));
+    const final = (await done)!;
+    const stored = await store.readEvents(run.id, 0, final.eventCount);
+    const contents = stored.filter((event) => event.type === "TEXT_MESSAGE_CONTENT") as { delta: string }[];
+    // 200 deltas, split once by the tool-call delta in between: two events, not 200 writes.
+    expect(contents).toHaveLength(2);
+    expect(contents.map((event) => event.delta).join("")).toBe(text);
+    expect(types(stored)).toEqual(["RUN_STARTED", "TEXT_MESSAGE_CONTENT", "TOOL_CALL_ARGS", "TEXT_MESSAGE_CONTENT", "RUN_FINISHED"]);
+    expect(stored.map((event) => event.seq)).toEqual([1, 2, 3, 4, 5]);
+    // A live subscriber saw exactly what a reconnecting one will read.
+    expect(await live).toEqual(stored);
+  });
+
+  it("still streams: a slow model's deltas leave within the window", async () => {
+    const store = memoryStore();
+    const engine = createEngine({ talk: streaming(2) }, { store, deltaBatchMs: 20 });
+    const { run, done } = await engine.start("talk");
+    const final = (await done)!;
+    const contents = (await store.readEvents(run.id, 0, final.eventCount)).filter((event) => event.type === "TEXT_MESSAGE_CONTENT") as { delta: string }[];
+    expect(contents.length).toBeGreaterThan(2);
+    expect(contents.length).toBeLessThan(200);
+    expect(contents.map((event) => event.delta).join("")).toBe(text);
+  });
+
+  it("keeps every delta its own event with deltaBatchMs: 0", async () => {
+    const store = memoryStore();
+    const engine = createEngine({ talk: streaming() }, { store, deltaBatchMs: 0 });
+    const { run, done } = await engine.start("talk");
+    const final = (await done)!;
+    expect((await store.readEvents(run.id, 0, final.eventCount)).filter((event) => event.type === "TEXT_MESSAGE_CONTENT")).toHaveLength(200);
+  });
+});

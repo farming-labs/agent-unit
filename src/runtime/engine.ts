@@ -55,6 +55,12 @@ export interface EngineOptions {
   retentionMs?: number;
   /** How long `cancel` waits for an executing run to stop before answering. Default 2s. */
   cancelWaitMs?: number;
+  /**
+   * Streamed text and tool-argument deltas arriving within this window are merged into one event
+   * (one sequence number, one storage write). Live and replayed streams see the same events. 0 keeps
+   * every delta its own event. Default 50ms.
+   */
+  deltaBatchMs?: number;
 }
 
 export class AgentUnitError extends Error {
@@ -74,6 +80,9 @@ type Parked =
   | { kind: "yield" };
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
+
+/** Which stream a delta belongs to: a text message or a tool call's arguments. */
+const streamOf = (body: Extract<AgentEventBody, { delta: string }>) => ("messageId" in body ? body.messageId : body.toolCallId);
 const MAX_LOCAL_SLEEP_MS = 15 * 60_000;
 
 class RunExecution implements RunInternals {
@@ -280,6 +289,37 @@ class RunExecution implements RunInternals {
   }
 
   emitEvent(body: AgentEventBody): void {
+    const window = this.engine.options.deltaBatchMs ?? 50;
+    if (window > 0 && (body.type === "TEXT_MESSAGE_CONTENT" || body.type === "TOOL_CALL_ARGS")) {
+      // A long streamed answer is hundreds of deltas: merge the ones that arrive together, so each
+      // costs one write instead of one per token.
+      const pending = this.delta?.body;
+      if (pending && pending.type === body.type && streamOf(pending) === streamOf(body)) {
+        pending.delta += body.delta;
+        return;
+      }
+      this.flushDelta();
+      const timer = setTimeout(() => this.flushDelta(), window);
+      (timer as { unref?: () => void }).unref?.();
+      this.delta = { body: { ...body }, timer };
+      return;
+    }
+    // Anything else first lets the merged text before it out, so order is kept.
+    this.flushDelta();
+    this.write(body);
+  }
+
+  private delta?: { body: Extract<AgentEventBody, { delta: string }>; timer: ReturnType<typeof setTimeout> };
+
+  private flushDelta() {
+    const delta = this.delta;
+    if (!delta) return;
+    clearTimeout(delta.timer);
+    this.delta = undefined;
+    this.write(delta.body);
+  }
+
+  private write(body: AgentEventBody): void {
     // Events from an execution that lost its lease would collide with the new executor's.
     if (this.leaseLost) return;
     const event = { ...body, seq: ++this.run.eventCount, runId: this.run.id, timestamp: Date.now() } as AgentEvent;
@@ -292,6 +332,7 @@ class RunExecution implements RunInternals {
   }
 
   flush(): Promise<void> {
+    this.flushDelta();
     return this.flushing;
   }
 

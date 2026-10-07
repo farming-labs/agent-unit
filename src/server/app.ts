@@ -23,6 +23,8 @@ export interface AgentUnitOptions extends HandlerOptions {
   retention?: string | number;
   /** Fail a run after this many crashed executions in a row. Default 5. */
   maxCrashes?: number;
+  /** Merge streamed deltas arriving within this window into one event and one write (ms). 0 turns it off. Default 50. */
+  deltaBatchMs?: number;
   env?: Record<string, string | undefined>;
   /** Keeps background work alive on hosts that need it, for work not tied to a request. */
   waitUntil?: (promise: Promise<unknown>) => void;
@@ -52,6 +54,7 @@ export function createAgentUnit(options: AgentUnitOptions): AgentUnit {
     leaseMs: ms(options.lease),
     retentionMs: ms(options.retention),
     maxCrashes: options.maxCrashes,
+    deltaBatchMs: options.deltaBatchMs,
     env: options.env,
     waitUntil: options.waitUntil,
   });

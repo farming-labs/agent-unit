@@ -132,7 +132,7 @@ describe("AI SDK adapter", () => {
       // …and continues after the resume without being announced again.
       "TOOL_CALL_RESULT",
       "TEXT_MESSAGE_START",
-      "TEXT_MESSAGE_CONTENT",
+      // The two deltas arrive together, so they are merged into one event.
       "TEXT_MESSAGE_CONTENT",
       "TEXT_MESSAGE_END",
       "RUN_FINISHED",
