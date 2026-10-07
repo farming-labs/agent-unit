@@ -7,6 +7,7 @@ export default defineConfig({
     build: "src/build/index.ts",
     nitro: "src/nitro.ts",
     cloudflare: "src/cloudflare/index.ts",
+    redis: "src/redis.ts",
     runtime: "src/runtime/index.ts",
     adapter: "src/adapter/index.ts",
     server: "src/server/index.ts",

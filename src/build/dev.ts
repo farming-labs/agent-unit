@@ -4,6 +4,8 @@ import { serve } from "srvx";
 import { createStorage, type Driver } from "unstorage";
 import type { StorageConfig } from "../config";
 import { createAgentUnit, type AgentUnit } from "../server/app";
+import { redisCoordination, type RedisLike } from "../redis";
+import { RunStore } from "../runtime/store";
 import { loadAgents } from "./agents";
 import { loadProject } from "./load";
 import { DEFAULT_STORAGE, withSafeDefaults } from "./nitro";
@@ -41,7 +43,14 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
   async function create(): Promise<AgentUnit> {
     const project = await loadProject(root);
     const { agents, adapters } = await loadAgents(project);
-    const storage = createStorage({ driver: await loadDriver(project.root, project.config.storage ?? DEFAULT_STORAGE) });
+    const driver = await loadDriver(project.root, project.config.storage ?? DEFAULT_STORAGE);
+    const plain = createStorage({ driver });
+    const redis = driver as Driver & { getInstance?: () => unknown; options?: { base?: string } };
+    // On Redis, runs and leases change atomically, as they do in the built server.
+    const storage =
+      driver.name === "redis" && typeof redis.getInstance === "function"
+        ? new RunStore(plain, redisCoordination({ client: () => redis.getInstance!() as RedisLike, base: redis.options?.base }))
+        : plain;
     return createAgentUnit({
       name: project.name,
       agents,

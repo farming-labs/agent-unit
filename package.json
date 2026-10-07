@@ -62,6 +62,10 @@
       "types": "./dist/cloudflare.d.mts",
       "import": "./dist/cloudflare.mjs"
     },
+    "./redis": {
+      "types": "./dist/redis.d.mts",
+      "import": "./dist/redis.mjs"
+    },
     "./client": {
       "types": "./dist/client.d.mts",
       "import": "./dist/client.mjs"
@@ -95,9 +99,9 @@
   "peerDependencies": {
     "@langchain/core": ">=1",
     "@langchain/langgraph": ">=1",
+    "@mastra/core": ">=1",
     "@openai/agents": ">=0.19",
-    "ai": ">=7",
-    "@mastra/core": ">=1"
+    "ai": ">=7"
   },
   "peerDependenciesMeta": {
     "ai": {
@@ -123,6 +127,7 @@
     "@openai/agents": "0.19.0",
     "@types/node": "^20.19.43",
     "ai": "7.0.30",
+    "ioredis": "6.0.0",
     "tsdown": "0.15.7",
     "typescript": "5.9.3",
     "vitest": "3.2.7",

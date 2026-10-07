@@ -33,6 +33,14 @@ jobs:
   e2e:
     name: e2e (presets and frameworks)
     runs-on: ubuntu-latest
+    services:
+      redis:
+        image: redis:7
+        ports: ["6379:6379"]
+        options: --health-cmd "redis-cli ping" --health-interval 2s --health-timeout 2s --health-retries 15
+    env:
+      REDIS_URL: redis://127.0.0.1:6379
+      AGENT_UNIT_REQUIRE_REDIS: "1"
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4

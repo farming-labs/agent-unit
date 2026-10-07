@@ -7,7 +7,9 @@ export default defineConfig({
   storage:
     process.env.AGENT_UNIT_STORAGE === "memory"
       ? { driver: "memory" }
-      : { driver: "fs-lite", base: process.env.AGENT_UNIT_DATA ?? ".data/agent-unit" },
+      : process.env.AGENT_UNIT_STORAGE === "redis"
+        ? { driver: "redis", url: process.env.REDIS_URL, base: process.env.AGENT_UNIT_DATA }
+        : { driver: "fs-lite", base: process.env.AGENT_UNIT_DATA ?? ".data/agent-unit" },
   authorize: (request) => {
     const token = process.env.API_TOKEN;
     return !token || request.headers.get("authorization") === `Bearer ${token}`;
