@@ -83,6 +83,10 @@ agent-unit recognises agents from these frameworks when your `package.json` depe
 | [LangGraph](https://langchain-ai.github.io/langgraphjs/) | `graph.compile()` | LangGraph checkpoints, stored in agent-unit storage | `interrupt()` in a node, resumed with `Command({ resume })` |
 | Plain TypeScript | `defineAgent(…)` | `run.step(…)` | `run.interrupt()`, `run.sleep()` |
 
+Every framework is tested on every host below (Node, Bun, Deno, Cloudflare Workers with Durable
+Objects, Vercel, Netlify and AWS Lambda): a run pauses for approval, the host restarts, and the
+resume repeats no model call or side effect.
+
 ```ts
 // agents/support.ts: an AI SDK agent, unchanged except for the approval
 import { useRun } from "agent-unit";
@@ -156,6 +160,11 @@ npx agent-unit build --preset <preset>
 | Vercel | `vercel` | Set `storage` (Redis, Upstash, Vercel KV, …) | Yields every 240s and continues | Vercel Cron runs the sweep |
 | Netlify | `netlify` | Set `storage` (`netlify-blobs`, Redis, …) | Yields every 20s; finishes in the request | Generated scheduled function |
 | AWS Lambda | `aws-lambda` | Set `storage` (Redis, Upstash, a database via db0, …) | Yields every 25s; finishes in the request | Point EventBridge at `POST /__agent-unit/sweep` |
+
+Cloudflare builds turn on Workers' stub modules for `child_process`, `readline`, `worker_threads`
+and `tty`, and replace the Node `ws` package with the built-in WebSocket: Mastra and the OpenAI
+Agents SDK import these when they load, and one missing module stops the whole Worker from starting.
+Your own `compatibility_flags` and `alias` settings are kept.
 
 Any other [Nitro preset](https://nitro.build/deploy) works too. Serverless hosts need shared
 storage, because their filesystem does not survive between invocations; the build warns when one is
