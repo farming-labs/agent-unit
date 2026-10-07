@@ -229,12 +229,23 @@ export class RunStore {
     return events;
   }
 
+  /**
+   * Owners (thread ids, agent names) and keys come from callers and may hold `:`, `?` or `/`, which
+   * storage keys treat specially (`?` even cuts a key short), so both are encoded.
+   */
   private stateKey(scope: StateScope, owner: string, key: string) {
+    return `state:${scope}:${encodeSegment(owner)}:${encodeSegment(key)}`;
+  }
+
+  /** Where state was stored before keys were encoded; still read, so existing state survives. */
+  private legacyStateKey(scope: StateScope, owner: string, key: string) {
     return `state:${scope}:${owner}:${key}`;
   }
 
   async getState<T>(scope: StateScope, owner: string, key: string): Promise<T | undefined> {
-    return ((await this.storage.getItem(this.stateKey(scope, owner, key))) as T | null) ?? undefined;
+    const value = (await this.storage.getItem(this.stateKey(scope, owner, key))) as T | null;
+    if (value !== null) return value;
+    return ((await this.storage.getItem(this.legacyStateKey(scope, owner, key))) as T | null) ?? undefined;
   }
 
   async setState(scope: StateScope, owner: string, key: string, value: unknown): Promise<void> {
@@ -243,6 +254,7 @@ export class RunStore {
 
   async deleteState(scope: StateScope, owner: string, key: string): Promise<void> {
     await this.storage.removeItem(this.stateKey(scope, owner, key));
+    await this.storage.removeItem(this.legacyStateKey(scope, owner, key));
   }
 
   /**

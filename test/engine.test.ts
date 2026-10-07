@@ -643,3 +643,28 @@ describe("hardening (0.1.4)", () => {
     expect(await store.listRuns({ status: "completed" })).toHaveLength(1);
   });
 });
+
+describe("state keys", () => {
+  it("keeps threads apart even when their ids contain characters storage keys treat specially", async () => {
+    const engine = createEngine({
+      note: defineAgent(async (input, run) => {
+        await run.state.set("note", input.note);
+        return run.state.get("note");
+      }),
+    });
+    const a = await (await engine.start("note", { note: "a" }, { threadId: "t?x" })).done;
+    const b = await (await engine.start("note", { note: "b" }, { threadId: "t?y" })).done;
+    const c = await (await engine.start("note", { note: "c" }, { threadId: "t:x/z" })).done;
+    expect([a?.output, b?.output, c?.output]).toEqual(["a", "b", "c"]);
+    expect(await engine.store.getState("thread", "t?x", "note")).toBe("a");
+    expect(await engine.store.getState("thread", "t?y", "note")).toBe("b");
+  });
+
+  it("still reads state stored before keys were encoded", async () => {
+    const store = memoryStore();
+    await store.storage.setItem("state:app:shop:counter", 7 as never);
+    expect(await store.getState("app", "shop", "counter")).toBe(7);
+    await store.deleteState("app", "shop", "counter");
+    expect(await store.getState("app", "shop", "counter")).toBeUndefined();
+  });
+});

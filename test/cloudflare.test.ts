@@ -86,7 +86,8 @@ describe("Durable Objects runtime", () => {
     expect(await (await call(`/runs/${run.id}`)).json()).toMatchObject({ status: "completed", attempt: 2 });
 
     // App-scoped state is shared through the index.
-    expect([...index.storages.get("index")!.data.keys()].some((key) => key.startsWith("state:") && key.endsWith("last-refund"))).toBe(true);
+    const encoded = Buffer.from("last-refund").toString("base64url");
+    expect([...index.storages.get("index")!.data.keys()].some((key) => key.startsWith("state:app:") && key.endsWith(encoded))).toBe(true);
   });
 
   it("streams a run through the Worker with seq ids, and answers 404 and 409 like the local runtime", async () => {
