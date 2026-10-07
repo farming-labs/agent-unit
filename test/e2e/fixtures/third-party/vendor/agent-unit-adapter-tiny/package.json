@@ -1,0 +1,14 @@
+{
+  "name": "agent-unit-adapter-tiny",
+  "version": "1.0.0",
+  "type": "module",
+  "exports": "./index.js",
+  "keywords": [
+    "agent-unit-adapter"
+  ],
+  "peerDependencies": {
+    "agent-unit": ">=0.1.8",
+    "tiny-agents": ">=1"
+  },
+  "types": "./index.d.ts"
+}

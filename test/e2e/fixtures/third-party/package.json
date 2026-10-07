@@ -1,0 +1,9 @@
+{
+  "name": "third-party-app",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "agent-unit-adapter-tiny": "file:./vendor/agent-unit-adapter-tiny",
+    "tiny-agents": "file:./vendor/tiny-agents"
+  }
+}

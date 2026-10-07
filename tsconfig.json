@@ -31,6 +31,12 @@
       ],
       "agent-unit/*": [
         "./src/*/index.ts"
+      ],
+      "tiny-agents": [
+        "./test/e2e/fixtures/third-party/vendor/tiny-agents/index.d.ts"
+      ],
+      "agent-unit-adapter-tiny": [
+        "./test/e2e/fixtures/third-party/vendor/agent-unit-adapter-tiny/index.d.ts"
       ]
     }
   },
