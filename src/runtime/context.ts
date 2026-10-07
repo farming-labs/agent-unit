@@ -11,7 +11,7 @@ const HALTED = Symbol.for("agent-unit.halted");
 
 export class RunHalted extends Error {
   readonly [HALTED] = true;
-  constructor(readonly reason: "interrupt" | "sleep" | "yield" | "cancel") {
+  constructor(readonly reason: "interrupt" | "sleep" | "yield" | "cancel" | "lost") {
     super(`agent-unit run halted (${reason})`);
     this.name = "RunHalted";
   }

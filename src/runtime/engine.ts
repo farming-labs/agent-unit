@@ -73,13 +73,44 @@ class RunExecution implements RunInternals {
   readonly controller = new AbortController();
   parked?: Parked;
   cancelled = false;
+  /** Another execution took the lease over: this one stops and writes nothing more. */
+  leaseLost = false;
   private readonly startedAt = Date.now();
+  private renewTimer: ReturnType<typeof setInterval> | undefined;
 
   constructor(
     private readonly engine: RunEngine,
     readonly run: RunRecord,
     private readonly journal: Journal,
+    /** This execution's own lease token, so even two executions in one process never share one. */
+    readonly leaseOwner: string,
   ) {}
+
+  /** Keeps the lease alive while the run executes, including during one long step. */
+  startRenewing() {
+    const interval = Math.max(10, Math.floor(this.engine.leaseMs / 3));
+    this.renewTimer = setInterval(() => {
+      void this.engine.store.renewLease(this.run.id, this.leaseOwner, this.engine.leaseMs).then(
+        (held) => {
+          if (!held) this.loseLease();
+        },
+        () => undefined,
+      );
+    }, interval);
+    (this.renewTimer as { unref?: () => void }).unref?.();
+  }
+
+  stopRenewing() {
+    if (this.renewTimer) clearInterval(this.renewTimer);
+    this.renewTimer = undefined;
+  }
+
+  loseLease() {
+    if (this.leaseLost) return;
+    this.leaseLost = true;
+    this.stopRenewing();
+    this.controller.abort(new RunHalted("lost"));
+  }
 
   get id() { return this.run.id; }
   get agent() { return this.run.agent; }
@@ -131,15 +162,16 @@ class RunExecution implements RunInternals {
 
   /** Throws when the run may not start new live work: parked, cancelled or out of budget. */
   async assertLive(): Promise<void> {
+    if (this.leaseLost) throw new RunHalted("lost");
     if (this.parked) throw new RunHalted(this.parked.kind === "interrupt" ? "interrupt" : this.parked.kind);
     if (this.cancelled) throw new RunHalted("cancel");
     const now = Date.now();
     if (now - this.lastRemoteCheck > 1000) {
       this.lastRemoteCheck = now;
+      // A cancel sent to another process is recorded on the run; this executor carries it out.
       const stored = await this.engine.store.getRun(this.run.id);
-      if (stored?.status === "cancelled") this.cancel();
+      if (stored?.status === "cancelled" || stored?.cancelRequested) this.cancel();
       if (this.cancelled) throw new RunHalted("cancel");
-      await this.engine.store.renewLease(this.run.id, this.engine.owner, this.engine.leaseMs);
     }
     const budget = this.engine.options.budgetMs;
     if (budget !== undefined && now - this.startedAt > budget) {
@@ -228,6 +260,8 @@ class RunExecution implements RunInternals {
   }
 
   emitEvent(body: AgentEventBody): void {
+    // Events from an execution that lost its lease would collide with the new executor's.
+    if (this.leaseLost) return;
     const event = { ...body, seq: ++this.run.eventCount, runId: this.run.id, timestamp: Date.now() } as AgentEvent;
     this.pending.push(event);
     this.engine.publish(event);
@@ -268,6 +302,9 @@ export class RunEngine {
   private readonly agents = new Map<string, LoadedAgent>();
   private readonly listeners = new Map<string, Set<(event: AgentEvent) => void>>();
   private readonly active = new Map<string, RunExecution>();
+  /** Runs an execution has claimed but not started yet: claimed before the first await, so two triggers never both start. */
+  private readonly claimed = new Set<string>();
+  private executions = 0;
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(readonly options: EngineOptions) {
@@ -356,10 +393,20 @@ export class RunEngine {
       await this.idle(id);
       return this.getRun(id);
     }
-    // Parked here or running elsewhere: mark it; a remote execution notices at its next step.
+    // Executing in another process: ask that executor to cancel. Writing the cancel here would race
+    // its events and its final write; it notices within a second, at its next step.
+    if (run.status === "running" && !(await this.store.leaseExpired(id))) {
+      run.cancelRequested = true;
+      run.updatedAt = nowIso();
+      await this.store.putRun(run);
+      return run;
+    }
+    // Parked, or its executor died: cancel it here, after the last event actually stored.
     run.status = "cancelled";
     delete run.interrupt;
     delete run.wakeAt;
+    delete run.cancelRequested;
+    run.eventCount = Math.max(run.eventCount, await this.store.lastEventSeq(id));
     const event = { type: "RUN_CANCELLED", seq: ++run.eventCount, runId: id, timestamp: Date.now() } as AgentEvent;
     run.updatedAt = nowIso();
     await this.store.putRun(run);
@@ -372,7 +419,7 @@ export class RunEngine {
   /** Continues a running run whose execution stopped: after a yield, or a crash. */
   async continue(id: string): Promise<RunRecord | undefined> {
     const run = await this.store.getRun(id);
-    if (!run || run.status !== "running" || this.active.has(id)) return run;
+    if (!run || run.status !== "running" || this.busy(id)) return run;
     if (!(await this.store.leaseExpired(id))) return run;
     return this.schedule(id);
   }
@@ -394,7 +441,7 @@ export class RunEngine {
       }
     }
     for (const run of await this.store.listRuns({ status: "running", limit: 1000 })) {
-      if (this.active.has(run.id) || !(await this.store.leaseExpired(run.id))) continue;
+      if (this.busy(run.id) || !(await this.store.leaseExpired(run.id))) continue;
       recovered.push(run.id);
       work.push(this.schedule(run.id));
     }
@@ -418,7 +465,7 @@ export class RunEngine {
       await (await this.wakeRun(id))?.done;
     } else if (run.status === "running") {
       // Still executing here or held by a live lease elsewhere: look again once that lease could lapse.
-      if (this.active.has(id) || !(await this.store.leaseExpired(id))) return Date.now() + this.leaseMs;
+      if (this.busy(id) || !(await this.store.leaseExpired(id))) return Date.now() + this.leaseMs;
       await this.continue(id);
     }
     return undefined;
@@ -530,22 +577,46 @@ export class RunEngine {
     this.timers.delete(id);
   }
 
-  private async execute(id: string): Promise<RunRecord | undefined> {
-    const run = await this.store.getRun(id);
-    if (!run || run.status !== "running" || this.active.has(id)) return run;
-    const loaded = this.agents.get(run.agent);
-    if (!loaded) return run;
-    if (!(await this.store.acquireLease(id, this.owner, this.leaseMs))) return run;
+  /** An execution of this run is starting or running in this process. */
+  private busy(id: string): boolean {
+    return this.active.has(id) || this.claimed.has(id);
+  }
 
-    run.attempt += 1;
-    run.updatedAt = nowIso();
-    await this.store.putRun(run);
-    const execution = new RunExecution(this, run, await this.store.getJournal(id));
-    this.active.set(id, execution);
-    // Watchdog: if this process dies mid-run, the host's scheduler continues the run once the lease lapses.
-    await this.options.scheduleWake?.(id, Date.now() + this.leaseMs);
+  private async execute(id: string): Promise<RunRecord | undefined> {
+    // Claimed before the first await: a double resume, or a timer firing during a sweep, must not
+    // start a second execution of the same run in this process.
+    if (this.busy(id)) return this.store.getRun(id);
+    this.claimed.add(id);
+    let execution: RunExecution | undefined;
+    try {
+      const run = await this.store.getRun(id);
+      if (!run || run.status !== "running") return run;
+      const loaded = this.agents.get(run.agent);
+      if (!loaded) return run;
+      const leaseOwner = `${this.owner}:${++this.executions}`;
+      if (!(await this.store.acquireLease(id, leaseOwner, this.leaseMs))) return run;
+
+      run.attempt += 1;
+      // After a crash the record can lag the events already stored; numbering resumes after them.
+      run.eventCount = Math.max(run.eventCount, await this.store.lastEventSeq(id));
+      run.updatedAt = nowIso();
+      await this.store.putRun(run);
+      execution = new RunExecution(this, run, await this.store.getJournal(id), leaseOwner);
+      this.active.set(id, execution);
+      execution.startRenewing();
+    } finally {
+      this.claimed.delete(id);
+    }
+    return this.runExecution(id, execution!);
+  }
+
+  private async runExecution(id: string, execution: RunExecution): Promise<RunRecord | undefined> {
+    const run = execution.run;
+    const loaded = this.agents.get(run.agent)!;
     let yielded = false;
     try {
+      // Watchdog: if this process dies mid-run, the host's scheduler continues the run once the lease lapses.
+      await this.options.scheduleWake?.(id, Date.now() + this.leaseMs);
       const durable = createDurable();
       let output: unknown;
       let failure: unknown;
@@ -565,6 +636,16 @@ export class RunEngine {
       } catch (error) {
         failure = error;
       }
+
+      execution.stopRenewing();
+      if (execution.leaseLost) {
+        // Another execution owns the run now; anything written here would overwrite its work.
+        return undefined;
+      }
+      // A cancel that arrived from another process while this one executed.
+      const latest = await this.store.getRun(id);
+      if (latest?.cancelRequested && !execution.cancelled && (execution.parked || failure !== undefined)) execution.cancel();
+      delete run.cancelRequested;
 
       if (execution.cancelled) {
         run.status = "cancelled";
@@ -593,8 +674,9 @@ export class RunEngine {
       run.updatedAt = nowIso();
       await this.store.putRun(run);
     } finally {
+      execution.stopRenewing();
       this.active.delete(id);
-      await this.store.releaseLease(id, this.owner);
+      if (!execution.leaseLost) await this.store.releaseLease(id, execution.leaseOwner);
     }
     if (yielded) {
       if (this.options.continueRun) await this.options.continueRun(id);

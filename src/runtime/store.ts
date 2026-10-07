@@ -32,8 +32,37 @@ const pad = (seq: number) => String(seq).padStart(10, "0");
  * Persists runs, journals, events, state and leases on any unstorage driver: memory, the
  * filesystem, Redis, Cloudflare KV, Vercel KV, Netlify Blobs, Deno KV, a database, …
  */
+/**
+ * Who may execute a run. The default keeps leases in the run storage with a read, a write and a
+ * read back, which is best effort: two processes racing within a few milliseconds on an eventually
+ * consistent store can both win. Pass leases backed by an atomic operation (Redis `SET NX PX` and a
+ * compare-and-renew script, a database row lock…) where two executors must never overlap. The
+ * Durable Objects runtime needs none: each run's object is its only executor.
+ */
+export interface LeaseBackend {
+  /** Takes the lease if it is free, expired or already `owner`'s. */
+  acquire(runId: string, owner: string, ttlMs: number): Promise<boolean>;
+  /** Extends the lease only while `owner` still holds it; false when it was lost. */
+  renew(runId: string, owner: string, ttlMs: number): Promise<boolean>;
+  /** Releases the lease if `owner` holds it. */
+  release(runId: string, owner: string): Promise<void>;
+  /** True when no one holds a live lease. */
+  expired(runId: string): Promise<boolean>;
+}
+
+export interface RunStoreOptions {
+  leases?: LeaseBackend;
+}
+
 export class RunStore {
-  constructor(readonly storage: Storage) {}
+  private readonly leases: LeaseBackend;
+
+  constructor(
+    readonly storage: Storage,
+    options: RunStoreOptions = {},
+  ) {
+    this.leases = options.leases ?? storageLeases(storage);
+  }
 
   async getRun(id: string): Promise<RunRecord | undefined> {
     return ((await this.storage.getItem(`runs:${id}`)) as RunRecord | null) ?? undefined;
@@ -120,31 +149,60 @@ export class RunStore {
     };
   }
 
-  /**
-   * Takes the run's execution lease. Only one process executes a run at a time: a duplicate resume,
-   * a continuation and the sweep can race, and the loser backs off.
-   */
-  async acquireLease(id: string, owner: string, ttlMs: number): Promise<boolean> {
-    const key = `lease:${id}`;
-    const current = (await this.storage.getItem(key)) as { owner: string; until: number } | null;
-    if (current && current.owner !== owner && current.until > Date.now()) return false;
-    await this.storage.setItem(key, { owner, until: Date.now() + ttlMs } as never);
-    const confirmed = (await this.storage.getItem(key)) as { owner: string } | null;
-    return confirmed?.owner === owner;
+  /** Takes the run's execution lease. Only one execution runs a run at a time; see LeaseBackend. */
+  acquireLease(id: string, owner: string, ttlMs: number): Promise<boolean> {
+    return this.leases.acquire(id, owner, ttlMs);
   }
 
-  async renewLease(id: string, owner: string, ttlMs: number): Promise<void> {
-    await this.storage.setItem(`lease:${id}`, { owner, until: Date.now() + ttlMs } as never);
+  renewLease(id: string, owner: string, ttlMs: number): Promise<boolean> {
+    return this.leases.renew(id, owner, ttlMs);
   }
 
-  async releaseLease(id: string, owner: string): Promise<void> {
-    const key = `lease:${id}`;
-    const current = (await this.storage.getItem(key)) as { owner: string } | null;
-    if (current?.owner === owner) await this.storage.removeItem(key);
+  releaseLease(id: string, owner: string): Promise<void> {
+    return this.leases.release(id, owner);
   }
 
-  async leaseExpired(id: string): Promise<boolean> {
-    const current = (await this.storage.getItem(`lease:${id}`)) as { until: number } | null;
-    return !current || current.until <= Date.now();
+  leaseExpired(id: string): Promise<boolean> {
+    return this.leases.expired(id);
   }
+
+  /** The highest event seq stored for a run: the truth after a crash, whatever the record says. */
+  async lastEventSeq(id: string): Promise<number> {
+    let last = 0;
+    for (const key of await this.storage.getKeys(`events:${id}`)) {
+      const seq = Number(key.slice(key.lastIndexOf(":") + 1));
+      if (Number.isFinite(seq) && seq > last) last = seq;
+    }
+    return last;
+  }
+}
+
+type Lease = { owner: string; until: number };
+
+/** Leases in the run storage itself. Best effort; see LeaseBackend. */
+export function storageLeases(storage: Storage): LeaseBackend {
+  const key = (id: string) => `lease:${id}`;
+  const read = async (id: string) => (await storage.getItem(key(id))) as Lease | null;
+  return {
+    async acquire(id, owner, ttlMs) {
+      const current = await read(id);
+      if (current && current.owner !== owner && current.until > Date.now()) return false;
+      await storage.setItem(key(id), { owner, until: Date.now() + ttlMs } as never);
+      return (await read(id))?.owner === owner;
+    },
+    async renew(id, owner, ttlMs) {
+      const current = await read(id);
+      // A lease another execution took over is not taken back.
+      if (current && current.owner !== owner) return false;
+      await storage.setItem(key(id), { owner, until: Date.now() + ttlMs } as never);
+      return (await read(id))?.owner === owner;
+    },
+    async release(id, owner) {
+      if ((await read(id))?.owner === owner) await storage.removeItem(key(id));
+    },
+    async expired(id) {
+      const current = await read(id);
+      return !current || current.until <= Date.now();
+    },
+  };
 }

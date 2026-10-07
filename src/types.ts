@@ -18,6 +18,8 @@ export interface RunRecord {
   error?: { name: string; message: string };
   interrupt?: PendingInterrupt;
   wakeAt?: string;
+  /** Set when a cancel arrived while another process was executing the run; that executor finishes the cancel. */
+  cancelRequested?: boolean;
   attempt: number;
   eventCount: number;
   createdAt: string;

@@ -408,3 +408,112 @@ describe("custom schedulers", () => {
     engine.close();
   });
 });
+
+describe("exactly-once execution", () => {
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+  const orphan = async (engine: ReturnType<typeof createEngine>, agent: string, extra: Partial<import("../src/types").RunRecord> = {}) => {
+    const id = "run_orphan000000000000";
+    const now = new Date().toISOString();
+    await engine.store.putRun({ id, agent, threadId: id, status: "running", input: {}, attempt: 1, eventCount: 1, createdAt: now, updatedAt: now, ...extra });
+    return id;
+  };
+
+  it("never executes one run twice when triggers race in one process", async () => {
+    let charges = 0;
+    const engine = createEngine({
+      charge: defineAgent(async (_input, run) => {
+        await run.step("charge", async () => {
+          await pause(20);
+          return ++charges;
+        });
+        return charges;
+      }),
+    });
+    const id = await orphan(engine, "charge");
+    // A double resume, a timer and a sweep all landing at once.
+    await Promise.all([engine.continue(id), engine.continue(id), engine.handleWake(id)]);
+    await engine.idle(id);
+    expect(charges).toBe(1);
+    expect(await engine.getRun(id)).toMatchObject({ status: "completed", output: 1 });
+  });
+
+  it("keeps the lease alive through a step longer than the lease, so no one else repeats it", async () => {
+    let charges = 0;
+    const store = memoryStore();
+    const agent = defineAgent(async (_input, run) => {
+      await run.step("slow-charge", async () => {
+        await pause(250);
+        return ++charges;
+      });
+      return charges;
+    });
+    const a = createEngine({ agent }, { store, leaseMs: 60 });
+    const b = createEngine({ agent }, { store, leaseMs: 60 });
+    const { run, done } = await a.start("agent");
+    await pause(150); // well past one lease length, mid-step
+    await b.continue(run.id);
+    await b.handleWake(run.id);
+    expect(await done).toMatchObject({ status: "completed", output: 1 });
+    expect(charges).toBe(1);
+  });
+
+  it("stops writing once another execution takes its lease", async () => {
+    const store = memoryStore();
+    const engine = createEngine(
+      {
+        slow: defineAgent(async (_input, run) => {
+          await run.step("first", () => pause(200));
+          await run.step("second", () => 2);
+          return "done";
+        }),
+      },
+      { store, leaseMs: 60 },
+    );
+    const { run, done } = await engine.start("slow");
+    await pause(30);
+    // Another process took the run over (its lease, its turn to write).
+    await store.storage.setItem(`lease:${run.id}`, { owner: "other-process", until: Date.now() + 60_000 } as never);
+    expect(await done).toBeUndefined();
+    const record = await store.getRun(run.id);
+    expect(record?.status).toBe("running");
+    const events = await store.readEvents(run.id);
+    expect(events.map((event) => event.type)).not.toContain("RUN_FINISHED");
+  });
+
+  it("numbers events after the ones already stored when it recovers from a crash", async () => {
+    const engine = createEngine({ quick: defineAgent(async (_input, run) => run.step("one", () => 1)) });
+    const id = await orphan(engine, "quick");
+    // The crashed execution had stored events 2..5 but never updated the record (eventCount: 1).
+    const crashed = [2, 3, 4, 5].map((seq) => ({ type: "CUSTOM", name: "before-crash", value: seq, seq, runId: id, timestamp: Date.now() }));
+    await engine.store.appendEvents(id, crashed as never);
+    const final = await engine.continue(id);
+    const events = await engine.store.readEvents(id);
+    const seqs = events.map((event) => event.seq);
+    expect(seqs).toEqual([...new Set(seqs)].sort((x, y) => x - y));
+    expect(events.filter((event) => event.type === "CUSTOM")).toHaveLength(4);
+    expect(seqs.at(-1)).toBe(final?.eventCount);
+    expect(Math.min(...events.filter((event) => event.type !== "CUSTOM").map((event) => event.seq))).toBe(6);
+  });
+
+  it("lets the executing process carry out a cancel sent to another process", async () => {
+    const store = memoryStore();
+    const agent = defineAgent(async (_input, run) => {
+      for (let i = 0; i < 40; i++) await run.step(`part-${i}`, () => pause(30));
+      return "finished";
+    });
+    const a = createEngine({ agent }, { store });
+    const b = createEngine({ agent }, { store });
+    const { run, done } = await a.start("agent");
+    await pause(100);
+    const requested = await b.cancel(run.id);
+    expect(requested).toMatchObject({ status: "running", cancelRequested: true });
+    const final = await done;
+    expect(final).toMatchObject({ status: "cancelled" });
+    expect(final?.cancelRequested).toBeUndefined();
+    const events = await store.readEvents(run.id);
+    const seqs = events.map((event) => event.seq);
+    expect(new Set(seqs).size).toBe(seqs.length);
+    expect(events.filter((event) => event.type === "RUN_CANCELLED")).toHaveLength(1);
+    expect(events.map((event) => event.type)).not.toContain("RUN_FINISHED");
+  });
+});
