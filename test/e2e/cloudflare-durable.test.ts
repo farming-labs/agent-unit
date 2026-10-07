@@ -1,5 +1,4 @@
 import { mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
-import { createRequire } from "node:module";
 import { join, relative } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildFixture, cleanup, collect, createAgentClient, prepareFixture, startServer, tempDir, waitForStatus, type RunningServer } from "./helpers";
@@ -7,14 +6,9 @@ import { buildFixture, cleanup, collect, createAgentClient, prepareFixture, star
 // The cloudflare-module build with runtime "durable-objects", in workerd with Durable Objects kept on
 // disk, so the runtime can be killed mid-run and started again from the same storage.
 
-const require = createRequire(import.meta.url);
-const workerd = (() => {
-  try {
-    return require.resolve("workerd/bin/workerd");
-  } catch {
-    return undefined;
-  }
-})();
+// The binary itself, not the package's Node launcher: killing the launcher would leave the
+// runtime running, and a "restart" would quietly keep talking to the old process.
+const workerd: string | undefined = await import("workerd").then((module) => module.default, () => undefined);
 
 const TOKEN = "e2e-token";
 const files = (dir: string): string[] =>

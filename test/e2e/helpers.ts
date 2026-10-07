@@ -60,6 +60,9 @@ export async function startServer(
   options: { cwd: string; env?: Record<string, string>; port?: number; readyPath?: string },
 ): Promise<RunningServer> {
   const port = options.port ?? 20_000 + Math.floor(Math.random() * 20_000);
+  const url = `http://127.0.0.1:${port}`;
+  // A leftover process on the port would answer the readiness check and stand in for this one.
+  if (await fetch(url).then(() => true, () => false)) throw new Error(`Port ${port} is already in use.`);
   const child: ChildProcess = spawn(command, args, {
     cwd: options.cwd,
     env: { ...process.env, PORT: String(port), NITRO_PORT: String(port), HOST: "127.0.0.1", ...options.env },
@@ -70,7 +73,6 @@ export async function startServer(
   child.stderr?.on("data", (chunk) => (output += chunk));
   let exited = false;
   child.once("exit", () => (exited = true));
-  const url = `http://127.0.0.1:${port}`;
   const deadline = Date.now() + 20_000;
   while (true) {
     if (exited) throw new Error(`Server exited before it was ready:\n${output}`);
@@ -85,10 +87,15 @@ export async function startServer(
   return {
     url,
     async stop() {
-      if (exited) return;
-      const gone = new Promise((resolve) => child.once("exit", resolve));
-      child.kill("SIGKILL");
-      await gone;
+      if (!exited) {
+        const gone = new Promise((resolve) => child.once("exit", resolve));
+        child.kill("SIGKILL");
+        await gone;
+      }
+      // Done only when nothing answers on the port any more.
+      for (let i = 0; i < 100 && (await fetch(url).then(() => true, () => false)); i++) {
+        await new Promise((resolve) => setTimeout(resolve, 50));
+      }
     },
   };
 }
