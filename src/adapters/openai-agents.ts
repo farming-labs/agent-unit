@@ -1,4 +1,4 @@
-import { Agent, Runner, RunState, Usage, type Model, type ModelProvider, type ModelRequest, type ModelResponse } from "@openai/agents";
+import { Agent, Handoff, Runner, RunState, Usage, type Model, type ModelProvider, type ModelRequest, type ModelResponse } from "@openai/agents";
 import { durableTool } from "../adapter/durable";
 import { defineAdapter, type AdapterContext } from "../adapter/types";
 import { currentInternals, type RunInternals } from "../runtime/context";
@@ -137,9 +137,35 @@ function durableAgent(agent: AnyAgent, seen = new Map<AnyAgent, AnyAgent>()): An
   });
   const clone = agent.clone({ tools, ...(isModel(agent.model) ? { model: durableAgentsModel(agent.model) } : {}) });
   seen.set(agent, clone);
-  clone.handoffs = agent.handoffs.map((handoff) => (handoff instanceof Agent ? durableAgent(handoff, seen) : handoff));
+  clone.handoffs = agent.handoffs.map((target) => {
+    if (target instanceof Agent) return durableAgent(target, seen);
+    if (target instanceof Handoff) return durableHandoff(target, seen);
+    return target;
+  });
   durableAgents.set(agent, clone);
   return clone;
+}
+
+/**
+ * A `handoff(agent, { onHandoff, … })` aimed at a durable copy of its agent. The SDK's own
+ * `clone({ agent })` keeps the tool name, description, input schema and filters; `onHandoff` (the
+ * app's callback) is journaled like a tool call, so a replayed turn does not run it again.
+ */
+function durableHandoff(target: Handoff<any, any>, seen: Map<AnyAgent, AnyAgent>): Handoff<any, any> {
+  const agent = durableAgent(target.agent, seen);
+  return target.clone({
+    agent,
+    onInvokeHandoff: async (context, args) => {
+      const run = currentInternals();
+      const invoke = async () => {
+        await target.onInvokeHandoff(context, args);
+        return null;
+      };
+      if (run) await run.durableCall({ name: `openai-agents:${turns.get(run) ?? 0}:handoff:${target.agentName}` }, invoke);
+      else await invoke();
+      return agent;
+    },
+  });
 }
 
 /** Wraps the provider that resolves string model names, so those models are durable too. */

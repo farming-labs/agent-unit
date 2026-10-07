@@ -181,3 +181,51 @@ describe("OpenAI Agents adapter", () => {
     expect(effects.refunds).toBe(1);
   });
 });
+
+describe("OpenAI Agents adapter: handoff()", () => {
+  it("makes agents reached through handoff() durable, and runs onHandoff once", async () => {
+    const { handoff } = await import("@openai/agents");
+    const calls = { count: 0 };
+    let lookups = 0;
+    let handoffs = 0;
+    let crash = true;
+    const model = scriptedModel(
+      [callTool("call_t", "transfer_to_Refunds", {}), callTool("call_l", "lookup", { orderId: "o_9" }), say("Order o_9 is refunded.")],
+      calls,
+    );
+    // The third model call fails once, as if the process died before the turn was recorded.
+    const flaky = {
+      ...model,
+      getStreamedResponse(request: ModelRequest) {
+        if (calls.count === 2 && crash) {
+          crash = false;
+          throw new Error("connection reset");
+        }
+        return model.getStreamedResponse(request);
+      },
+    } as Model;
+    const lookup = tool({
+      name: "lookup",
+      description: "Looks up an order.",
+      parameters: z.object({ orderId: z.string() }),
+      execute: async ({ orderId }) => `order ${orderId} #${++lookups}`,
+    });
+    const refunds = new Agent({ name: "Refunds", model: flaky, tools: [lookup] });
+    const triage = new Agent({ name: "Triage", model: flaky, handoffs: [handoff(refunds, { onHandoff: () => void ++handoffs })] });
+    const store = memoryStore();
+    const engine = createEngine({ triage }, { store }, adapters);
+    const { run, done } = await engine.start("triage", { prompt: "refund o_9" });
+    expect((await done)?.status).toBe("failed");
+    expect([lookups, handoffs]).toEqual([1, 1]);
+
+    // Recover the turn the way the sweep does after a crash.
+    await store.deleteJournalEntry(run.id, "step:openai-agents#0");
+    const record = (await store.getRun(run.id))!;
+    await store.putRun({ ...record, status: "running", error: undefined });
+    const recovered = await engine.continue(run.id);
+    expect(recovered).toMatchObject({ status: "completed", output: "Order o_9 is refunded." });
+    // The specialist's tool and the app's onHandoff callback each ran exactly once.
+    expect([lookups, handoffs]).toEqual([1, 1]);
+    expect(calls.count).toBe(3);
+  });
+});
