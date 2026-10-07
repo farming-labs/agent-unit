@@ -66,8 +66,9 @@ Step results are stored as JSON with support for `undefined`, `Date`, `BigInt`, 
 - **Crash:** a run left `running` without progress for longer than its lease is picked up by the
   sweep and continued from its journal. A run whose executions crash five times in a row (the
   engine's `maxCrashes`) fails with `RunCrashed` instead of being retried forever.
-- **Retention:** with `retention` set, the sweep deletes finished runs (with their journal and events)
-  that long after they finish.
+- **Retention:** with `retention` set, finished runs are deleted (with their journal and events)
+  that long after they finish: by the sweep, or in the Durable Objects runtime by the run's own
+  alarm, which is set to the deletion time when the run finishes.
 
 ## Storage
 

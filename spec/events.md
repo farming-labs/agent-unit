@@ -39,6 +39,11 @@ Over SSE each event is one message: `id:` is `seq`, `data:` is the JSON event.
 | **`RUN_SLEEPING`** | `wakeAt` | Parked: waiting for a time |
 | **`RUN_CANCELLED`** | | Terminal: the run was cancelled |
 
+Consecutive `TEXT_MESSAGE_CONTENT` deltas of one message (and `TOOL_CALL_ARGS` deltas of one call)
+that arrive within a short window (50ms by default) are merged into one event before it gets its
+`seq`, so live and replayed streams are identical and a long answer is a few events, not one per
+token. Concatenating the deltas of a message always gives its full text.
+
 `RUN_INTERRUPTED`, `RUN_SLEEPING` and `RUN_CANCELLED` are the agent-unit extensions. AG-UI clients
 that do not know them ignore them, as AG-UI requires.
 

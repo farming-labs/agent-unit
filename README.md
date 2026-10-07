@@ -451,10 +451,11 @@ conditional write, such as a database `UPDATE … WHERE version = ?`.
 - Mastra's own suspend and tool-approval flows need Mastra storage and are left to Mastra; pause
   Mastra agents with `useRun().interrupt()` in tools.
 - In the Durable Objects runtime, the run list and shared state live in one index object, written when
-  a run starts, parks or finishes (not on every step). `retention` is not applied there yet; delete
-  finished runs with `DELETE /runs/:id`. `agent-unit dev` runs the default runtime locally.
-- Every streamed text delta is stored as its own event, so a long streamed answer means many small
-  writes. Event numbers are what reconnecting clients resume from, so they are not batched.
+  a run starts, parks or finishes (not on every step). `agent-unit dev` runs the default runtime
+  locally.
+- Streamed text and tool-argument deltas that arrive within 50ms of each other are merged into one
+  event, so a long answer costs a few writes instead of one per token, and live clients see text up
+  to 50ms later. `deltaBatchMs: 0` on `createAgentUnit` keeps every delta its own event.
 
 ## License
 
