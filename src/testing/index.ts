@@ -39,3 +39,5 @@ export function createTestUnit(agents: Record<string, unknown>, options: TestUni
     events,
   };
 }
+
+export { assertAdapter, checkAdapter, type AdapterCheck, type AdapterCheckKit, type AdapterCheckOptions, type AdapterReport } from "./adapter";
