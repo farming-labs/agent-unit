@@ -71,6 +71,7 @@ function mastraMessages(input: Record<string, unknown>): unknown {
 
 export const mastraAdapter = defineAdapter<MastraAgent>({
   name: "mastra",
+  apiVersion: 1,
   match: (value): value is MastraAgent => {
     const agent = value as Partial<MastraAgent> | null;
     return (

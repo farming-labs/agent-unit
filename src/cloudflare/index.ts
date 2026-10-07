@@ -1,7 +1,7 @@
 import { DurableObject } from "cloudflare:workers";
 import { createStorage, type Storage } from "unstorage";
 import nullDriver from "unstorage/drivers/null";
-import type { AgentAdapter } from "../adapter/types";
+import { validateAdapter, type AgentAdapter } from "../adapter/types";
 import { functionAdapter, resolveAgent } from "../agents";
 import { AgentUnitError, RunEngine, type LoadedAgent } from "../runtime/engine";
 import { RunStore, type ListRunsFilter } from "../runtime/store";
@@ -90,7 +90,7 @@ const SELF_KEY = "agent-unit:run-id";
 export function createDurableAgentUnit(options: DurableAgentUnitOptions): DurableAgentUnit {
   const runsBinding = options.bindings?.runs ?? "AGENT_UNIT_RUNS";
   const indexBinding = options.bindings?.index ?? "AGENT_UNIT_INDEX";
-  const adapters = [...(options.adapters ?? []), functionAdapter];
+  const adapters = [...(options.adapters ?? []).map((adapter, index) => validateAdapter(adapter, `adapters[${index}]`)), functionAdapter];
   let loaded: LoadedAgent[] | undefined;
   const agents = () => (loaded ??= Object.entries(options.agents).map(([name, agent]) => resolveAgent(name, agent, adapters)));
   const budget = options.budget === false ? undefined : parseDuration(options.budget ?? "10m");

@@ -201,6 +201,7 @@ function approves(answer: unknown, callId: string): boolean {
 
 export const openAIAgentsAdapter = defineAdapter<AnyAgent>({
   name: "openai-agents",
+  apiVersion: 1,
   match: (value): value is AnyAgent => value instanceof Agent,
   describe(agent) {
     const tools = agent.tools.map((tool) => {

@@ -1,5 +1,5 @@
 import type { Storage } from "unstorage";
-import type { AgentAdapter } from "../adapter/types";
+import { validateAdapter, type AgentAdapter } from "../adapter/types";
 import { functionAdapter, resolveAgent } from "../agents";
 import { RunEngine } from "../runtime/engine";
 import { RunStore } from "../runtime/store";
@@ -44,7 +44,7 @@ const ms = (value: string | number | false | undefined) =>
 
 /** Builds a durable agent server from agents and storage. Mount `handler` anywhere that speaks Fetch. */
 export function createAgentUnit(options: AgentUnitOptions): AgentUnit {
-  const adapters = [...(options.adapters ?? []), functionAdapter];
+  const adapters = [...(options.adapters ?? []).map((adapter, index) => validateAdapter(adapter, `adapters[${index}]`)), functionAdapter];
   const agents = Object.entries(options.agents).map(([name, agent]) => resolveAgent(name, agent, adapters));
   const engine = new RunEngine({
     store: options.storage instanceof RunStore ? options.storage : new RunStore(options.storage),

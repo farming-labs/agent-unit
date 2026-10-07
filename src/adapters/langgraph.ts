@@ -286,6 +286,7 @@ function withCheckpointer(graph: CompiledGraph, kv: KeyValueStore): CompiledGrap
 
 export const langGraphAdapter = defineAdapter<CompiledGraph>({
   name: "langgraph",
+  apiVersion: 1,
   match: (value): value is CompiledGraph =>
     typeof value === "object" && value !== null && (value as CompiledGraph).lg_is_pregel === true && typeof (value as CompiledGraph).stream === "function",
   describe(graph) {

@@ -23,6 +23,7 @@ export function defineAgent<TOutput>(definition: AgentDefinition<TOutput> | Agen
 
 export const functionAdapter: AgentAdapter<DefinedAgent> = defineAdapter<DefinedAgent>({
   name: "agent-unit",
+  apiVersion: 1,
   match: (value): value is DefinedAgent => typeof value === "object" && value !== null && (value as DefinedAgent)[AGENT] === true,
   describe: (agent) => ({ description: agent.description, tools: agent.tools ?? [] }),
   run: (agent, ctx) => agent.run(ctx.input, ctx.run, ctx),

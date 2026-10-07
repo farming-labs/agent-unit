@@ -96,6 +96,7 @@ function durableToolLoopAgent(agent: ToolLoopAgentLike, durable: Durable): ToolL
  */
 export const aiSdkAdapter = defineAdapter<AiSdkAgent>({
   name: "ai-sdk",
+  apiVersion: 1,
   match: (value): value is AiSdkAgent => isToolLoopAgent(value) || isPlainConfig(value),
   describe(agent) {
     if (isToolLoopAgent(agent)) {
