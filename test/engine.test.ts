@@ -330,28 +330,36 @@ describe("host scheduling", () => {
   it("uses scheduleWake for sleeps, yields and the execution watchdog instead of in-process timers", async () => {
     const wakes: { id: string; at: number }[] = [];
     let steps = 0;
-    const engine = createEngine(
+    const scheduleWake = (id: string, at: number) => void wakes.push({ id, at });
+    // No budget for the sleeper: a 10ms budget could run out on a busy machine before it reaches its
+    // sleep, and it would yield instead, which is correct but not what this part checks.
+    const sleeper = createEngine(
       {
         nap: defineAgent(async (_input, run) => {
           await run.step("before", () => ++steps);
           await run.sleep("3h");
           return "rested";
         }),
+      },
+      { scheduleWake },
+    );
+    const engine = createEngine(
+      {
         long: defineAgent(async (_input, run) => {
           for (let i = 0; i < 3; i++) await run.step(`part-${i}`, () => new Promise((resolve) => setTimeout(() => resolve(++steps), 15)));
           return "done";
         }),
       },
-      { budgetMs: 10, scheduleWake: (id, at) => void wakes.push({ id, at }) },
+      { budgetMs: 10, scheduleWake },
     );
 
     const before = Date.now();
-    const nap = await engine.start("nap");
+    const nap = await sleeper.start("nap");
     expect(await nap.done).toMatchObject({ status: "sleeping" });
     // One watchdog while executing, then the wake time: no local timer, whatever the duration.
     const napWakes = wakes.filter((wake) => wake.id === nap.run.id);
     expect(napWakes).toHaveLength(2);
-    expect(napWakes[0]!.at).toBeGreaterThanOrEqual(before + engine.leaseMs);
+    expect(napWakes[0]!.at).toBeGreaterThanOrEqual(before + sleeper.leaseMs);
     expect(napWakes[1]!.at).toBeGreaterThanOrEqual(before + 3 * 3_600_000);
 
     // A yield asks the host to continue now rather than continuing in this process.
@@ -367,6 +375,7 @@ describe("host scheduling", () => {
     }
     expect(run).toMatchObject({ status: "completed", output: "done" });
     engine.close();
+    sleeper.close();
   });
 });
 
