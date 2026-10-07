@@ -165,7 +165,7 @@ describe("LangGraph adapter", () => {
     const record = (await store.getRun(run.id))!;
     await store.putRun({ ...record, status: "running", error: undefined });
     expect(Object.keys(await store.getJournal(run.id))).toEqual(["step:langgraph#0"]);
-    await store.putJournal(run.id, {});
+    await store.deleteJournalEntry(run.id, "step:langgraph#0");
     const recovered = await engine.continue(run.id);
     expect(recovered?.status).toBe("completed");
     expect(calls).toEqual({ plan: 1, act: 1 });

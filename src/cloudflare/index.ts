@@ -20,7 +20,8 @@ export type * from "./types";
 // yields and recovers a run whose isolate died. One shared index object holds what spans runs:
 // the run list, thread/agent/app state and adapter storage.
 
-export interface DurableAgentUnitOptions extends Pick<HandlerOptions, "basePath" | "authorize" | "heartbeatMs" | "version"> {
+export interface DurableAgentUnitOptions
+  extends Pick<HandlerOptions, "basePath" | "authorize" | "heartbeatMs" | "version" | "maxBodyBytes" | "maxBatch"> {
   name?: string;
   agents: Record<string, unknown>;
   /** Adapters tried before the built-in function adapter. */
@@ -34,7 +35,7 @@ export interface DurableAgentUnitOptions extends Pick<HandlerOptions, "basePath"
   bindings?: { runs?: string; index?: string };
 }
 
-type Envelope<T> = { ok: T } | { error: { status: 400 | 404 | 409; code: string; message: string } };
+type Envelope<T> = { ok: T } | { error: { status: 400 | 404 | 409 | 413 | 415; code: string; message: string } };
 
 async function envelope<T>(work: () => Promise<T>): Promise<Envelope<T>> {
   try {
@@ -57,6 +58,7 @@ interface RunStub {
   cancel(id: string): Promise<Envelope<RunRecord>>;
   getRun(id: string): Promise<Envelope<RunRecord>>;
   settled(id: string): Promise<Envelope<RunRecord | undefined>>;
+  deleteRun(id: string): Promise<Envelope<null>>;
   events(id: string, after: number): Promise<Envelope<ReadableStream<Uint8Array>>>;
 }
 
@@ -99,10 +101,10 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
     const ns = namespace<IndexStub>(env, indexBinding);
     return ns.get(ns.idFromName("index"));
   };
-  /** Storage where `runs`, `state` and `kv` live in the shared index; anything else in `local`. */
+  /** Storage where `runs`, the run index, `state` and `kv` live in the shared index object; journal and events in `local`. */
   const sharedStorage = (env: Bindings, local: ReturnType<typeof durableStorageDriver> | undefined): Storage => {
     const storage = createStorage({ driver: local ?? nullDriver() });
-    for (const base of ["runs", "state", "kv"]) storage.mount(base, indexStorageDriver(() => indexStub(env), base));
+    for (const base of ["runs", "index", "state", "kv"]) storage.mount(base, indexStorageDriver(() => indexStub(env), base));
     return storage;
   };
 
@@ -140,6 +142,8 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
         env: this.env as Record<string, string | undefined>,
         waitUntil: (promise) => this.ctx.waitUntil(promise),
         scheduleWake: (_id, at) => this.ctx.storage.setAlarm(at),
+        // Every cancel reaches this object, where the run executes: no need to poll the index for one.
+        remoteCancelCheck: false,
       }));
     }
 
@@ -174,6 +178,14 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
 
     getRun(id: string) {
       return envelope(() => this.engine.getRun(id));
+    }
+
+    deleteRun(id: string) {
+      return envelope(async () => {
+        await this.engine.deleteRun(id);
+        await this.ctx.storage.delete(SELF_KEY);
+        return null;
+      });
     }
 
     /** Resolves when the current execution stops (finished, failed, parked or yielded). */
@@ -253,6 +265,10 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
       return unwrap(await this.stub(id).getRun(id));
     }
 
+    async deleteRun(id: string) {
+      unwrap(await this.stub(id).deleteRun(id));
+    }
+
     listRuns(filter?: ListRunsFilter) {
       return new RunStore(sharedStorage(this.bindings, undefined)).listRuns(filter);
     }
@@ -295,6 +311,8 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
         authorize: options.authorize,
         heartbeatMs: options.heartbeatMs,
         version: options.version,
+        maxBodyBytes: options.maxBodyBytes,
+        maxBatch: options.maxBatch,
       });
       handlers.set(env, handler);
     }

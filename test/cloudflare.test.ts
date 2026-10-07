@@ -70,7 +70,7 @@ describe("Durable Objects runtime", () => {
 
     // The run lives in the object named by its id; the index only knows the record.
     expect([...runs.storages.keys()]).toEqual([run.id]);
-    expect([...runs.storages.get(run.id)!.data.keys()].some((key) => key.startsWith("journal:"))).toBe(true);
+    expect([...runs.storages.get(run.id)!.data.keys()].some((key) => key.startsWith("steps:"))).toBe(true);
     expect([...index.storages.get("index")!.data.keys()]).toContain(`runs:${run.id}`);
 
     const listed = await (await call("/runs?status=interrupted")).json();
@@ -172,5 +172,23 @@ describe("Durable Objects runtime", () => {
   it("emits the wrangler config for its bindings", () => {
     const { unit } = setup();
     expect(unit.wrangler.durable_objects.bindings.map((binding) => binding.class_name)).toEqual(["AgentUnitRun", "AgentUnitIndex"]);
+  });
+});
+
+describe("Durable Objects runtime: deletion", () => {
+  it("deletes a finished run's object data and its index entry", async () => {
+    const unit = createDurableAgentUnit({ agents: { hi: defineAgent(() => "hi") } });
+    const runs = new FakeNamespace(unit.AgentUnitRun as never);
+    const index = new FakeNamespace(unit.AgentUnitIndex as never);
+    const env = { AGENT_UNIT_RUNS: runs, AGENT_UNIT_INDEX: index };
+    runs.env = env;
+    index.env = env;
+    const call = (path: string, init?: RequestInit) => unit.fetch(new Request(`${ORIGIN}${path}`, init), env);
+    const run = await (await call("/agents/hi/runs", post({}))).json();
+    expect(run.status).toBe("completed");
+    expect((await call(`/runs/${run.id}`, { method: "DELETE" })).status).toBe(204);
+    expect((await call(`/runs/${run.id}`)).status).toBe(404);
+    expect([...runs.storages.get(run.id)!.data.keys()]).toEqual([]);
+    expect((await (await call("/runs")).json()).runs).toEqual([]);
   });
 });

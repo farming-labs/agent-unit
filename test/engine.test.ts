@@ -484,6 +484,7 @@ describe("exactly-once execution", () => {
     const engine = createEngine({ quick: defineAgent(async (_input, run) => run.step("one", () => 1)) });
     const id = await orphan(engine, "quick");
     // The crashed execution had stored events 2..5 but never updated the record (eventCount: 1).
+    await engine.store.appendEvents(id, [{ type: "RUN_STARTED", threadId: id, agent: "quick", seq: 1, runId: id, timestamp: Date.now() }]);
     const crashed = [2, 3, 4, 5].map((seq) => ({ type: "CUSTOM", name: "before-crash", value: seq, seq, runId: id, timestamp: Date.now() }));
     await engine.store.appendEvents(id, crashed as never);
     const final = await engine.continue(id);
@@ -492,7 +493,9 @@ describe("exactly-once execution", () => {
     expect(seqs).toEqual([...new Set(seqs)].sort((x, y) => x - y));
     expect(events.filter((event) => event.type === "CUSTOM")).toHaveLength(4);
     expect(seqs.at(-1)).toBe(final?.eventCount);
-    expect(Math.min(...events.filter((event) => event.type !== "CUSTOM").map((event) => event.seq))).toBe(6);
+    // The recovered execution's first event comes after the crashed one's last.
+    const recovered = events.filter((event) => event.type !== "CUSTOM" && event.type !== "RUN_STARTED");
+    expect(Math.min(...recovered.map((event) => event.seq))).toBe(6);
   });
 
   it("lets the executing process carry out a cancel sent to another process", async () => {
@@ -515,5 +518,128 @@ describe("exactly-once execution", () => {
     expect(new Set(seqs).size).toBe(seqs.length);
     expect(events.filter((event) => event.type === "RUN_CANCELLED")).toHaveLength(1);
     expect(events.map((event) => event.type)).not.toContain("RUN_FINISHED");
+  });
+});
+
+describe("hardening (0.1.4)", () => {
+  const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+  it("logs a storage failure during a timed wake instead of crashing the process", async () => {
+    const { vi } = await import("vitest");
+    const store = memoryStore();
+    const engine = createEngine({ nap: defineAgent(async (_input, run) => run.sleep(20)) }, { store });
+    await (await engine.start("nap")).done;
+    const errors = vi.spyOn(console, "error").mockImplementation(() => undefined);
+    const getItem = store.storage.getItem.bind(store.storage);
+    store.storage.getItem = (async () => {
+      throw new Error("redis is down");
+    }) as typeof store.storage.getItem;
+    await pause(60);
+    store.storage.getItem = getItem;
+    expect(errors.mock.calls.some((call) => String(call[0]).includes("could not wake"))).toBe(true);
+    errors.mockRestore();
+    engine.close();
+  });
+
+  it("lets only one of two racing resumes through", async () => {
+    let charges = 0;
+    const engine = createEngine({
+      refund: defineAgent(async (_input, run) => {
+        const decision = await run.interrupt<string>("approve");
+        await run.step("charge", () => ++charges);
+        return decision;
+      }),
+    });
+    const { run, done } = await engine.start("refund");
+    await done;
+    const results = await Promise.allSettled([engine.resume(run.id, "first"), engine.resume(run.id, "second")]);
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(results.find((result) => result.status === "rejected")).toMatchObject({ reason: { status: 409 } });
+    const winner = results.find((result) => result.status === "fulfilled") as PromiseFulfilledResult<{ done: Promise<unknown> }>;
+    await winner.value.done;
+    expect(charges).toBe(1);
+    expect((await engine.getRun(run.id)).output).toBe("first");
+  });
+
+  it("answers a cancel promptly even when the running step ignores the abort signal", async () => {
+    const engine = createEngine(
+      { stubborn: defineAgent(async (_input, run) => run.step("slow", () => pause(400))) },
+      { cancelWaitMs: 50 },
+    );
+    const { run, done } = await engine.start("stubborn");
+    await pause(20);
+    const started = Date.now();
+    const answer = await engine.cancel(run.id);
+    expect(Date.now() - started).toBeLessThan(300);
+    expect(answer).toMatchObject({ status: "running", cancelRequested: true });
+    expect(await done).toMatchObject({ status: "cancelled" });
+  });
+
+  it("fails a run whose executions keep crashing instead of retrying forever", async () => {
+    const engine = createEngine({ quick: defineAgent(() => "ok") }, { maxCrashes: 3 });
+    const now = new Date().toISOString();
+    const id = "run_crashloop000000000";
+    await engine.store.putRun({ id, agent: "quick", threadId: id, status: "running", input: {}, attempt: 2, eventCount: 1, createdAt: now, updatedAt: now, executing: true, crashes: 2 });
+    const final = await engine.continue(id);
+    expect(final).toMatchObject({ status: "failed", error: { name: "RunCrashed" }, crashes: 3 });
+    // A clean execution clears the streak.
+    const ok = await (await engine.start("quick")).done;
+    expect(ok?.executing).toBeUndefined();
+    expect(ok?.crashes).toBeUndefined();
+  });
+
+  it("wakes every due sleeper, oldest first, even with more than a thousand of them", async () => {
+    const store = memoryStore();
+    const engine = createEngine({ nap: defineAgent(async (_input, run) => run.sleep("1h")) }, { store });
+    const base = Date.now() - 10 * 60_000;
+    for (let i = 0; i < 1005; i++) {
+      const id = `run_sleeper${String(i).padStart(10, "0")}`;
+      const created = new Date(base + i * 100).toISOString();
+      // Older runs wake earlier; the newest five are not due yet.
+      const wakeAt = new Date(i < 1000 ? base + i : Date.now() + 3_600_000).toISOString();
+      await store.putRun({ id, agent: "nap", threadId: id, status: "sleeping", wakeAt, input: {}, attempt: 1, eventCount: 2, createdAt: created, updatedAt: created });
+    }
+    const due = await store.dueSleepers();
+    expect(due).toHaveLength(1000);
+    expect(due[0]).toBe("run_sleeper0000000000");
+    expect(await store.listRuns({ status: "sleeping", limit: 3 })).toHaveLength(3);
+    engine.close();
+  });
+
+  it("reads events in order and stops at a gap until the run has settled", async () => {
+    const store = memoryStore();
+    const event = (seq: number) => ({ type: "CUSTOM", name: "e", value: seq, seq, runId: "run_gaps00000000000000", timestamp: 0 });
+    await store.appendEvents("run_gaps00000000000000", [event(1), event(2), event(4)] as never);
+    expect((await store.readEvents("run_gaps00000000000000")).map((e) => e.seq)).toEqual([1, 2]);
+    expect((await store.readEvents("run_gaps00000000000000", 0, 4)).map((e) => e.seq)).toEqual([1, 2, 4]);
+  });
+
+  it("writes one journal entry per step and still reads journals stored as one key", async () => {
+    const store = memoryStore();
+    const writes: string[] = [];
+    const setItem = store.storage.setItem.bind(store.storage);
+    store.storage.setItem = ((key: string, value: never) => {
+      writes.push(key);
+      return setItem(key, value);
+    }) as typeof store.storage.setItem;
+    const engine = createEngine(
+      { steps: defineAgent(async (_input, run) => { for (let i = 0; i < 5; i++) await run.step(`s${i}`, () => i); return "ok"; }) },
+      { store },
+    );
+    const run = (await (await engine.start("steps")).done)!;
+    expect(writes.filter((key) => key.startsWith(`steps:${run.id}`))).toHaveLength(5);
+    expect(writes.filter((key) => key === `journal:${run.id}`)).toHaveLength(0);
+
+    await store.storage.setItem("journal:run_legacy00000000000", { "legacy#0": { kind: "step", value: 1 } } as never);
+    await store.putJournalEntry("run_legacy00000000000", "new#0", { kind: "step", value: 2 });
+    expect(Object.keys(await store.getJournal("run_legacy00000000000")).sort()).toEqual(["legacy#0", "new#0"]);
+  });
+
+  it("indexes runs stored before the index existed", async () => {
+    const store = memoryStore();
+    const now = new Date().toISOString();
+    await store.storage.setItem("runs:run_old000000000000000", { id: "run_old000000000000000", agent: "a", threadId: "t", status: "completed", input: {}, attempt: 1, eventCount: 2, createdAt: now, updatedAt: now } as never);
+    expect((await store.listRuns()).map((run) => run.id)).toEqual(["run_old000000000000000"]);
+    expect(await store.listRuns({ status: "completed" })).toHaveLength(1);
   });
 });

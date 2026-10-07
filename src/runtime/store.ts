@@ -29,10 +29,6 @@ export interface KeyValueStore {
 const pad = (seq: number) => String(seq).padStart(10, "0");
 
 /**
- * Persists runs, journals, events, state and leases on any unstorage driver: memory, the
- * filesystem, Redis, Cloudflare KV, Vercel KV, Netlify Blobs, Deno KV, a database, …
- */
-/**
  * Who may execute a run. The default keeps leases in the run storage with a read, a write and a
  * read back, which is best effort: two processes racing within a few milliseconds on an eventually
  * consistent store can both win. Pass leases backed by an atomic operation (Redis `SET NX PX` and a
@@ -54,8 +50,33 @@ export interface RunStoreOptions {
   leases?: LeaseBackend;
 }
 
+const TERMINAL: ReadonlySet<RunStatus> = new Set(["completed", "failed", "cancelled"]);
+const INDEX_VERSION = 1;
+const MAX_TIME = 9_999_999_999_999;
+const time = (ms: number) => String(Math.max(0, Math.min(MAX_TIME, Math.floor(ms)))).padStart(13, "0");
+
+/** Journal keys contain `:`, `#` and anything an adapter chose; storage keys get a safe encoding. */
+function encodeSegment(value: string): string {
+  let binary = "";
+  for (const byte of new TextEncoder().encode(value)) binary += String.fromCharCode(byte);
+  return btoa(binary).replaceAll("+", "-").replaceAll("/", "_").replace(/=+$/, "");
+}
+function decodeSegment(value: string): string {
+  const binary = atob(value.replaceAll("-", "+").replaceAll("_", "/"));
+  return new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
+}
+
+/**
+ * Persists runs, journals, events, state and leases on any unstorage driver: memory, the
+ * filesystem, Redis, Cloudflare KV, Vercel KV, Netlify Blobs, Deno KV, a database, …
+ *
+ * Runs are indexed (newest first overall and per status, sleepers by wake time, finished runs by
+ * when they finished), so listing, the sweep and retention read what they need instead of every
+ * run. Each journal entry is its own key, so a step writes one entry rather than the whole journal.
+ */
 export class RunStore {
   private readonly leases: LeaseBackend;
+  private indexReady: Promise<void> | undefined;
 
   constructor(
     readonly storage: Storage,
@@ -68,45 +89,142 @@ export class RunStore {
     return ((await this.storage.getItem(`runs:${id}`)) as RunRecord | null) ?? undefined;
   }
 
-  async putRun(run: RunRecord): Promise<void> {
+  /** Writes a run and moves its index entries. Pass `previous` when it is already at hand. */
+  async putRun(run: RunRecord, previous?: RunRecord | null): Promise<void> {
+    const before = previous === undefined ? await this.getRun(run.id) : previous;
     await this.storage.setItem(`runs:${run.id}`, run as never);
+    const next = this.indexKeys(run);
+    for (const key of before ? this.indexKeys(before) : []) if (!next.includes(key)) await this.storage.removeItem(key);
+    for (const key of next) await this.storage.setItem(key, run as never);
+  }
+
+  /** Index entries carry a copy of the record, so a listing never reads the runs themselves. */
+  private indexKeys(run: RunRecord): string[] {
+    const created = time(MAX_TIME - Date.parse(run.createdAt));
+    const keys = [`index:all:${created}:${run.id}`, `index:status:${run.status}:${created}:${run.id}`];
+    if (run.status === "sleeping" && run.wakeAt) keys.push(`index:wake:${time(Date.parse(run.wakeAt))}:${run.id}`);
+    if (TERMINAL.has(run.status)) keys.push(`index:done:${time(Date.parse(run.updatedAt))}:${run.id}`);
+    return keys;
+  }
+
+  /** Builds the index once for runs stored before it existed. */
+  private ensureIndex(): Promise<void> {
+    return (this.indexReady ??= (async () => {
+      if ((await this.storage.getItem("index:version")) === INDEX_VERSION) return;
+      for (const key of await this.storage.getKeys("runs")) {
+        const run = (await this.storage.getItem(key)) as RunRecord | null;
+        if (run) for (const indexKey of this.indexKeys(run)) await this.storage.setItem(indexKey, run as never);
+      }
+      await this.storage.setItem("index:version", INDEX_VERSION as never);
+    })().catch((error) => {
+      this.indexReady = undefined;
+      throw error;
+    }));
+  }
+
+  private async indexed(prefix: string): Promise<string[]> {
+    await this.ensureIndex();
+    return (await this.storage.getKeys(prefix)).sort();
   }
 
   async listRuns(filter: ListRunsFilter = {}): Promise<RunRecord[]> {
-    const keys = await this.storage.getKeys("runs");
+    const limit = filter.limit ?? 50;
     const runs: RunRecord[] = [];
-    for (const key of keys) {
+    // Newest first; stop as soon as enough match.
+    for (const key of await this.indexed(filter.status ? `index:status:${filter.status}` : "index:all")) {
       const run = (await this.storage.getItem(key)) as RunRecord | null;
       if (!run) continue;
       if (filter.agent && run.agent !== filter.agent) continue;
-      if (filter.status && run.status !== filter.status) continue;
       if (filter.threadId && run.threadId !== filter.threadId) continue;
+      if (filter.status && run.status !== filter.status) continue;
       runs.push(run);
+      if (runs.length >= limit) break;
     }
-    runs.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
-    return runs.slice(0, filter.limit ?? 50);
+    return runs;
+  }
+
+  /** Sleeping runs whose wake time has come, earliest first. */
+  async dueSleepers(now = Date.now()): Promise<string[]> {
+    const due: string[] = [];
+    for (const key of await this.indexed("index:wake")) {
+      const [, , at, id] = key.split(":");
+      if (Number(at) > now) break;
+      if (id) due.push(id);
+    }
+    return due;
+  }
+
+  /** Runs that are running according to the index (live, yielded or orphaned). */
+  async runningRuns(): Promise<string[]> {
+    return (await this.indexed("index:status:running")).map((key) => key.slice(key.lastIndexOf(":") + 1));
+  }
+
+  /** Finished (completed, failed, cancelled) runs last updated at or before `cutoff`, oldest first. */
+  async finishedBefore(cutoff: number): Promise<string[]> {
+    const ids: string[] = [];
+    for (const key of await this.indexed("index:done")) {
+      const [, , at, id] = key.split(":");
+      if (Number(at) > cutoff) break;
+      if (id) ids.push(id);
+    }
+    return ids;
+  }
+
+  /** Deletes a run with its journal, events, lease and index entries. */
+  async deleteRun(id: string): Promise<void> {
+    const run = await this.getRun(id);
+    for (const key of run ? this.indexKeys(run) : []) await this.storage.removeItem(key);
+    for (const base of [`steps:${id}`, `events:${id}`]) {
+      for (const key of await this.storage.getKeys(base)) await this.storage.removeItem(key);
+    }
+    await this.storage.removeItem(`journal:${id}`);
+    await this.storage.removeItem(`lease:${id}`);
+    await this.storage.removeItem(`runs:${id}`);
   }
 
   async getJournal(id: string): Promise<Journal> {
-    return ((await this.storage.getItem(`journal:${id}`)) as Journal | null) ?? {};
+    // Runs from before per-entry journals kept the whole journal under one key.
+    const journal: Journal = { ...(((await this.storage.getItem(`journal:${id}`)) as Journal | null) ?? {}) };
+    const base = `steps:${id}`;
+    for (const key of await this.storage.getKeys(base)) {
+      const entry = (await this.storage.getItem(key)) as JournalEntry | null;
+      if (entry) journal[decodeSegment(key.slice(key.lastIndexOf(":") + 1))] = entry;
+    }
+    return journal;
   }
 
+  /** Writes one journal entry. */
+  async putJournalEntry(id: string, key: string, entry: JournalEntry): Promise<void> {
+    await this.storage.setItem(`steps:${id}:${encodeSegment(key)}`, entry as never);
+  }
+
+  async deleteJournalEntry(id: string, key: string): Promise<void> {
+    await this.storage.removeItem(`steps:${id}:${encodeSegment(key)}`);
+  }
+
+  /** Writes every entry of a journal (tests and tools); executions write one entry at a time. */
   async putJournal(id: string, journal: Journal): Promise<void> {
-    await this.storage.setItem(`journal:${id}`, journal as never);
+    for (const [key, entry] of Object.entries(journal)) await this.putJournalEntry(id, key, entry);
   }
 
   async appendEvents(id: string, events: AgentEvent[]): Promise<void> {
     for (const event of events) await this.storage.setItem(`events:${id}:${pad(event.seq)}`, event as never);
   }
 
-  async readEvents(id: string, after = 0): Promise<AgentEvent[]> {
-    const keys = (await this.storage.getKeys(`events:${id}`)).sort();
+  /**
+   * Events after `after`, in order and without gaps: reads seq after+1, after+2, … until one is not
+   * there, so a reader never skips an event that is still being written (or not yet visible on an
+   * eventually consistent store). `upTo` reads past gaps once the caller knows the run settled.
+   */
+  async readEvents(id: string, after = 0, upTo?: number): Promise<AgentEvent[]> {
     const events: AgentEvent[] = [];
-    for (const key of keys) {
-      const seq = Number(key.slice(key.lastIndexOf(":") + 1));
-      if (seq <= after) continue;
-      const event = (await this.storage.getItem(key)) as AgentEvent | null;
-      if (event) events.push(event);
+    for (let seq = after + 1; upTo === undefined || seq <= upTo; seq++) {
+      const event = (await this.storage.getItem(`events:${id}:${pad(seq)}`)) as AgentEvent | null;
+      if (!event) {
+        if (upTo === undefined) break;
+        continue;
+      }
+      events.push(event);
     }
     return events;
   }
@@ -166,13 +284,13 @@ export class RunStore {
     return this.leases.expired(id);
   }
 
-  /** The highest event seq stored for a run: the truth after a crash, whatever the record says. */
-  async lastEventSeq(id: string): Promise<number> {
-    let last = 0;
-    for (const key of await this.storage.getKeys(`events:${id}`)) {
-      const seq = Number(key.slice(key.lastIndexOf(":") + 1));
-      if (Number.isFinite(seq) && seq > last) last = seq;
-    }
+  /**
+   * The highest event seq stored for a run: the truth after a crash, whatever the record says.
+   * Probes upward from what the record knows, so it costs one read per event the record missed.
+   */
+  async lastEventSeq(id: string, known = 0): Promise<number> {
+    let last = known;
+    while ((await this.storage.getItem(`events:${id}:${pad(last + 1)}`)) !== null) last++;
     return last;
   }
 }

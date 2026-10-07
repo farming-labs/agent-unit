@@ -149,9 +149,8 @@ describe("OpenAI Agents adapter", () => {
     expect((await done)?.status).toBe("failed");
 
     // Recover the turn the way the sweep does: the failed turn's outcome is not journaled.
-    const journal = await store.getJournal(run.id);
-    delete journal["step:openai-agents#0"];
-    await store.putJournal(run.id, journal);
+    expect(Object.keys(await store.getJournal(run.id))).toContain("step:openai-agents#0");
+    await store.deleteJournalEntry(run.id, "step:openai-agents#0");
     const record = (await store.getRun(run.id))!;
     await store.putRun({ ...record, status: "running", error: undefined });
     const recovered = await engine.continue(run.id);

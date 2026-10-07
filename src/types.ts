@@ -20,6 +20,10 @@ export interface RunRecord {
   wakeAt?: string;
   /** Set when a cancel arrived while another process was executing the run; that executor finishes the cancel. */
   cancelRequested?: boolean;
+  /** An execution started and has not finished; still set at the next start means it crashed. */
+  executing?: boolean;
+  /** Executions in a row that crashed. The run fails once this reaches the engine's `maxCrashes`. */
+  crashes?: number;
   attempt: number;
   eventCount: number;
   createdAt: string;

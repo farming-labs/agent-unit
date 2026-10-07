@@ -44,11 +44,22 @@ export interface EngineOptions {
    * is armed as a watchdog while a run executes, so a run whose process dies is picked up again.
    */
   scheduleWake?: (runId: string, at: number) => void | Promise<void>;
+  /**
+   * Check storage about once a second, while a run executes, for a cancel sent to another process.
+   * Default true. Runtimes that deliver every cancel to the executing process turn it off.
+   */
+  remoteCancelCheck?: boolean;
+  /** Fail a run whose executions crash (start but never finish) this many times in a row. Default 5. */
+  maxCrashes?: number;
+  /** Delete finished runs (with their journal and events) this long after they finish, in the sweep. */
+  retentionMs?: number;
+  /** How long `cancel` waits for an executing run to stop before answering. Default 2s. */
+  cancelWaitMs?: number;
 }
 
 export class AgentUnitError extends Error {
   constructor(
-    readonly status: 400 | 404 | 409,
+    readonly status: 400 | 404 | 409 | 413 | 415,
     readonly code: string,
     message: string,
   ) {
@@ -138,26 +149,12 @@ class RunExecution implements RunInternals {
 
   async record(key: string, value: unknown): Promise<void> {
     this.journal[key] = { kind: "step", value: encode(value) };
-    await this.persistJournal();
+    await this.persistEntry(key);
   }
 
-  private journalWrites: Promise<void> = Promise.resolve();
-  private journalDirty = false;
-
-  /**
-   * Writes the journal, one write at a time: model and tool records can land together, and two
-   * overlapping writes to one key are not safe on every driver (a file can end up interleaved).
-   * Each caller resolves once a write that includes its entry has finished.
-   */
-  private persistJournal(): Promise<void> {
-    this.journalDirty = true;
-    const write = async () => {
-      if (!this.journalDirty) return;
-      this.journalDirty = false;
-      await this.engine.store.putJournal(this.run.id, this.journal);
-    };
-    this.journalWrites = this.journalWrites.then(write, write);
-    return this.journalWrites;
+  /** Writes one journal entry: a step costs one write, however long the run's history. */
+  private persistEntry(key: string): Promise<void> {
+    return this.engine.store.putJournalEntry(this.run.id, key, this.journal[key]!);
   }
 
   /** Throws when the run may not start new live work: parked, cancelled or out of budget. */
@@ -166,7 +163,7 @@ class RunExecution implements RunInternals {
     if (this.parked) throw new RunHalted(this.parked.kind === "interrupt" ? "interrupt" : this.parked.kind);
     if (this.cancelled) throw new RunHalted("cancel");
     const now = Date.now();
-    if (now - this.lastRemoteCheck > 1000) {
+    if (this.engine.options.remoteCancelCheck !== false && now - this.lastRemoteCheck > 1000) {
       this.lastRemoteCheck = now;
       // A cancel sent to another process is recorded on the run; this executor carries it out.
       const stored = await this.engine.store.getRun(this.run.id);
@@ -196,7 +193,7 @@ class RunExecution implements RunInternals {
       if (error instanceof RunHalted || this.parked || this.cancelled) throw error;
       if (options.journalErrors !== false) {
         this.journal[stepKey] = { kind: "step", error: encode(error) };
-        await this.persistJournal();
+        await this.persistEntry(stepKey);
       }
       throw error;
     }
@@ -233,7 +230,7 @@ class RunExecution implements RunInternals {
     await this.assertLive();
     const wakeAt = Date.now() + ms;
     this.journal[key] = { kind: "sleep", wakeAt };
-    await this.persistJournal();
+    await this.persistEntry(key);
     if (ms === 0) return;
     this.park({ kind: "sleep", key, wakeAt });
     throw new RunHalted("sleep");
@@ -305,6 +302,25 @@ export class RunEngine {
   /** Runs an execution has claimed but not started yet: claimed before the first await, so two triggers never both start. */
   private readonly claimed = new Set<string>();
   private executions = 0;
+  private readonly locks = new Map<string, Promise<void>>();
+
+  /**
+   * Serializes state changes of one run (resume, cancel, wake) in this process, so two requests
+   * racing on one run see each other's change: the second resume of an interrupt gets 409.
+   */
+  private async locked<T>(id: string, change: () => Promise<T>): Promise<T> {
+    const previous = this.locks.get(id) ?? Promise.resolve();
+    let release!: () => void;
+    const current = previous.then(() => new Promise<void>((resolve) => (release = resolve)));
+    this.locks.set(id, current);
+    await previous;
+    try {
+      return await change();
+    } finally {
+      release();
+      if (this.locks.get(id) === current) this.locks.delete(id);
+    }
+  }
   private readonly timers = new Map<string, ReturnType<typeof setTimeout>>();
 
   constructor(readonly options: EngineOptions) {
@@ -370,28 +386,36 @@ export class RunEngine {
 
   /** Answers a parked interrupt and continues the run. */
   async resume(id: string, answer: unknown) {
-    const run = await this.getRun(id);
-    if (run.status !== "interrupted" || !run.interrupt) {
-      throw new AgentUnitError(409, "run_not_interrupted", `Run "${id}" is ${run.status}, not interrupted.`);
-    }
-    const journal = await this.store.getJournal(id);
-    journal[run.interrupt.key] = { kind: "interrupt", answered: true, answer: encode(answer) };
-    await this.store.putJournal(id, journal);
-    delete run.interrupt;
-    run.status = "running";
-    run.updatedAt = nowIso();
-    await this.store.putRun(run);
-    return { run, done: this.schedule(id) };
+    return this.locked(id, async () => {
+      const run = await this.getRun(id);
+      if (run.status !== "interrupted" || !run.interrupt) {
+        throw new AgentUnitError(409, "run_not_interrupted", `Run "${id}" is ${run.status}, not interrupted.`);
+      }
+      const previous = structuredClone(run);
+      await this.store.putJournalEntry(id, run.interrupt.key, { kind: "interrupt", answered: true, answer: encode(answer) });
+      delete run.interrupt;
+      run.status = "running";
+      run.updatedAt = nowIso();
+      await this.store.putRun(run, previous);
+      return { run, done: this.schedule(id) };
+    });
   }
 
   async cancel(id: string): Promise<RunRecord> {
+    return this.locked(id, () => this.cancelNow(id));
+  }
+
+  private async cancelNow(id: string): Promise<RunRecord> {
     const run = await this.getRun(id);
     if (TERMINAL.has(run.status)) return run;
     const execution = this.active.get(id);
     if (execution) {
       execution.cancel();
-      await this.idle(id);
-      return this.getRun(id);
+      // A step that ignores the abort signal may run on; answer anyway and let it end in the background.
+      const timeout = new Promise((resolve) => setTimeout(resolve, this.options.cancelWaitMs ?? 2000));
+      await Promise.race([this.idle(id), timeout]);
+      const current = await this.getRun(id);
+      return current.status === "running" ? { ...current, cancelRequested: true } : current;
     }
     // Executing in another process: ask that executor to cancel. Writing the cancel here would race
     // its events and its final write; it notices within a second, at its next step.
@@ -406,14 +430,27 @@ export class RunEngine {
     delete run.interrupt;
     delete run.wakeAt;
     delete run.cancelRequested;
-    run.eventCount = Math.max(run.eventCount, await this.store.lastEventSeq(id));
+    const previous = await this.store.getRun(id);
+    run.eventCount = await this.store.lastEventSeq(id, run.eventCount);
     const event = { type: "RUN_CANCELLED", seq: ++run.eventCount, runId: id, timestamp: Date.now() } as AgentEvent;
     run.updatedAt = nowIso();
-    await this.store.putRun(run);
+    await this.store.putRun(run, previous);
     await this.store.appendEvents(id, [event]);
     this.publish(event);
     this.clearTimer(id);
     return run;
+  }
+
+  /** Deletes a finished run with its journal and events. Running or parked runs must be cancelled first. */
+  async deleteRun(id: string): Promise<void> {
+    return this.locked(id, async () => {
+      const run = await this.getRun(id);
+      if (!TERMINAL.has(run.status)) {
+        throw new AgentUnitError(409, "run_not_finished", `Run "${id}" is ${run.status}; cancel it before deleting it.`);
+      }
+      this.clearTimer(id);
+      await this.store.deleteRun(id);
+    });
   }
 
   /** Continues a running run whose execution stopped: after a yield, or a crash. */
@@ -431,21 +468,28 @@ export class RunEngine {
   async sweep(now = Date.now()) {
     const woken: string[] = [];
     const recovered: string[] = [];
+    const deleted: string[] = [];
     const work: Promise<unknown>[] = [];
-    for (const run of await this.store.listRuns({ status: "sleeping", limit: 1000 })) {
-      if (!run.wakeAt || Date.parse(run.wakeAt) > now) continue;
-      const execution = await this.wakeRun(run.id);
+    // Earliest wake time first, every due sleeper, not just the newest runs.
+    for (const id of await this.store.dueSleepers(now)) {
+      const execution = await this.wakeRun(id);
       if (execution) {
-        woken.push(run.id);
+        woken.push(id);
         work.push(execution.done);
       }
     }
-    for (const run of await this.store.listRuns({ status: "running", limit: 1000 })) {
-      if (this.busy(run.id) || !(await this.store.leaseExpired(run.id))) continue;
-      recovered.push(run.id);
-      work.push(this.schedule(run.id));
+    for (const id of await this.store.runningRuns()) {
+      if (this.busy(id) || !(await this.store.leaseExpired(id))) continue;
+      recovered.push(id);
+      work.push(this.schedule(id));
     }
-    return { woken, recovered, settled: Promise.allSettled(work).then(() => undefined) };
+    if (this.options.retentionMs !== undefined) {
+      for (const id of await this.store.finishedBefore(now - this.options.retentionMs)) {
+        await this.store.deleteRun(id);
+        deleted.push(id);
+      }
+    }
+    return { woken, recovered, deleted, settled: Promise.allSettled(work).then(() => undefined) };
   }
 
   async wake(id: string): Promise<boolean> {
@@ -473,19 +517,21 @@ export class RunEngine {
 
   /** Wakes a sleeping run now and starts it; `done` settles when that execution stops. */
   async wakeRun(id: string): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
-    const run = await this.store.getRun(id);
-    if (!run || run.status !== "sleeping") return undefined;
-    const journal = await this.store.getJournal(id);
-    // A run parks on one sleep at a time, so waking it (on time or early) ends every pending sleep.
-    for (const entry of Object.values(journal)) {
-      if (entry.kind === "sleep" && !entry.woke) entry.woke = true;
-    }
-    await this.store.putJournal(id, journal);
-    run.status = "running";
-    delete run.wakeAt;
-    run.updatedAt = nowIso();
-    await this.store.putRun(run);
-    return { done: this.schedule(id) };
+    return this.locked(id, async () => {
+      const run = await this.store.getRun(id);
+      if (!run || run.status !== "sleeping") return undefined;
+      const previous = structuredClone(run);
+      const journal = await this.store.getJournal(id);
+      // A run parks on one sleep at a time, so waking it (on time or early) ends every pending sleep.
+      for (const [key, entry] of Object.entries(journal)) {
+        if (entry.kind === "sleep" && !entry.woke) await this.store.putJournalEntry(id, key, { ...entry, woke: true });
+      }
+      run.status = "running";
+      delete run.wakeAt;
+      run.updatedAt = nowIso();
+      await this.store.putRun(run, previous);
+      return { done: this.schedule(id) };
+    });
   }
 
   /** Events from `after`, then live ones, until the run settles. */
@@ -523,14 +569,22 @@ export class RunEngine {
           if (SETTLING_EVENTS.has(event.type) && (await settled(event))) return;
         }
         if (!this.active.has(id)) {
-          // Not executing here: another process may be, so read what it stored.
+          // Not executing here: another process may be, so read what it stored, in order.
           for (const event of await this.store.readEvents(id, cursor)) {
             cursor = event.seq;
             yield event;
             if (await settled(event)) return;
           }
           const run = await this.store.getRun(id);
-          if (!run || (run.status !== "running" && !this.active.has(id) && run.eventCount <= cursor)) return;
+          if (!run) return;
+          if (run.status !== "running" && !this.active.has(id)) {
+            // Settled: its last events are final, so read past any gap that will never fill.
+            for (const event of await this.store.readEvents(id, cursor, run.eventCount)) {
+              cursor = event.seq;
+              yield event;
+            }
+            if (run.eventCount <= cursor) return;
+          }
         }
         await new Promise<void>((resolve) => {
           wake = resolve;
@@ -567,6 +621,8 @@ export class RunEngine {
 
   private schedule(id: string): Promise<RunRecord | undefined> {
     const promise = this.execute(id);
+    // Callers may drop this promise (a timer, a sweep); a storage error must be reported, not crash the process.
+    promise.catch((error) => console.error(`[agent-unit] run ${id} could not execute:`, error));
     this.options.waitUntil?.(promise);
     return promise;
   }
@@ -596,11 +652,27 @@ export class RunEngine {
       const leaseOwner = `${this.owner}:${++this.executions}`;
       if (!(await this.store.acquireLease(id, leaseOwner, this.leaseMs))) return run;
 
+      const previous = structuredClone(run);
+      // An execution that started but never finished crashed (or its process was stopped).
+      if (run.executing) run.crashes = (run.crashes ?? 0) + 1;
       run.attempt += 1;
       // After a crash the record can lag the events already stored; numbering resumes after them.
-      run.eventCount = Math.max(run.eventCount, await this.store.lastEventSeq(id));
+      run.eventCount = await this.store.lastEventSeq(id, run.eventCount);
       run.updatedAt = nowIso();
-      await this.store.putRun(run);
+      if ((run.crashes ?? 0) >= (this.options.maxCrashes ?? 5)) {
+        // Retrying forever would never end; fail it so someone looks at it.
+        run.status = "failed";
+        run.error = { name: "RunCrashed", message: `The run crashed ${run.crashes} times in a row; giving up.` };
+        delete run.executing;
+        const event = { type: "RUN_ERROR", message: run.error.message, code: run.error.name, seq: ++run.eventCount, runId: id, timestamp: Date.now() } as AgentEvent;
+        await this.store.putRun(run, previous);
+        await this.store.appendEvents(id, [event]);
+        this.publish(event);
+        await this.store.releaseLease(id, leaseOwner);
+        return run;
+      }
+      run.executing = true;
+      await this.store.putRun(run, previous);
       execution = new RunExecution(this, run, await this.store.getJournal(id), leaseOwner);
       this.active.set(id, execution);
       execution.startRenewing();
@@ -643,7 +715,7 @@ export class RunEngine {
         return undefined;
       }
       // A cancel that arrived from another process while this one executed.
-      const latest = await this.store.getRun(id);
+      const latest = (await this.store.getRun(id)) ?? null;
       if (latest?.cancelRequested && !execution.cancelled && (execution.parked || failure !== undefined)) execution.cancel();
       delete run.cancelRequested;
 
@@ -672,7 +744,9 @@ export class RunEngine {
       }
       await execution.flush();
       run.updatedAt = nowIso();
-      await this.store.putRun(run);
+      delete run.executing;
+      delete run.crashes;
+      await this.store.putRun(run, latest);
     } finally {
       execution.stopRenewing();
       this.active.delete(id);
@@ -696,7 +770,7 @@ export class RunEngine {
     this.clearTimer(id);
     const timer = setTimeout(() => {
       this.timers.delete(id);
-      void this.wake(id);
+      this.wake(id).catch((error) => console.error(`[agent-unit] run ${id} could not wake:`, error));
     }, Math.max(0, delay));
     (timer as { unref?: () => void }).unref?.();
     this.timers.set(id, timer);
