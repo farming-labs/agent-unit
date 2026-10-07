@@ -50,12 +50,18 @@ Step results are stored as JSON with support for `undefined`, `Date`, `BigInt`, 
   boundary, and continues in a fresh invocation. Nothing is lost because everything completed is
   in the journal.
 - **Crash:** a run left `running` without progress for longer than its lease is picked up by the
-  sweep and continued from its journal.
+  sweep and continued from its journal. A run whose executions crash five times in a row (the
+  engine's `maxCrashes`) fails with `RunCrashed` instead of being retried forever.
+- **Retention:** with `retention` set, the sweep deletes finished runs (with their journal and events)
+  that long after they finish.
 
 ## Storage
 
-Everything lives in one unstorage namespace: `runs:`, `journal:`, `events:<run>:<seq>`, `state:`,
-`lease:` and `kv:` (adapter storage). Any driver works; serverless hosts need a shared one (Redis,
+Everything lives in one unstorage namespace: `runs:`, `steps:<run>:<entry>` (one key per journal
+entry), `events:<run>:<seq>`, `index:` (runs by recency and status, sleepers by wake time, finished
+runs by finish time), `state:`, `lease:` and `kv:` (adapter storage). Events are read in seq order
+and a reader stops at a gap until the run settles, so a reader never skips an event that is still
+being written. Any driver works; serverless hosts need a shared one (Redis,
 Upstash, Cloudflare KV, Vercel KV, Netlify Blobs, a database), because their filesystem does not
 survive between invocations. Filesystem drivers write atomically by default, so a crash never leaves
 a torn record, and an execution writes its journal one write at a time.

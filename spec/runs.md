@@ -21,6 +21,8 @@ interface RunRecord {
   interrupt?: { key: string; name: string; payload: unknown };   // when interrupted
   wakeAt?: string;           // ISO time, when sleeping
   cancelRequested?: boolean; // a cancel reached another process while this run executed
+  executing?: boolean;       // an execution started and has not finished
+  crashes?: number;          // executions in a row that crashed; the run fails at the limit (default 5)
   attempt: number;           // how many times the run has been (re)started
   eventCount: number;        // events stored so far; the next event's seq is eventCount + 1
   createdAt: string;
@@ -33,9 +35,11 @@ the run uses no compute until it is answered or woken.
 
 ## HTTP API
 
-All paths are relative to the configured base path (default `/`). Bodies are JSON. Errors are
-`{ "error": { "code": string, "message": string } }` with status 400 (bad input), 404 (unknown agent
-or run) or 409 (wrong run state, for example resuming a run that is not interrupted).
+All paths are relative to the configured base path (default `/`). Request bodies must be sent as
+`application/json` and are limited to 1 MB by default; an MCP batch holds at most 20 messages.
+Errors are `{ "error": { "code": string, "message": string } }` with status 400 (bad input), 404
+(unknown agent or run), 409 (wrong run state, for example resuming a run that is not interrupted, or
+a second resume racing the first), 413 (body too large) or 415 (body not JSON).
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -47,6 +51,7 @@ or run) or 409 (wrong run state, for example resuming a run that is not interrup
 | `GET` | `/runs/:id/events` | The run's events (SSE), from `after` or `Last-Event-ID` |
 | `POST` | `/runs/:id/resume` | Answer the pending interrupt |
 | `POST` | `/runs/:id/cancel` | Cancel a running, interrupted or sleeping run (see below) |
+| `DELETE` | `/runs/:id` | Delete a finished run with its journal and events (`204`; `409` while it is running or parked) |
 | `GET` | `/manifest.json` | The manifest |
 | `GET` | `/.well-known/agent.json` | The A2A agent card |
 | `POST` | `/mcp` | MCP (JSON-RPC over streamable HTTP) |
@@ -82,7 +87,9 @@ with `Accept: text/event-stream`, otherwise `202` (or `200` once settled, on hos
 
 ### Cancel
 
-A parked run, or one whose executor has died, is cancelled at once: the response has
+A run executing in the same process is asked to stop and the response comes within about two
+seconds, with `cancelRequested: true` if its current step has not stopped yet. A parked run, or one
+whose executor has died, is cancelled at once: the response has
 `status: "cancelled"` and a `RUN_CANCELLED` event follows the last stored event. A run that another
 process is executing gets `cancelRequested: true` instead; that executor notices within a second, at
 its next step, emits `RUN_CANCELLED` and records `cancelled`. If it finishes first, the run completes.

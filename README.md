@@ -260,6 +260,8 @@ export default defineConfig({
   sweep: "*/5 * * * *",                              // sweep schedule, or false
   basePath: "/api/agents",
   authorize: (request) => request.headers.get("authorization") === `Bearer ${process.env.API_TOKEN}`,
+  retention: "30d",                                  // delete finished runs 30 days after they finish
+  maxBodyBytes: 1_000_000,                           // largest accepted request body (default 1 MB)
   // agents: { support },                            // instead of the agents/ directory
   // adapters: [myAdapter],                          // extra framework adapters
   // nitro: { … },                                   // passed through to Nitro
@@ -288,6 +290,7 @@ for await (const event of agents.run("refund", { orderId: "o_1" })) {
 for await (const event of agents.resume(runId, { approved: true })) console.log(event.type);
 
 await agents.list({ status: "interrupted" }); // an approvals inbox in one call
+await agents.delete(runId);                   // remove a finished run and its history
 ```
 
 The client reconnects dropped streams from the last event it saw.
@@ -396,9 +399,13 @@ See [spec/adapters.md](./spec/adapters.md) for native adapters that bring their 
   Mastra agents with `useRun().interrupt()` in tools.
 - OpenAI Agents handoffs declared with `handoff(agent, …)` keep their agent as is; plain agent
   handoffs are made durable.
-- In the Durable Objects runtime, the run list and shared state live in one index object, which
-  bounds how many run updates per second it can take. `agent-unit dev` runs the default runtime
-  locally; Durable Objects behaviour is exercised with `wrangler dev` or workerd.
+- In the Durable Objects runtime, the run list and shared state live in one index object, written when
+  a run starts, parks or finishes (not on every step). `retention` is not applied there yet; delete
+  finished runs with `DELETE /runs/:id`. `agent-unit dev` runs the default runtime locally.
+- Every streamed text delta is stored as its own event, so a long streamed answer means many small
+  writes. Event numbers are what reconnecting clients resume from, so they are not batched.
+- Concurrent state changes to one run (two resumes, a resume during a cancel) are serialized within
+  a process; across processes, the second writer can still win on stores without atomic writes.
 
 ## License
 
