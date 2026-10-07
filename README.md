@@ -338,7 +338,11 @@ const unit = createAgentUnit({
   agents: { support },
   storage,                       // any unstorage instance
   basePath: "/api/agents",
-  authorize: async (request) => (await getSession(request)) !== null,
+  // Second argument: what the request does, with the run's agent and thread taken from storage.
+  authorize: async (request, { action, threadId }) => {
+    const session = await getSession(request);
+    return session !== null && (threadId === undefined || threadId.startsWith(`${session.userId}:`));
+  },
   budget: "60s",
 });
 

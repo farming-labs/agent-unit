@@ -3,8 +3,8 @@
 ## Identity
 
 - **Run id**: `run_` followed by 20 lowercase base-32 characters. Unique per invocation.
-- **Thread id**: chosen by the caller (`threadId` in the start request) or, when omitted, equal to
-  the run id. Conversation memory and `thread`-scoped state belong to the thread, so several runs
+- **Thread id**: chosen by the caller (`threadId` in the start request: 1 to 256 printable
+  characters) or, when omitted, equal to the run id. Conversation memory and `thread`-scoped state belong to the thread, so several runs
   can continue one conversation.
 
 ## Run record
@@ -39,7 +39,17 @@ All paths are relative to the configured base path (default `/`). Request bodies
 `application/json` and are limited to 1 MB by default; an MCP batch holds at most 20 messages.
 Errors are `{ "error": { "code": string, "message": string } }` with status 400 (bad input), 404
 (unknown agent or run), 409 (wrong run state, for example resuming a run that is not interrupted, or
-a second resume racing the first), 413 (body too large) or 415 (body not JSON).
+a second resume racing the first), 413 (body too large) or 415 (body not JSON). A path with invalid
+percent-encoding gets 400.
+
+### Authorization
+
+An app's `authorize(request, context)` runs before every route except the agent card. `context` says
+what the request does: `action` (`manifest`, `list`, `start`, `read`, `events`, `resume`, `cancel`,
+`delete`, `mcp`) and, where they apply, `agent`, `runId` and `threadId`. For a request about an
+existing run, `agent` and `threadId` come from the stored run, never from the request, so an app can
+check that the caller owns the thread. A caller that is not authorized gets 401 whether or not the run
+exists. Each MCP `tools/call` is authorized like a `start`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
