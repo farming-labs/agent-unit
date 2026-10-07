@@ -391,26 +391,74 @@ const { run, done } = await engine.start("support", { prompt: "refund o_1" });
 object that implements `RunService` from `agent-unit/server`. The Durable Objects runtime is one
 such implementation: it routes each call to the run's object instead of running it in-process.
 
-## Write an adapter
+## Adapters for other frameworks
+
+AI SDK, Mastra, OpenAI Agents and LangGraph are supported out of the box. Any other framework can
+publish its own adapter package and maintain it on its own schedule: no change to agent-unit, no
+pull request. To use one:
+
+```sh
+npx agent-unit add agent-unit-adapter-crew
+```
+
+It installs the package, checks that it is an adapter, and adds two lines to
+`agent-unit.config.ts` (asking first; `--yes` skips the question). Adding them by hand works the same:
+
+```ts
+import crewAdapter from "agent-unit-adapter-crew";
+export default defineConfig({ adapters: [crewAdapter()] });
+```
+
+Adapters in the config are tried before the built-in ones, so a framework's own adapter replaces
+agent-unit's.
+
+### Write and publish an adapter
 
 An adapter teaches agent-unit one framework. Most are a few dozen lines:
 
 ```ts
+// agent-unit-adapter-crew/src/index.ts
 import { defineAdapter } from "agent-unit/adapter";
+import { CrewAgent } from "crew";
 
-export const myAdapter = defineAdapter<MyAgent>({
-  name: "my-framework",
-  match: (value): value is MyAgent => value instanceof MyAgent,
-  describe: (agent) => ({ description: agent.description, tools: agent.tools.map(({ name }) => ({ name })) }),
-  async run(agent, ctx) {
-    const model = ctx.durable.model(agent.model); // journaled, streams text events
-    const tools = ctx.durable.tools(agent.tools); // journaled, emits tool events
-    return agent.run(ctx.input, { model, tools, signal: ctx.signal });
-  },
-});
+export default function crewAdapter() {
+  return defineAdapter<CrewAgent>({
+    name: "crew",
+    apiVersion: 1, // the adapter interface this was written for
+    match: (value): value is CrewAgent => value instanceof CrewAgent,
+    describe: (agent) => ({ description: agent.description, tools: agent.tools.map(({ name }) => ({ name })) }),
+    async run(agent, ctx) {
+      const model = ctx.durable.model(agent.model); // journaled, streams text events
+      const tools = ctx.durable.tools(agent.tools); // journaled, emits tool events
+      return agent.run(ctx.input, { model, tools, signal: ctx.signal });
+    },
+  });
+}
 ```
 
-See [spec/adapters.md](./spec/adapters.md) for native adapters that bring their own persistence.
+To publish it:
+
+- **Export a function returning the adapter as the default export**, so `agent-unit add` can find it.
+- **Name it** `agent-unit-adapter-<framework>`, or `@your-scope/agent-unit`, and add the
+  `agent-unit-adapter` keyword, so people can find it on npm.
+- **Declare `agent-unit` and your framework as peer dependencies**, so the app's copies are used.
+- **Check it** with the same checks agent-unit runs on its own adapters, in any test runner. Report
+  every real side effect through `kit.effect`; the checks fail when one runs outside a journaled
+  call, or runs again after a restart:
+
+```ts
+import { assertAdapter } from "agent-unit/testing";
+
+test("agent-unit adapter", () =>
+  assertAdapter({
+    adapter: crewAdapter(),
+    agent: (kit) => new CrewAgent({ model, tools: [refundTool(() => kit.effect("refund"))] }),
+    // Optional: an agent that pauses through your framework, and the answer that resumes it.
+    pause: { agent: (kit) => approvalAgent(kit), answer: { approved: true } },
+  }));
+```
+
+See [spec/adapters.md](./spec/adapters.md) for adapters of frameworks that keep their own state.
 
 ## Several servers, one store
 
