@@ -1,0 +1,18 @@
+{
+  "name": "agent-unit-cloudflare-ai-sdk",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "agent-unit dev",
+    "build": "agent-unit build",
+    "deploy": "agent-unit build && wrangler deploy",
+    "verify": "node scripts/verify.mjs"
+  },
+  "dependencies": {
+    "@ai-sdk/anthropic": "4.0.74",
+    "@ai-sdk/openai": "4.0.86",
+    "agent-unit": "file:../..",
+    "ai": "7.0.30",
+    "zod": "4.3.6"
+  }
+}
