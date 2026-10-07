@@ -79,7 +79,7 @@ agent-unit recognises agents from these frameworks when your `package.json` depe
 | --- | --- | --- | --- |
 | [AI SDK](https://ai-sdk.dev) | `new ToolLoopAgent(…)` or `streamText` settings | Every model call and tool call | `useRun().interrupt()` in a tool |
 | [Mastra](https://mastra.ai) | `new Agent(…)` | Every model call and tool call (on a fork; your agent is untouched) | `useRun().interrupt()` in a tool |
-| [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) | `new Agent(…)` | Model responses and function tools, per turn; handoffs included | Tool approvals (`needsApproval: true`) |
+| [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) | `new Agent(…)` | Model responses and function tools, per turn; handoffs included, `handoff()` options too | Tool approvals (`needsApproval: true`) |
 | [LangGraph](https://langchain-ai.github.io/langgraphjs/) | `graph.compile()` | LangGraph checkpoints, stored in agent-unit storage | `interrupt()` in a node, resumed with `Command({ resume })` |
 | Plain TypeScript | `defineAgent(…)` | `run.step(…)` | `run.interrupt()`, `run.sleep()` |
 
@@ -392,24 +392,49 @@ export const myAdapter = defineAdapter<MyAgent>({
 
 See [spec/adapters.md](./spec/adapters.md) for native adapters that bring their own persistence.
 
+## Several servers, one store
+
+Run as many instances as you like over one store. With Redis it is exact out of the box:
+
+```ts
+storage: { driver: "redis", url: process.env.REDIS_URL },
+```
+
+With `createAgentUnit` on your own server, wrap the storage yourself:
+
+```ts
+import { RunStore } from "agent-unit/runtime";
+import { redisCoordination } from "agent-unit/redis";
+import { createStorage } from "unstorage";
+import redis from "unstorage/drivers/redis";
+
+const driver = redis({ url: process.env.REDIS_URL });
+const storage = new RunStore(createStorage({ driver }), redisCoordination({ client: () => driver.getInstance!() }));
+// createAgentUnit({ agents, storage })
+```
+
+`redisCoordination` needs one method, `eval`, so any client with Lua scripting works (ioredis,
+node-redis behind a small wrapper). For another store, implement `AtomicWrites.compareAndSet` (save
+a run record only if its `version` is still the one read) and `LeaseBackend` with that store's own
+conditional write, such as a database `UPDATE … WHERE version = ?`.
+
 ## Limits
 
-- Leases make one execution run a run at a time, renewed while it works. The default lease lives in
-  the run storage with a read, a write and a read back, which is best effort when two processes race
-  within milliseconds. Where executions must never overlap, pass `new RunStore(storage, { leases })`
-  with leases backed by an atomic operation (Redis `SET NX PX`, a database row lock), or use the
-  Durable Objects runtime, where each run's object is its only executor.
+- Leases make one execution run a run at a time, renewed while it works, and every change to a run
+  record is a versioned save: it lands only if nobody else saved the run since it was read, so two
+  processes racing to resume, cancel or wake a run cannot both win (the loser gets a 409). On Redis
+  both are atomic, wired in automatically by `agent-unit build` and `agent-unit dev` when `storage`
+  uses the `redis` driver. On other shared stores the save is check-then-write, which is exact
+  within a process and best effort across processes racing within milliseconds; pass atomic
+  `leases` and `atomic` writes to `RunStore` for those (see below), or use the Durable Objects
+  runtime, where each run's object is its only executor and saves go through the index atomically.
 - Mastra's own suspend and tool-approval flows need Mastra storage and are left to Mastra; pause
   Mastra agents with `useRun().interrupt()` in tools.
-- OpenAI Agents handoffs declared with `handoff(agent, …)` keep their agent as is; plain agent
-  handoffs are made durable.
 - In the Durable Objects runtime, the run list and shared state live in one index object, written when
   a run starts, parks or finishes (not on every step). `retention` is not applied there yet; delete
   finished runs with `DELETE /runs/:id`. `agent-unit dev` runs the default runtime locally.
 - Every streamed text delta is stored as its own event, so a long streamed answer means many small
   writes. Event numbers are what reconnecting clients resume from, so they are not batched.
-- Concurrent state changes to one run (two resumes, a resume during a cancel) are serialized within
-  a process; across processes, the second writer can still win on stores without atomic writes.
 
 ## License
 

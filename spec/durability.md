@@ -74,6 +74,15 @@ numbering resumes after the highest event already stored, so events from a crash
 never overwritten. Leases are pluggable (`LeaseBackend`); the default is best effort, and an atomic
 backend or the Durable Objects runtime makes overlap impossible.
 
+Every run record carries a `version`. Each change (start, resume, cancel, wake, the start and end
+of an execution) is saved only if the stored record still has the version that was read
+(`AtomicWrites.compareAndSet`); otherwise the writer reads the run again and decides from what it is
+now. A second resume of the same interrupt gets a 409 instead of replacing the first one's answer,
+and a cancel that lands while a run is executing is folded into its final save instead of being
+overwritten. Redis (`agent-unit/redis`, wired in automatically for the `redis` driver) and the
+Durable Objects index save atomically; other stores fall back to check-then-write, serialized within
+a process.
+
 ## Runtimes
 
 A runtime decides where runs live and what wakes them; agent code and the HTTP contract are the same
