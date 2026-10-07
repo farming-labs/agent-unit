@@ -66,6 +66,9 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
       budget: project.config.budget,
       basePath: project.config.basePath,
       authorize: project.config.authorize,
+      origin: project.config.origin,
+      retention: project.config.retention,
+      maxBodyBytes: project.config.maxBodyBytes,
     });
   }
 

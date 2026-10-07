@@ -1,4 +1,6 @@
 import type { RunService } from "./service";
+import { AgentUnitError } from "../runtime/engine";
+import { readBody } from "./body";
 import type { RequestContext } from "./handler";
 
 // MCP over streamable HTTP with JSON responses (spec/manifest.md): each agent is one tool.
@@ -80,14 +82,25 @@ async function respond(engine: RunService, message: JsonRpcRequest, context: Req
   }
 }
 
-export async function handleMcp(engine: RunService, request: Request, context: RequestContext, version = "0.0.0"): Promise<Response> {
+export async function handleMcp(
+  engine: RunService,
+  request: Request,
+  context: RequestContext,
+  version = "0.0.0",
+  limits: { maxBodyBytes?: number; maxBatch?: number } = {},
+): Promise<Response> {
   let payload: unknown;
   try {
-    payload = await request.json();
-  } catch {
+    payload = JSON.parse(await readBody(request, limits.maxBodyBytes));
+  } catch (error) {
+    if (error instanceof AgentUnitError) throw error;
     return Response.json(rpcError(null, -32700, "Parse error"), { status: 400 });
   }
   const messages = (Array.isArray(payload) ? payload : [payload]) as JsonRpcRequest[];
+  // Each tools/call can start and wait for a run, so a batch is bounded.
+  if (messages.length > (limits.maxBatch ?? 20)) {
+    return Response.json(rpcError(null, -32600, `A batch may hold at most ${limits.maxBatch ?? 20} messages.`), { status: 400 });
+  }
   const responses = [];
   for (const message of messages) {
     if (!message || message.jsonrpc !== "2.0" || typeof message.method !== "string") {

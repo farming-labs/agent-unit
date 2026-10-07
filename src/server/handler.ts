@@ -1,6 +1,7 @@
 import { AgentUnitError, RunEngine } from "../runtime/engine";
 import type { AgentEvent, RunInput, RunStatus } from "../types";
 import { agentCardDocument } from "./a2a";
+import { readBody } from "./body";
 import { handleMcp } from "./mcp";
 import type { RunService } from "./service";
 
@@ -20,6 +21,10 @@ export interface HandlerOptions {
    * taken from a request, whose Host header anyone can set. Without one, runs continue in-process.
    */
   origin?: string;
+  /** Largest accepted request body, in bytes. Default 1 MB. */
+  maxBodyBytes?: number;
+  /** Most messages accepted in one MCP JSON-RPC batch. Default 20. */
+  maxBatch?: number;
   /** Interval for SSE keep-alive comments. Default 15s. */
   heartbeatMs?: number;
   version?: string;
@@ -49,8 +54,8 @@ const problem = (status: number, code: string, message: string) => json({ error:
 
 const wantsStream = (request: Request) => (request.headers.get("accept") ?? "").includes("text/event-stream");
 
-async function readJson(request: Request): Promise<Record<string, unknown>> {
-  const text = await request.text();
+async function readJson(request: Request, maxBytes?: number): Promise<Record<string, unknown>> {
+  const text = await readBody(request, maxBytes);
   if (!text.trim()) return {};
   let body: unknown;
   try {
@@ -181,9 +186,9 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
           return json({ ok: true }, context.waitUntil ? 202 : 200);
         }
         if (segments[1] === "sweep" && engine.sweep) {
-          const { woken, recovered, settled } = await engine.sweep();
+          const { woken, recovered, deleted, settled } = await engine.sweep();
           await background(settled);
-          return json({ woken, recovered });
+          return json({ woken, recovered, deleted });
         }
         return problem(404, "not_found", "Not found.");
       }
@@ -195,7 +200,9 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
       }
 
       if (method === "GET" && (path === "/" || path === "/manifest.json")) return json(engine.manifest());
-      if (method === "POST" && path === "/mcp") return await handleMcp(engine, request, context, options.version);
+      if (method === "POST" && path === "/mcp") {
+        return await handleMcp(engine, request, context, options.version, { maxBodyBytes: options.maxBodyBytes, maxBatch: options.maxBatch });
+      }
       if (method === "GET" && path === "/mcp") return problem(405, "method_not_allowed", "Use POST for MCP requests.");
 
       if (segments[0] === "agents") {
@@ -203,7 +210,7 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
         const agent = segments[1];
         if (agent && method === "GET" && segments.length === 2) return json(engine.agentCard(agent));
         if (agent && method === "POST" && segments[2] === "runs" && segments.length === 3) {
-          const body = await readJson(request);
+          const body = await readJson(request, options.maxBodyBytes);
           const input = (body.input ?? {}) as RunInput;
           if (typeof input !== "object" || input === null || Array.isArray(input)) {
             throw new AgentUnitError(400, "invalid_input", "`input` must be an object.");
@@ -239,7 +246,7 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
           return eventStream(engine.events(id, Number.isFinite(after) ? after : 0, request.signal), request.signal, options.heartbeatMs);
         }
         if (id && method === "POST" && segments[2] === "resume") {
-          const body = await readJson(request);
+          const body = await readJson(request, options.maxBodyBytes);
           const before = (await engine.getRun(id)).eventCount;
           const { run, done } = await engine.resume(id, body.answer);
           if (wantsStream(request)) {
@@ -250,6 +257,11 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
           return settled ? json(settled) : json(run, 202);
         }
         if (id && method === "POST" && segments[2] === "cancel") return json(await engine.cancel(id));
+        if (id && method === "DELETE" && segments.length === 2) {
+          if (!engine.deleteRun) return problem(405, "method_not_allowed", "This runtime does not delete runs.");
+          await engine.deleteRun(id);
+          return new Response(null, { status: 204 });
+        }
       }
 
       return problem(404, "not_found", `No route for ${method} ${path}.`);

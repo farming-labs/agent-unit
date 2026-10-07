@@ -144,11 +144,55 @@ describe("HTTP handler", () => {
 
   it("rejects bad input with structured errors", async () => {
     const { handle } = setup();
-    expect((await handle("/agents/echo/runs", { method: "POST", body: "{nope" })).status).toBe(400);
+    expect((await handle("/agents/echo/runs", { method: "POST", headers: { "content-type": "application/json" }, body: "{nope" })).status).toBe(400);
     expect((await handle("/agents/echo/runs", post({ input: [1, 2] }))).status).toBe(400);
     expect((await handle("/agents/ghost/runs", post({}))).status).toBe(404);
     expect((await handle("/runs/run_missing")).status).toBe(404);
     expect((await handle("/nowhere")).status).toBe(404);
+  });
+
+  it("refuses bodies that are too large or not JSON, so cross-site forms cannot start runs", async () => {
+    const { handle } = setup({ maxBodyBytes: 1000 });
+    const form = await handle("/agents/echo/runs", {
+      method: "POST",
+      headers: { "content-type": "text/plain" },
+      body: JSON.stringify({ input: { text: "from another site" } }),
+    });
+    expect(form.status).toBe(415);
+    expect((await handle("/agents/echo/runs", post({ input: { text: "x".repeat(2000) } }))).status).toBe(413);
+    const unsized = new Request(`${ORIGIN}/agents/echo/runs`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: new ReadableStream({
+        start(controller) {
+          for (let i = 0; i < 5; i++) controller.enqueue(new TextEncoder().encode("x".repeat(400)));
+          controller.close();
+        },
+      }),
+      duplex: "half",
+    } as RequestInit);
+    const { engine } = setup({ maxBodyBytes: 1000 });
+    expect((await createHandler(engine, { maxBodyBytes: 1000 })(unsized)).status).toBe(413);
+    // Requests without a body (cancel) need no content type.
+    expect((await handle("/runs/run_missing0000000000/cancel", { method: "POST" })).status).toBe(404);
+  });
+
+  it("deletes finished runs, refuses to delete live ones, and expires them with retention", async () => {
+    const { handle, pending, engine } = setup();
+    const done = await (await handle("/agents/echo/runs", post({ input: { text: "bye" } }))).json();
+    const parked = await (await handle("/agents/refund/runs", post({}))).json();
+    await Promise.all(pending);
+    expect((await handle(`/runs/${parked.id}`, { method: "DELETE" })).status).toBe(409);
+    expect((await handle(`/runs/${done.id}`, { method: "DELETE" })).status).toBe(204);
+    expect((await handle(`/runs/${done.id}`)).status).toBe(404);
+    expect(await engine.store.readEvents(done.id)).toEqual([]);
+    expect((await (await handle("/runs")).json()).runs.map((run: { id: string }) => run.id)).toEqual([parked.id]);
+
+    const retained = createEngine({ quick: defineAgent(() => "ok") }, { retentionMs: 0 });
+    const run = await (await retained.start("quick")).done;
+    const swept = await retained.sweep(Date.now() + 1);
+    expect(swept.deleted).toEqual([run!.id]);
+    expect(await retained.listRuns()).toEqual([]);
   });
 
   it("honours basePath and authorize", async () => {
@@ -184,7 +228,7 @@ describe("HTTP handler", () => {
 
     // Not due yet: nothing wakes.
     const early = await (await call("/__agent-unit/sweep", { method: "POST", headers: { authorization: "Bearer s3cret" } })).json();
-    expect(early).toEqual({ woken: [], recovered: [] });
+    expect(early).toEqual({ woken: [], recovered: [], deleted: [] });
 
     const record = await engine.store.getRun(run.id);
     record!.wakeAt = new Date(Date.now() - 1000).toISOString();
@@ -298,7 +342,9 @@ describe("MCP endpoint", () => {
     const unknown = await (await handle("/mcp", rpc({ jsonrpc: "2.0", id: 6, method: "resources/list" }))).json();
     expect(unknown.error.code).toBe(-32601);
 
-    expect((await handle("/mcp", { method: "POST", body: "nope" })).status).toBe(400);
+    expect((await handle("/mcp", { method: "POST", headers: { "content-type": "application/json" }, body: "nope" })).status).toBe(400);
+    const batch = Array.from({ length: 21 }, (_, i) => ({ jsonrpc: "2.0", id: i, method: "ping" }));
+    expect((await handle("/mcp", rpc(batch))).status).toBe(400);
   });
 });
 

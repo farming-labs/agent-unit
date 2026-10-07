@@ -7,7 +7,7 @@ export interface StorageConfig {
   [option: string]: unknown;
 }
 
-export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "authorize" | "origin"> {
+export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "authorize" | "origin" | "maxBodyBytes"> {
   /** App name for the manifest, MCP server info and A2A card. Default: package.json name. */
   name?: string;
   /**
@@ -39,6 +39,8 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
    * per preset (25s on Workers, 240s on Vercel), unlimited on servers. `false` disables it.
    */
   budget?: string | number | false;
+  /** Delete finished runs, with their journal and events, this long after they finish (`"30d"`). Applied by the sweep. */
+  retention?: string | number;
   /** Cron for the sweep that wakes sleepers and recovers stalled runs. Default every minute. `false` disables it. */
   sweep?: string | false;
   /** Passed through to Nitro, merged over what agent-unit generates. */

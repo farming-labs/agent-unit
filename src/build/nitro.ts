@@ -94,6 +94,7 @@ export const unit = createDurableAgentUnit({
   budget: ${options.budgetMs ?? "false"},
   basePath: ${basePath},
   authorize: config.authorize,
+  maxBodyBytes: config.maxBodyBytes,
 });
 `,
     );
@@ -142,6 +143,8 @@ export const unit = createAgentUnit({
   basePath: ${basePath},
   authorize: config.authorize,
   origin: config.origin,
+  retention: config.retention,
+  maxBodyBytes: config.maxBodyBytes,
   env,
 });
 `,

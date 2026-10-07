@@ -18,5 +18,7 @@ export interface RunService {
   /** Internal: continue a yielded or stalled run. Runtimes with their own scheduler omit it. */
   continue?(id: string): Promise<RunRecord | undefined>;
   /** Internal: wake due sleepers and recover stalled runs. Runtimes with their own scheduler omit it. */
-  sweep?(): Promise<{ woken: string[]; recovered: string[]; settled: Promise<void> }>;
+  sweep?(): Promise<{ woken: string[]; recovered: string[]; deleted: string[]; settled: Promise<void> }>;
+  /** Deletes a finished run with its journal and events. */
+  deleteRun?(id: string): Promise<void>;
 }

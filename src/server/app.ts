@@ -19,6 +19,10 @@ export interface AgentUnitOptions extends HandlerOptions {
   budget?: string | number | false;
   /** How long an execution owns a run before another process may take over. Default 60s. */
   lease?: string | number;
+  /** Delete finished runs, with their journal and events, this long after they finish (`"30d"`). */
+  retention?: string | number;
+  /** Fail a run after this many crashed executions in a row. Default 5. */
+  maxCrashes?: number;
   env?: Record<string, string | undefined>;
   /** Keeps background work alive on hosts that need it, for work not tied to a request. */
   waitUntil?: (promise: Promise<unknown>) => void;
@@ -46,6 +50,8 @@ export function createAgentUnit(options: AgentUnitOptions): AgentUnit {
     name: options.name,
     budgetMs: ms(options.budget),
     leaseMs: ms(options.lease),
+    retentionMs: ms(options.retention),
+    maxCrashes: options.maxCrashes,
     env: options.env,
     waitUntil: options.waitUntil,
   });

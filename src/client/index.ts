@@ -171,6 +171,10 @@ export function createAgentClient(options: AgentClientOptions) {
       return getJson<{ runs: RunRecord[] }>(`/runs${query}`).then((body) => body.runs);
     },
     cancel: (runId: string) => getJson<RunRecord>(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }),
+    /** Deletes a finished run with its journal and events. */
+    delete: async (runId: string): Promise<void> => {
+      await request(`/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
+    },
 
     /** Streams events until the run settles and returns its final record. */
     async wait(runId: string, init: { signal?: AbortSignal } = {}): Promise<RunRecord> {

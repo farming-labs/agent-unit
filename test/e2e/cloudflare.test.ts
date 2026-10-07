@@ -98,6 +98,6 @@ describe.skipIf(!workerd)("cloudflare-module worker in workerd", () => {
   it("guards the sweep endpoint with the secret binding", async () => {
     expect((await fetch(`${server.url}/__agent-unit/sweep`, { method: "POST" })).status).toBe(401);
     const swept = await fetch(`${server.url}/__agent-unit/sweep`, { method: "POST", headers: { authorization: `Bearer ${SECRET}` } });
-    expect(await swept.json()).toEqual({ woken: [], recovered: [] });
+    expect(await swept.json()).toEqual({ woken: [], recovered: [], deleted: [] });
   });
 });
