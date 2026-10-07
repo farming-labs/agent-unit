@@ -239,6 +239,7 @@ before they answer, which is the safe behaviour on hosts that freeze after a res
 | Example | What it shows |
 | --- | --- |
 | [`examples/universal`](./examples/universal) | The universal build: one `agents/` folder built for Node, Bun, Deno, Cloudflare, Vercel, Netlify and AWS Lambda, then every build run through the same pause, restart and resume flow (`npm run try`). |
+| [`examples/cloudflare-ai-sdk`](./examples/cloudflare-ai-sdk) | An AI SDK `ToolLoopAgent` (OpenAI and Claude) on Cloudflare Workers with the Durable Objects runtime: a refund pauses for approval, and `npm run verify` checks it against real models across a runtime restart. |
 | [`examples/farm-app`](./examples/farm-app) | Agents inside a Farm app at `/api/ai`, with an approvals inbox and live event stream at `/agents`, tested on the production server across a restart (`npm run smoke`). |
 
 ## Configuration
