@@ -1,6 +1,6 @@
 {
   "name": "agent-unit",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Durable runs, pauses and state for any agent framework, on any host.",
   "keywords": [
     "agents",
