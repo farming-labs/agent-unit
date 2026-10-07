@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, describe, expect, it } from "vitest";
 import { buildFixture, cleanup, prepareFixture, tempDir } from "./helpers";
@@ -17,5 +17,9 @@ describe("explicit output directories", () => {
     expect(existsSync(join(out, "netlify/server/server.mjs"))).toBe(true);
     expect(existsSync(join(out, "netlify/public"))).toBe(true);
     expect(existsSync(join(out, "vercel/functions/__server.func/index.mjs"))).toBe(true);
+    // The manifest is written beside every build, without running the server.
+    const manifest = JSON.parse(readFileSync(join(out, "node/agent-unit.json"), "utf8"));
+    expect(manifest).toMatchObject({ version: 1, name: "basic" });
+    expect(manifest.agents.map((agent: { name: string }) => agent.name).sort()).toEqual(["greeter", "napper", "refund"]);
   });
 });

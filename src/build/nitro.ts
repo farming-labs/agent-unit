@@ -1,4 +1,5 @@
 import { mkdirSync, writeFileSync } from "node:fs";
+import { buildManifest } from "./agents";
 import { dirname, join, relative, resolve } from "node:path";
 import type { StorageConfig } from "../config";
 import { parseDuration } from "../runtime/util";
@@ -321,6 +322,13 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     }
   } finally {
     await nitro.close();
+  }
+
+  // The manifest beside the output, for registries and deploy tooling that read it without running the server.
+  try {
+    writeFileSync(join(outDir, "agent-unit.json"), `${JSON.stringify(await buildManifest(project), null, 2)}\n`);
+  } catch (error) {
+    logger.warn(`agent-unit: could not load the agents to write agent-unit.json (${error instanceof Error ? error.message : String(error)}); the server still serves /manifest.json.`);
   }
 
   const agents = project.config.agents ? Object.keys(project.config.agents) : Object.keys(project.agentFiles);

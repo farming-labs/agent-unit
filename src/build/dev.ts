@@ -1,22 +1,12 @@
 import { watch } from "node:fs";
 import { resolve } from "node:path";
-import { createJiti } from "jiti";
 import { serve } from "srvx";
 import { createStorage, type Driver } from "unstorage";
-import type { AgentAdapter } from "../adapter/types";
 import type { StorageConfig } from "../config";
 import { createAgentUnit, type AgentUnit } from "../server/app";
-import { detectAdapters, type BuiltinAdapter } from "./adapters";
+import { loadAgents } from "./agents";
 import { loadProject } from "./load";
 import { DEFAULT_STORAGE, withSafeDefaults } from "./nitro";
-
-// Literal imports, so the package build keeps each adapter as its own chunk.
-const ADAPTER_MODULES: Record<BuiltinAdapter["entry"], () => Promise<Record<string, unknown>>> = {
-  "adapters/ai-sdk": () => import("../adapters/ai-sdk"),
-  "adapters/mastra": () => import("../adapters/mastra"),
-  "adapters/langgraph": () => import("../adapters/langgraph"),
-  "adapters/openai-agents": () => import("../adapters/openai-agents"),
-};
 
 async function loadDriver(root: string, config: StorageConfig): Promise<Driver> {
   const { driver, ...options } = withSafeDefaults(config);
@@ -50,13 +40,7 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
 
   async function create(): Promise<AgentUnit> {
     const project = await loadProject(root);
-    const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false });
-    const agents = project.config.agents ?? {};
-    for (const [name, file] of Object.entries(project.agentFiles)) agents[name] = await jiti.import(file);
-    const adapters: AgentAdapter<any>[] = [...(project.config.adapters ?? [])];
-    for (const builtin of detectAdapters(project.root)) {
-      adapters.push((await ADAPTER_MODULES[builtin.entry]())[builtin.exportName] as AgentAdapter<any>);
-    }
+    const { agents, adapters } = await loadAgents(project);
     const storage = createStorage({ driver: await loadDriver(project.root, project.config.storage ?? DEFAULT_STORAGE) });
     return createAgentUnit({
       name: project.name,
