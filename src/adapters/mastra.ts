@@ -1,10 +1,11 @@
 import { durableModel, durableTool } from "../adapter/durable";
+import { currentInternals } from "../runtime/context";
 import { defineAdapter, type AdapterContext } from "../adapter/types";
 
 // Mastra agents run on AI SDK models, so durability comes from the same journaled model and tool
 // wrappers as the AI SDK adapter. The adapter works on a fork of the agent (Mastra's own lightweight
 // clone), so the app's agent instance is never mutated. Pauses use agent-unit's run.interrupt()
-// inside tools; Mastra's suspend/approval flows need Mastra storage and are left to Mastra. An agent
+// inside tools, tool approvals (`requireApproval`, `requireToolApproval`) and `suspend()`. An agent
 // with memory gets the run's thread (and `input.resourceId`, or the thread, as its resource).
 
 interface MastraAgent {
@@ -17,6 +18,7 @@ interface MastraAgent {
   __updateModel(options: { model: unknown }): void;
   __setTools(tools: Record<string, unknown>): void;
   getMemory?(): Promise<MastraMemory | undefined>;
+  getDefaultOptions?(): Record<string, unknown> | Promise<Record<string, unknown>>;
   stream(
     messages: unknown,
     options?: Record<string, unknown>,
@@ -34,24 +36,83 @@ interface MastraMemory {
   saveMessages(args: { messages: MastraMessage[] }): Promise<unknown>;
 }
 
-type MastraTool = { execute?: (...args: unknown[]) => unknown; description?: string; id?: string };
+type ApprovalRule = boolean | ((...args: unknown[]) => boolean | Promise<boolean>);
+type MastraTool = {
+  execute?: (...args: unknown[]) => unknown;
+  description?: string;
+  id?: string;
+  requireApproval?: ApprovalRule;
+  needsApprovalFn?: (input: unknown, context?: unknown) => boolean | Promise<boolean>;
+};
+type ToolContext = {
+  toolCallId?: string;
+  requestContext?: { entries?(): Iterable<[string, unknown]> };
+  resumeData?: unknown;
+  agent?: { toolCallId?: string; resumeData?: unknown };
+};
 
-function durableMastraTools(tools: Record<string, unknown>): Record<string, unknown> {
+/** Mastra's own result for a declined call, so the model sees what it would without agent-unit. */
+const DECLINED = "Tool call was not approved by the user";
+
+const plain = (requestContext: ToolContext["requestContext"]) =>
+  typeof requestContext?.entries === "function" ? Object.fromEntries(requestContext.entries()) : undefined;
+
+/** Whether a call needs approval: the tool's `requireApproval` or the agent's `requireToolApproval`, as Mastra decides it. */
+async function needsApproval(tool: MastraTool, global: ApprovalRule | undefined, name: string, input: unknown, context: ToolContext | undefined) {
+  const requestContext = plain(context?.requestContext);
+  const own = tool.needsApprovalFn ?? tool.requireApproval;
+  if (typeof own === "function" ? await own(input, { requestContext }) : own === true) return true;
+  if (typeof global === "function") return Boolean(await global({ toolName: name, args: input, requestContext }));
+  return global === true;
+}
+
+/** `true`/`false`, `{ approved }`, or a map from tool call id to either: the same answers as OpenAI Agents approvals. */
+function approves(answer: unknown, callId: string): boolean {
+  const verdict = (value: unknown): boolean | undefined =>
+    typeof value === "boolean" ? value : value && typeof value === "object" && "approved" in value ? Boolean((value as { approved: unknown }).approved) : undefined;
+  return verdict(answer) ?? (answer && typeof answer === "object" ? (verdict((answer as Record<string, unknown>)[callId]) ?? false) : false);
+}
+
+/**
+ * Wraps each tool in a journaled call, and runs Mastra's pauses through agent-unit, so they survive
+ * restarts and resume over the runs API: a call that needs approval pauses as "tool-approval" (the
+ * same as OpenAI Agents approvals), and `suspend(payload)` pauses under the tool's name; resuming
+ * runs the tool again with the answer as `resumeData`, as Mastra's own resume does.
+ */
+function durableMastraTools(tools: Record<string, unknown>, agentName: string, global: ApprovalRule | undefined): Record<string, unknown> {
   const out: Record<string, unknown> = {};
-  for (const [name, tool] of Object.entries(tools)) {
-    const execute = (tool as MastraTool | undefined)?.execute;
-    if (typeof execute !== "function") {
-      out[name] = tool;
+  for (const [name, value] of Object.entries(tools)) {
+    const tool = value as MastraTool | undefined;
+    const execute = tool?.execute;
+    if (!tool || typeof execute !== "function") {
+      out[name] = value;
       continue;
     }
-    // Keep the prototype: Mastra recognises its own tool instances.
+    // Keep the prototype: Mastra recognises its own tool instances. Mastra's own approval pause would
+    // need Mastra storage to resume; agent-unit asks instead.
     const copy = Object.assign(Object.create(Object.getPrototypeOf(tool)), tool) as MastraTool;
-    copy.execute = durableTool(name, execute.bind(tool), {
-      toolCallId: (_input: unknown, context?: unknown) => {
-        const ctx = context as { agent?: { toolCallId?: string }; toolCallId?: string } | undefined;
-        return ctx?.agent?.toolCallId ?? ctx?.toolCallId;
-      },
-    });
+    copy.requireApproval = false;
+    copy.needsApprovalFn = undefined;
+    const call = async (input: unknown, context?: ToolContext) => {
+      const run = currentInternals();
+      if (!run) return execute.call(tool, input, context);
+      const callId = context?.agent?.toolCallId ?? context?.toolCallId ?? "";
+      if (await needsApproval(tool, global, name, input, context)) {
+        const answer = await run.interrupt("tool-approval", { callId, tool: name, arguments: input, agent: agentName });
+        if (!approves(answer, callId)) return DECLINED;
+      }
+      // Every suspension already answered hands its answer on; the next suspend() pauses the run.
+      let resumeData = context?.resumeData ?? context?.agent?.resumeData;
+      for (let answered = run.answeredInterrupt(name); answered; answered = run.answeredInterrupt(name)) resumeData = answered.answer;
+      const suspend = async (payload?: unknown) => {
+        await run.interrupt(name, payload);
+      };
+      const next = { ...context, resumeData, suspend, ...(context?.agent ? { agent: { ...context.agent, resumeData, suspend } } : {}) };
+      return execute.call(tool, input, next);
+    };
+    copy.execute = durableTool(name, call, {
+      toolCallId: (_input, context) => context?.agent?.toolCallId ?? context?.toolCallId,
+    }) as MastraTool["execute"];
     out[name] = copy;
   }
   return out;
@@ -66,7 +127,8 @@ function durableFork(agent: MastraAgent): Promise<MastraAgent> {
     fork = (async () => {
       const forked = agent.__fork();
       forked.__updateModel({ model: durableModel(await agent.getModel()) });
-      forked.__setTools(durableMastraTools(await agent.listTools()));
+      const defaults = await agent.getDefaultOptions?.();
+      forked.__setTools(durableMastraTools(await agent.listTools(), agent.name, defaults?.requireToolApproval as ApprovalRule | undefined));
       return forked;
     })();
     forks.set(agent, fork);
@@ -117,6 +179,8 @@ export const mastraAdapter = defineAdapter<MastraAgent>({
       !(observational && (typeof observational !== "object" || observational.enabled !== false));
     const result = await fork.stream(mastraMessages(ctx.input), {
       abortSignal: ctx.signal,
+      // Approvals are asked through agent-unit by the tools themselves (see durableMastraTools).
+      requireToolApproval: false,
       // The run's thread is Mastra's thread, so an agent with memory sees the conversation so far.
       ...(memory ? { memory: { thread, resource, ...(saveAtEnd ? { options: { readOnly: true } } : {}) } } : {}),
     });

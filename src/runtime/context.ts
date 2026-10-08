@@ -78,6 +78,12 @@ export interface RunInternals extends RunContext {
   ): Promise<{ value: T; replayed: boolean }>;
   allocate(name: string): string;
   /**
+   * When the next `interrupt(name)` here was already answered, takes it and returns the answer;
+   * otherwise returns undefined and takes nothing. For frameworks whose code re-runs with the
+   * answer instead of waiting at the pause (Mastra's `suspend()` and `resumeData`).
+   */
+  answeredInterrupt<T = unknown>(name: string): { answer: T } | undefined;
+  /**
    * For adapters whose framework resumes mid-turn from its own checkpoint (LangGraph): names the
    * framework task running now, so steps inside it are numbered per task, not per turn.
    */

@@ -163,7 +163,16 @@ describe("built-in adapters pass the adapter checks", () => {
         name: "Support",
         instructions: "Refund orders.",
         model: refundModel(),
-        tools: { refund: createTool({ id: "refund", description: "Refunds", inputSchema: z.object({ orderId: z.string() }), execute: refund(kit, approval) }) },
+        // Mastra's own approval option, not useRun().interrupt(): the adapter turns it into a pause.
+        tools: {
+          refund: createTool({
+            id: "refund",
+            description: "Refunds",
+            inputSchema: z.object({ orderId: z.string() }),
+            requireApproval: approval,
+            execute: refund(kit, false),
+          }),
+        },
       });
     await assertAdapter({ adapter: mastraAdapter, agent: agent(false), pause: { agent: agent(true), answer: { approved: true } } });
   });

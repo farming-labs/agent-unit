@@ -78,7 +78,7 @@ agent-unit recognises agents from these frameworks when your `package.json` depe
 | Framework | Export | What becomes durable | How it pauses |
 | --- | --- | --- | --- |
 | [AI SDK](https://ai-sdk.dev) | `new ToolLoopAgent(…)` or `streamText` settings | Every model call and tool call | `useRun().interrupt()` in a tool |
-| [Mastra](https://mastra.ai) | `new Agent(…)` | Every model call and tool call (on a fork; your agent is untouched); memory uses the run's thread | `useRun().interrupt()` in a tool |
+| [Mastra](https://mastra.ai) | `new Agent(…)` | Every model call and tool call (on a fork; your agent is untouched); memory uses the run's thread | Tool approvals (`requireApproval`, `requireToolApproval`), `suspend()` in a tool |
 | [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) | `new Agent(…)` | Model responses and function tools, per turn; handoffs included, `handoff()` options too | Tool approvals (`needsApproval: true`) |
 | [LangGraph](https://langchain-ai.github.io/langgraphjs/) | `graph.compile()` | LangGraph checkpoints, stored in agent-unit storage | `interrupt()` in a node, resumed with `Command({ resume })` |
 | Plain TypeScript | `defineAgent(…)` | `run.step(…)` | `run.interrupt()`, `run.sleep()` |
@@ -86,6 +86,15 @@ agent-unit recognises agents from these frameworks when your `package.json` depe
 Every framework is tested on every host below (Node, Bun, Deno, Cloudflare Workers with Durable
 Objects, Vercel, Netlify and AWS Lambda): a run pauses for approval, the host restarts, and the
 resume repeats no model call or side effect.
+
+A framework's own pauses become agent-unit interrupts, answered with `POST /runs/:id/resume`:
+
+- **Tool approvals** (OpenAI Agents `needsApproval`, Mastra `requireApproval` or
+  `requireToolApproval`) pause as `tool-approval` with `{ callId, tool, arguments, agent }`. Answer
+  `true`, `false` or `{ approved }`; a declined call is not run and the model is told so.
+- **Mastra `suspend(payload)`** in a tool pauses under the tool's name with that payload. The answer
+  becomes the tool's `resumeData` when it runs again, as with Mastra's own resume.
+- **LangGraph `interrupt(value)`** in a node pauses under the node's name; the answer resumes it.
 
 ```ts
 // agents/support.ts: an AI SDK agent, unchanged except for the approval
@@ -496,8 +505,6 @@ conditional write, such as a database `UPDATE … WHERE version = ?`.
   within a process and best effort across processes racing within milliseconds; pass atomic
   `leases` and `atomic` writes to `RunStore` for those (see below), or use the Durable Objects
   runtime, where each run's object is its only executor and saves go through the index atomically.
-- Mastra's own suspend and tool-approval flows need Mastra storage and are left to Mastra; pause
-  Mastra agents with `useRun().interrupt()` in tools.
 - A Mastra agent with memory reads the run's thread (and `input.resourceId`, or the thread, as its
   resource) and stores each finished turn once. With working or observational memory turned on,
   Mastra saves messages itself as the turn runs, so a run that pauses or recovers from a crash may

@@ -146,14 +146,27 @@ class RunExecution implements RunInternals {
   }
 
   allocate(name: string): string {
+    const { counter, key } = this.nextKey(name);
+    this.counters.set(counter, (this.counters.get(counter) ?? 0) + 1);
+    return key;
+  }
+
+  /** The key the next `allocate(name)` would return, without taking it. */
+  private nextKey(name: string): { counter: string; key: string } {
     // Runs started before scoped keys keep numbering steps across the whole run, so their journals still match.
     const frame = this.run.stepKeys === "scoped" ? currentFrame() : undefined;
     const task = frame ? this.taskScope?.() : undefined;
     const prefix = frame ? `${frame.scope}/${task ? `${task}/` : ""}` : "";
     const counter = `${prefix}${name}`;
-    const n = this.counters.get(counter) ?? 0;
-    this.counters.set(counter, n + 1);
-    return `${counter}#${n}`;
+    return { counter, key: `${counter}#${this.counters.get(counter) ?? 0}` };
+  }
+
+  answeredInterrupt<T>(name: string): { answer: T } | undefined {
+    const { key } = this.nextKey(`interrupt:${name}`);
+    const entry = this.journal[key];
+    if (entry?.kind !== "interrupt" || !entry.answered) return undefined;
+    this.allocate(`interrupt:${name}`);
+    return { answer: decode(entry.answer) as T };
   }
 
   isReplay(key: string): boolean {
