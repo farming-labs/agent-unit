@@ -78,7 +78,7 @@ agent-unit recognises agents from these frameworks when your `package.json` depe
 | Framework | Export | What becomes durable | How it pauses |
 | --- | --- | --- | --- |
 | [AI SDK](https://ai-sdk.dev) | `new ToolLoopAgent(…)` or `streamText` settings | Every model call and tool call | `useRun().interrupt()` in a tool |
-| [Mastra](https://mastra.ai) | `new Agent(…)` | Every model call and tool call (on a fork; your agent is untouched) | `useRun().interrupt()` in a tool |
+| [Mastra](https://mastra.ai) | `new Agent(…)` | Every model call and tool call (on a fork; your agent is untouched); memory uses the run's thread | `useRun().interrupt()` in a tool |
 | [OpenAI Agents SDK](https://openai.github.io/openai-agents-js/) | `new Agent(…)` | Model responses and function tools, per turn; handoffs included, `handoff()` options too | Tool approvals (`needsApproval: true`) |
 | [LangGraph](https://langchain-ai.github.io/langgraphjs/) | `graph.compile()` | LangGraph checkpoints, stored in agent-unit storage | `interrupt()` in a node, resumed with `Command({ resume })` |
 | Plain TypeScript | `defineAgent(…)` | `run.step(…)` | `run.interrupt()`, `run.sleep()` |
@@ -498,6 +498,10 @@ conditional write, such as a database `UPDATE … WHERE version = ?`.
   runtime, where each run's object is its only executor and saves go through the index atomically.
 - Mastra's own suspend and tool-approval flows need Mastra storage and are left to Mastra; pause
   Mastra agents with `useRun().interrupt()` in tools.
+- A Mastra agent with memory reads the run's thread (and `input.resourceId`, or the thread, as its
+  resource) and stores each finished turn once. With working or observational memory turned on,
+  Mastra saves messages itself as the turn runs, so a run that pauses or recovers from a crash may
+  store that turn twice.
 - In the Durable Objects runtime, the run list and shared state live in one index object, written when
   a run starts, parks or finishes (not on every step). `agent-unit dev` runs the default runtime
   locally.

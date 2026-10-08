@@ -4,7 +4,8 @@ import { defineAdapter, type AdapterContext } from "../adapter/types";
 // Mastra agents run on AI SDK models, so durability comes from the same journaled model and tool
 // wrappers as the AI SDK adapter. The adapter works on a fork of the agent (Mastra's own lightweight
 // clone), so the app's agent instance is never mutated. Pauses use agent-unit's run.interrupt()
-// inside tools; Mastra's suspend/approval flows need Mastra storage and are left to Mastra.
+// inside tools; Mastra's suspend/approval flows need Mastra storage and are left to Mastra. An agent
+// with memory gets the run's thread (and `input.resourceId`, or the thread, as its resource).
 
 interface MastraAgent {
   id: string;
@@ -15,10 +16,22 @@ interface MastraAgent {
   __fork(): MastraAgent;
   __updateModel(options: { model: unknown }): void;
   __setTools(tools: Record<string, unknown>): void;
+  getMemory?(): Promise<MastraMemory | undefined>;
   stream(
     messages: unknown,
     options?: Record<string, unknown>,
-  ): Promise<{ consumeStream(): Promise<void>; text: Promise<string>; error?: Error }>;
+  ): Promise<{ consumeStream(): Promise<void>; text: Promise<string>; error?: Error; messageList?: MastraMessageList }>;
+}
+
+type MastraMessage = Record<string, unknown> & { id: string };
+interface MastraMessageList {
+  get: { input: { db(): MastraMessage[] }; response: { db(): MastraMessage[] } };
+}
+interface MastraMemory {
+  getMergedThreadConfig?(): { workingMemory?: { enabled?: boolean }; observationalMemory?: boolean | { enabled?: boolean } };
+  getThreadById(args: { threadId: string }): Promise<unknown>;
+  saveThread(args: { thread: Record<string, unknown> }): Promise<unknown>;
+  saveMessages(args: { messages: MastraMessage[] }): Promise<unknown>;
 }
 
 type MastraTool = { execute?: (...args: unknown[]) => unknown; description?: string; id?: string };
@@ -89,9 +102,44 @@ export const mastraAdapter = defineAdapter<MastraAgent>({
   },
   async run(agent, ctx: AdapterContext) {
     const fork = await durableFork(agent);
-    const result = await fork.stream(mastraMessages(ctx.input), { abortSignal: ctx.signal });
+    const memory = await fork.getMemory?.();
+    const thread = ctx.run.threadId;
+    const resource = typeof ctx.input.resourceId === "string" ? ctx.input.resourceId : thread;
+    // A run that pauses or restarts replays from the top, and Mastra saving messages as it goes would
+    // store the turn again on every replay. So memory is read-only while the run executes, and the
+    // finished turn is saved once at the end. Read-only also turns off working and observational
+    // memory, so agents using those keep Mastra's own saving (a replayed turn may then be stored twice).
+    const config = memory?.getMergedThreadConfig?.() ?? {};
+    const observational = config.observationalMemory;
+    const saveAtEnd =
+      memory !== undefined &&
+      !config.workingMemory?.enabled &&
+      !(observational && (typeof observational !== "object" || observational.enabled !== false));
+    const result = await fork.stream(mastraMessages(ctx.input), {
+      abortSignal: ctx.signal,
+      // The run's thread is Mastra's thread, so an agent with memory sees the conversation so far.
+      ...(memory ? { memory: { thread, resource, ...(saveAtEnd ? { options: { readOnly: true } } : {}) } } : {}),
+    });
     await result.consumeStream();
     if (result.error) throw result.error;
+    if (saveAtEnd && result.messageList) {
+      const list = result.messageList;
+      // Journaled, under ids derived from the run: a crash mid-save overwrites instead of adding copies.
+      await ctx.durable.step("mastra:memory", async () => {
+        const turn = [...list.get.input.db(), ...list.get.response.db()].map((message, index) => ({
+          ...message,
+          id: `${ctx.run.id}-${index}`,
+          threadId: thread,
+          resourceId: resource,
+        }));
+        if (!(await memory!.getThreadById({ threadId: thread }))) {
+          const now = new Date();
+          await memory!.saveThread({ thread: { id: thread, resourceId: resource, title: "", createdAt: now, updatedAt: now } });
+        }
+        await memory!.saveMessages({ messages: turn });
+        return turn.length;
+      });
+    }
     return await result.text;
   },
 });

@@ -1,5 +1,7 @@
 import { Agent } from "@mastra/core/agent";
+import { InMemoryStore } from "@mastra/core/storage";
 import { createTool } from "@mastra/core/tools";
+import { Memory } from "@mastra/memory";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
@@ -118,5 +120,85 @@ describe("Mastra adapter", () => {
     const after = (await agent.listTools()).refund;
     expect(after).toBe(before);
     expect(after?.execute).toBe(before?.execute);
+  });
+});
+
+describe("Mastra adapter: memory", () => {
+  const say = (text: string) =>
+    streamOf([
+      { type: "stream-start", warnings: [] },
+      { type: "text-start", id: "t" },
+      { type: "text-delta", id: "t", delta: text },
+      { type: "text-end", id: "t" },
+      { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage },
+    ]);
+  const callRefund = () =>
+    streamOf([
+      { type: "stream-start", warnings: [] },
+      { type: "tool-call", toolCallId: "call_mem", toolName: "refund", input: "{}" },
+      { type: "finish", finishReason: { unified: "tool-calls", raw: "tool_calls" }, usage },
+    ]);
+  const texts = (prompt: { role: string; content: unknown }[]) =>
+    prompt.filter((message) => message.role !== "system").map((message) => `${message.role}: ${JSON.stringify(message.content).match(/"text":"([^"]*)"/)?.[1] ?? "(tool)"}`);
+  const stored = async (memory: Memory, threadId: string, resourceId = threadId) =>
+    (await memory.recall({ threadId, resourceId })).messages.map((message) => `${message.role}: ${JSON.stringify(message.content).match(/"(?:text|state)":"([^"]*)"/)?.[1]}`);
+
+  it("gives the agent the conversation so far on the run's thread", async () => {
+    const prompts: { role: string; content: unknown }[][] = [];
+    const model = new MockLanguageModelV4({
+      doStream: async ({ prompt }) => {
+        prompts.push(prompt as never);
+        return say(`answer ${prompts.length}`) as never;
+      },
+    });
+    const memory = new Memory({ storage: new InMemoryStore() });
+    const engine = createEngine({ chat: new Agent({ id: "chat", name: "Chat", instructions: "Be brief.", model: model as never, memory }) }, {}, adapters);
+    await (await engine.start("chat", { prompt: "my name is Kinfe" }, { threadId: "t1" })).done;
+    await (await engine.start("chat", { prompt: "what is my name?" }, { threadId: "t1" })).done;
+    expect(texts(prompts[1]!)).toEqual(["user: my name is Kinfe", "assistant: answer 1", "user: what is my name?"]);
+    // Another thread starts fresh; input.resourceId names the user.
+    await (await engine.start("chat", { prompt: "hello", resourceId: "user_1" }, { threadId: "t2" })).done;
+    expect(texts(prompts[2]!)).toEqual(["user: hello"]);
+    expect(await stored(memory, "t2", "user_1")).toEqual(["user: hello", "assistant: answer 3"]);
+  });
+
+  it("stores a turn once, even when the run pauses and resumes or recovers from a crash", async () => {
+    const memory = new Memory({ storage: new InMemoryStore() });
+    const model = new MockLanguageModelV4({ doStream: async ({ prompt }) => (prompt.some((message) => message.role === "tool") ? say("refunded") : callRefund()) as never });
+    const refund = createTool({
+      id: "refund",
+      description: "Refunds",
+      inputSchema: z.object({}),
+      execute: async () => ((await useRun().interrupt<boolean>("approve")) ? "ok" : "no"),
+    });
+    const store = memoryStore();
+    const engine = createEngine({ support: new Agent({ id: "support", name: "Support", instructions: "x", model: model as never, tools: { refund }, memory }) }, { store }, adapters);
+    const { run, done } = await engine.start("support", { prompt: "refund please" }, { threadId: "t3" });
+    expect((await done)?.status).toBe("interrupted");
+    const resumed = await engine.resume(run.id, true);
+    expect((await resumed.done)?.status).toBe("completed");
+    expect(await stored(memory, "t3")).toEqual(["user: refund please", "assistant: result"]);
+
+    // The process died after saving the turn but before journaling that it did: saving again overwrites.
+    await store.deleteJournalEntry(run.id, "step:mastra:memory#0");
+    const record = (await store.getRun(run.id))!;
+    await store.putRun({ ...record, status: "running", output: undefined });
+    expect((await engine.continue(run.id))?.status).toBe("completed");
+    expect(await stored(memory, "t3")).toEqual(["user: refund please", "assistant: result"]);
+  });
+
+  it("keeps working memory available to agents that use it", async () => {
+    let tools: string[] = [];
+    const model = new MockLanguageModelV4({
+      doStream: async (options) => {
+        tools = (options.tools ?? []).map((tool) => tool.name);
+        return say("ok") as never;
+      },
+    });
+    const memory = new Memory({ storage: new InMemoryStore(), options: { workingMemory: { enabled: true } } });
+    const engine = createEngine({ chat: new Agent({ id: "wm", name: "WM", instructions: "x", model: model as never, memory }) }, {}, adapters);
+    expect((await (await engine.start("chat", { prompt: "hi" }, { threadId: "t4" })).done)?.status).toBe("completed");
+    expect(tools).toContain("updateWorkingMemory");
+    expect(await stored(memory, "t4")).toEqual(["user: hi", "assistant: ok"]);
   });
 });

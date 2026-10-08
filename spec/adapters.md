@@ -48,7 +48,7 @@ allocation-numbered key would hand the next turn the previous turn's results.
 | Adapter | Recognises | Durability | Pauses |
 | --- | --- | --- | --- |
 | `ai-sdk` | `ToolLoopAgent`, plain `streamText` settings | Model and tool calls journaled | `run.interrupt()` in tools |
-| `mastra` | Mastra `Agent` | Model and tool calls journaled on a fork of the agent | `run.interrupt()` in tools |
+| `mastra` | Mastra `Agent` | Model and tool calls journaled on a fork of the agent; with memory, read-only during the run and the finished turn saved once, journaled | `run.interrupt()` in tools |
 | `openai-agents` | OpenAI Agents SDK `Agent` | `RunState` per turn; model responses and function tools journaled per turn | Tool approvals (`needsApproval`) |
 | `langgraph` | Compiled LangGraph graphs | LangGraph checkpoints on agent-unit storage, one journaled step per turn | `interrupt()` in nodes, resumed with `Command({ resume })` |
 
