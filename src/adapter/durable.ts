@@ -1,4 +1,5 @@
 import { currentInternals, RunHalted, type RunInternals, type StepInfo } from "../runtime/context";
+import type { TokenUsage } from "../types";
 import type { Durable } from "./types";
 
 // Wrappers are created once per agent and find the current run through async context when they
@@ -12,29 +13,70 @@ function stringify(value: unknown): string {
   }
 }
 
-type StreamPart = { type: string; id?: string; delta?: string };
+type StreamPart = { type: string; id?: string; delta?: string; usage?: unknown };
 
-/** Emits AG-UI text events for AI SDK stream parts. */
-function textEvents(run: RunInternals, key: string) {
-  const open = new Set<string>();
+/** AG-UI events for AI SDK stream parts: text as TEXT_MESSAGE_*, reasoning as REASONING_*. */
+function streamEvents(run: RunInternals, key: string) {
+  const text = new Set<string>();
+  const reasoning = new Set<string>();
   const messageId = (id = "0") => `${key}:${id}`;
+  const reasoningId = (id = "0") => `${key}:reasoning:${id}`;
+  const endReasoning = (id: string) => {
+    run.emitEvent({ type: "REASONING_MESSAGE_END", messageId: id });
+    run.emitEvent({ type: "REASONING_END", messageId: id });
+  };
   return {
     part(part: StreamPart) {
       if (part.type === "text-start") {
-        open.add(messageId(part.id));
+        text.add(messageId(part.id));
         run.emitEvent({ type: "TEXT_MESSAGE_START", messageId: messageId(part.id), role: "assistant" });
       } else if (part.type === "text-delta" && part.delta) {
-        if (!open.has(messageId(part.id))) this.part({ type: "text-start", id: part.id });
+        if (!text.has(messageId(part.id))) this.part({ type: "text-start", id: part.id });
         run.emitEvent({ type: "TEXT_MESSAGE_CONTENT", messageId: messageId(part.id), delta: part.delta });
-      } else if (part.type === "text-end" && open.delete(messageId(part.id))) {
+      } else if (part.type === "text-end" && text.delete(messageId(part.id))) {
         run.emitEvent({ type: "TEXT_MESSAGE_END", messageId: messageId(part.id) });
+      } else if (part.type === "reasoning-start") {
+        reasoning.add(reasoningId(part.id));
+        run.emitEvent({ type: "REASONING_START", messageId: reasoningId(part.id) });
+        run.emitEvent({ type: "REASONING_MESSAGE_START", messageId: reasoningId(part.id), role: "reasoning" });
+      } else if (part.type === "reasoning-delta" && part.delta) {
+        if (!reasoning.has(reasoningId(part.id))) this.part({ type: "reasoning-start", id: part.id });
+        run.emitEvent({ type: "REASONING_MESSAGE_CONTENT", messageId: reasoningId(part.id), delta: part.delta });
+      } else if (part.type === "reasoning-end" && reasoning.delete(reasoningId(part.id))) {
+        endReasoning(reasoningId(part.id));
       }
     },
     close() {
-      for (const id of open) run.emitEvent({ type: "TEXT_MESSAGE_END", messageId: id });
-      open.clear();
+      for (const id of text) run.emitEvent({ type: "TEXT_MESSAGE_END", messageId: id });
+      for (const id of reasoning) endReasoning(id);
+      text.clear();
+      reasoning.clear();
     },
   };
+}
+
+const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+
+/** AG-UI token usage from an AI SDK usage object: the nested form (`inputTokens.total`) or the flat one. */
+export function aiSdkUsage(usage: unknown, model: { provider?: unknown; modelId?: unknown }): TokenUsage | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const raw = usage as Record<string, unknown>;
+  const input = raw.inputTokens && typeof raw.inputTokens === "object" ? (raw.inputTokens as Record<string, unknown>) : undefined;
+  const output = raw.outputTokens && typeof raw.outputTokens === "object" ? (raw.outputTokens as Record<string, unknown>) : undefined;
+  const inputTokens = input ? count(input.total) : count(raw.inputTokens);
+  const outputTokens = output ? count(output.total) : count(raw.outputTokens);
+  const result: TokenUsage = {
+    inputTokens,
+    outputTokens,
+    totalTokens: count(raw.totalTokens) ?? (inputTokens !== undefined && outputTokens !== undefined ? inputTokens + outputTokens : undefined),
+    reasoningTokens: output ? count(output.reasoning) : count(raw.reasoningTokens),
+    cachedInputTokens: input ? count(input.cacheRead) : count(raw.cachedInputTokens),
+    cacheWriteInputTokens: input ? count(input.cacheWrite) : undefined,
+  };
+  if (typeof model.provider === "string") result.provider = model.provider;
+  if (typeof model.modelId === "string") result.model = model.modelId;
+  for (const name of Object.keys(result) as (keyof TokenUsage)[]) if (result[name] === undefined) delete result[name];
+  return result;
 }
 
 function streamFromParts(parts: unknown[]): ReadableStream<unknown> {
@@ -47,7 +89,9 @@ function streamFromParts(parts: unknown[]): ReadableStream<unknown> {
 }
 
 interface ProviderModel {
-  doGenerate(options: unknown): PromiseLike<{ content?: Array<{ type: string; text?: string }> } & Record<string, unknown>>;
+  provider?: string;
+  modelId?: string;
+  doGenerate(options: unknown): PromiseLike<{ content?: Array<{ type: string; text?: string }>; usage?: unknown } & Record<string, unknown>>;
   doStream(options: unknown): PromiseLike<{ stream: ReadableStream<StreamPart> } & Record<string, unknown>>;
 }
 
@@ -75,12 +119,15 @@ export function durableModel<M>(model: M): M {
         const key = run.allocate("model");
         const { value, replayed } = await run.durableCall(key, async () => await model.doGenerate(options), { journalErrors: false });
         if (!replayed) {
-          const events = textEvents(run, key);
+          const events = streamEvents(run, key);
           (value.content ?? []).forEach((part, index) => {
-            if (part.type !== "text" || !part.text) return;
-            events.part({ type: "text-delta", id: String(index), delta: part.text });
+            if ((part.type !== "text" && part.type !== "reasoning") || !part.text) return;
+            events.part({ type: `${part.type}-delta`, id: String(index), delta: part.text });
+            events.part({ type: `${part.type}-end`, id: String(index) });
           });
           events.close();
+          const usage = aiSdkUsage(value.usage, model);
+          if (usage) run.addUsage(usage);
         }
         return value;
       },
@@ -98,12 +145,16 @@ export function durableModel<M>(model: M): M {
         await run.assertLive();
         const result = await model.doStream(options);
         const parts: unknown[] = [];
-        const events = textEvents(run, key);
+        const events = streamEvents(run, key);
         const stream = result.stream.pipeThrough(
           new TransformStream<StreamPart, StreamPart>({
             transform(part, controller) {
               parts.push(part);
               events.part(part);
+              if (part.type === "finish") {
+                const usage = aiSdkUsage(part.usage, model);
+                if (usage) run.addUsage(usage);
+              }
               controller.enqueue(part);
             },
             async flush() {

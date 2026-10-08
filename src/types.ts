@@ -32,11 +32,30 @@ export interface RunRecord {
    * process stopped between saving and releasing); the next execution releases exactly that one.
    */
   lastLease?: string;
+  /** Tokens the run's model calls used, per provider and model (AG-UI `TokenUsage`). */
+  usage?: TokenUsage[];
   /** "scoped": steps inside a tool call or framework task are numbered within it. Runs without it (started before 0.1.7) number steps across the run. */
   stepKeys?: "scoped";
   eventCount: number;
   createdAt: string;
   updatedAt: string;
+}
+
+/** Token usage of one provider and model, as AG-UI reports it on RUN_FINISHED. */
+export interface TokenUsage {
+  provider?: string;
+  model?: string;
+  /** All input tokens, cache reads and writes included. */
+  inputTokens?: number;
+  /** All output tokens, reasoning included. */
+  outputTokens?: number;
+  totalTokens?: number;
+  /** Output tokens spent on reasoning; part of `outputTokens`. */
+  reasoningTokens?: number;
+  /** Input tokens read from a prompt cache; part of `inputTokens`. */
+  cachedInputTokens?: number;
+  /** Input tokens written to a prompt cache; part of `inputTokens`. */
+  cacheWriteInputTokens?: number;
 }
 
 export interface EventBase {
@@ -58,7 +77,12 @@ export type AgentEventBody =
   | { type: "STEP_STARTED"; stepName: string }
   | { type: "STEP_FINISHED"; stepName: string }
   | { type: "CUSTOM"; name: string; value: unknown }
-  | { type: "RUN_FINISHED"; result: unknown }
+  | { type: "REASONING_START"; messageId: string }
+  | { type: "REASONING_MESSAGE_START"; messageId: string; role: "reasoning" }
+  | { type: "REASONING_MESSAGE_CONTENT"; messageId: string; delta: string }
+  | { type: "REASONING_MESSAGE_END"; messageId: string }
+  | { type: "REASONING_END"; messageId: string }
+  | { type: "RUN_FINISHED"; result: unknown; usage?: TokenUsage[] }
   | { type: "RUN_ERROR"; message: string; code?: string }
   | { type: "RUN_INTERRUPTED"; interrupt: PendingInterrupt }
   | { type: "RUN_SLEEPING"; wakeAt: string }

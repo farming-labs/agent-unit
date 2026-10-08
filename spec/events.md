@@ -27,19 +27,28 @@ Over SSE each event is one message: `id:` is `seq`, `data:` is the JSON event.
 | `TEXT_MESSAGE_START` | `messageId`, `role: "assistant"` | A message begins |
 | `TEXT_MESSAGE_CONTENT` | `messageId`, `delta` | Streamed text |
 | `TEXT_MESSAGE_END` | `messageId` | The message is complete |
+| `REASONING_START` / `REASONING_END` | `messageId` | The model's reasoning begins / ends |
+| `REASONING_MESSAGE_START` | `messageId`, `role: "reasoning"` | A reasoning message begins |
+| `REASONING_MESSAGE_CONTENT` | `messageId`, `delta` | Streamed reasoning |
+| `REASONING_MESSAGE_END` | `messageId` | The reasoning message is complete |
 | `TOOL_CALL_START` | `toolCallId`, `toolCallName` | A tool call begins |
 | `TOOL_CALL_ARGS` | `toolCallId`, `delta` | Tool arguments (JSON text) |
 | `TOOL_CALL_END` | `toolCallId` | Arguments are complete |
 | `TOOL_CALL_RESULT` | `toolCallId`, `content` | The tool's result (JSON text) |
 | `STEP_STARTED` / `STEP_FINISHED` | `stepName` | A durable step began or finished (not emitted on replay) |
 | `CUSTOM` | `name`, `value` | Emitted by agent code via `run.emit` |
-| `RUN_FINISHED` | `result` | Terminal: the run completed |
+| `RUN_FINISHED` | `result`, `usage?` | Terminal: the run completed. `usage` lists token usage per provider and model (AG-UI `TokenUsage`) |
 | `RUN_ERROR` | `message`, `code?` | Terminal: the run failed |
 | **`RUN_INTERRUPTED`** | `interrupt: { key, name, payload }` | Parked: waiting for an answer |
 | **`RUN_SLEEPING`** | `wakeAt` | Parked: waiting for a time |
 | **`RUN_CANCELLED`** | | Terminal: the run was cancelled |
 
-Consecutive `TEXT_MESSAGE_CONTENT` deltas of one message (and `TOOL_CALL_ARGS` deltas of one call)
+Reasoning comes from every adapter that sees it: AI SDK and Mastra reasoning parts, OpenAI Agents
+reasoning items and summary deltas, LangGraph reasoning and thinking blocks. Token usage counts the
+model calls a run made live (a replayed call was counted when it ran) and is also on the run record
+as `usage`; after a crash, calls the crashed execution finished are not counted.
+
+Consecutive `TEXT_MESSAGE_CONTENT` deltas of one message (and `REASONING_MESSAGE_CONTENT` deltas, and `TOOL_CALL_ARGS` deltas of one call)
 that arrive within a short window (50ms by default) are merged into one event before it gets its
 `seq`, so live and replayed streams are identical and a long answer is a few events, not one per
 token. Concatenating the deltas of a message always gives its full text.

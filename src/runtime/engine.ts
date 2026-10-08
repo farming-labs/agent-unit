@@ -9,10 +9,12 @@ import {
   type PendingInterrupt,
   type RunInput,
   type RunRecord,
+  type TokenUsage,
 } from "../types";
 import { currentFrame, idempotencyKey, RunHalted, runInFrame, runWithContext, type RunInternals, type RunState, type StepInfo, type StepOptions } from "./context";
 import { decode, encode, toJsonSafe } from "./serialize";
 import type { Journal, ListRunsFilter, RunStore, StateScope } from "./store";
+import { addUsage, mergeUsage } from "./usage";
 import { errorInfo, nowIso, parseDuration, randomId, settle } from "./util";
 
 export interface LoadedAgent {
@@ -161,6 +163,13 @@ class RunExecution implements RunInternals {
     return { counter, key: `${counter}#${this.counters.get(counter) ?? 0}` };
   }
 
+  /** Token usage of this execution's live model calls; replayed calls were counted when they ran. */
+  readonly usage: TokenUsage[] = [];
+
+  addUsage(usage: TokenUsage): void {
+    addUsage(this.usage, usage);
+  }
+
   answeredInterrupt<T>(name: string): { answer: T } | undefined {
     const { key } = this.nextKey(`interrupt:${name}`);
     const entry = this.journal[key];
@@ -303,7 +312,7 @@ class RunExecution implements RunInternals {
 
   emitEvent(body: AgentEventBody): void {
     const window = this.engine.options.deltaBatchMs ?? 50;
-    if (window > 0 && (body.type === "TEXT_MESSAGE_CONTENT" || body.type === "TOOL_CALL_ARGS")) {
+    if (window > 0 && (body.type === "TEXT_MESSAGE_CONTENT" || body.type === "REASONING_MESSAGE_CONTENT" || body.type === "TOOL_CALL_ARGS")) {
       // A long streamed answer is hundreds of deltas: merge the ones that arrive together, so each
       // costs one write instead of one per token.
       const pending = this.delta?.body;
@@ -858,10 +867,13 @@ export class RunEngine {
       } else {
         run.status = "completed";
         run.output = toJsonSafe(output);
-        execution.emitEvent({ type: "RUN_FINISHED", result: run.output });
+        run.usage = mergeUsage(run.usage, execution.usage);
+        execution.emitEvent({ type: "RUN_FINISHED", result: run.output, ...(run.usage.length ? { usage: run.usage } : {}) });
       }
       await execution.flush();
       run.updatedAt = nowIso();
+      if (run.status !== "completed") run.usage = mergeUsage(run.usage, execution.usage);
+      if (!run.usage?.length) delete run.usage;
       run.lastLease = execution.leaseOwner;
       delete run.executing;
       delete run.crashes;

@@ -1,5 +1,5 @@
 import { AsyncLocalStorage } from "node:async_hooks";
-import type { AgentEventBody, RunInput } from "../types";
+import type { AgentEventBody, RunInput, TokenUsage } from "../types";
 import type { StateScope } from "./store";
 
 /**
@@ -83,6 +83,8 @@ export interface RunInternals extends RunContext {
    * answer instead of waiting at the pause (Mastra's `suspend()` and `resumeData`).
    */
   answeredInterrupt<T = unknown>(name: string): { answer: T } | undefined;
+  /** Adds the token usage of a live model call to the run's total (`run.usage`, RUN_FINISHED). */
+  addUsage(usage: TokenUsage): void;
   /**
    * For adapters whose framework resumes mid-turn from its own checkpoint (LangGraph): names the
    * framework task running now, so steps inside it are numbered per task, not per turn.

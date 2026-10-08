@@ -3,21 +3,23 @@ import type { RunInput } from "../types";
 
 interface StreamResult {
   text: PromiseLike<string>;
+  output?: PromiseLike<unknown>;
   fullStream?: AsyncIterable<{ type: string; error?: unknown }>;
 }
 
 /**
- * Drains a stream result and returns its text. When the stream fails, the AI SDK reports only "No
- * output generated"; the cause (a 401 from the provider, a rate limit…) is in the stream's error
- * part, so that is what the run fails with.
+ * Drains a stream result and returns its text, or its structured output when the agent asks for
+ * one (`output: Output.object(...)`). When the stream fails, the AI SDK reports only "No output
+ * generated"; the cause (a 401 from the provider, a rate limit…) is in the stream's error part, so
+ * that is what the run fails with.
  */
-async function finish(result: StreamResult): Promise<string> {
+async function finish(result: StreamResult, structured: boolean): Promise<unknown> {
   let cause: unknown;
   if (result.fullStream) {
     for await (const part of result.fullStream) if (part.type === "error" && cause === undefined) cause = part.error;
   }
   try {
-    return await result.text;
+    return structured && result.output ? await result.output : await result.text;
   } catch (error) {
     throw cause ?? error;
   }
@@ -107,7 +109,7 @@ export const aiSdkAdapter = defineAdapter<AiSdkAgent>({
   async run(agent, { input, signal, durable }) {
     if (isToolLoopAgent(agent)) {
       const result = await durableToolLoopAgent(agent, durable).stream({ ...callInput(input), abortSignal: signal });
-      return finish(result);
+      return finish(result, agent.settings?.output !== undefined);
     }
     const { streamText } = await import("ai");
     const { description: _description, ...settings } = agent;
@@ -118,7 +120,7 @@ export const aiSdkAdapter = defineAdapter<AiSdkAgent>({
       ...callInput(input),
       abortSignal: signal,
     } as Parameters<typeof streamText>[0]);
-    return finish(result);
+    return finish(result, agent.output !== undefined);
   },
 });
 

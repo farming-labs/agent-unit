@@ -1,5 +1,6 @@
 import { durableModel, durableTool } from "../adapter/durable";
 import { currentInternals } from "../runtime/context";
+import { toJsonSafe } from "../runtime/serialize";
 import { defineAdapter, type AdapterContext } from "../adapter/types";
 
 // Mastra agents run on AI SDK models, so durability comes from the same journaled model and tool
@@ -22,7 +23,7 @@ interface MastraAgent {
   stream(
     messages: unknown,
     options?: Record<string, unknown>,
-  ): Promise<{ consumeStream(): Promise<void>; text: Promise<string>; error?: Error; messageList?: MastraMessageList }>;
+  ): Promise<{ consumeStream(): Promise<void>; text: Promise<string>; object?: Promise<unknown>; error?: Error; messageList?: MastraMessageList }>;
 }
 
 type MastraMessage = Record<string, unknown> & { id: string };
@@ -204,6 +205,9 @@ export const mastraAdapter = defineAdapter<MastraAgent>({
         return turn.length;
       });
     }
+    // An agent with structuredOutput (in its default options) answers with that object.
+    const defaults = await agent.getDefaultOptions?.();
+    if (defaults?.structuredOutput && result.object) return toJsonSafe(await result.object);
     return await result.text;
   },
 });

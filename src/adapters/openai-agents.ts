@@ -2,6 +2,7 @@ import { Agent, Handoff, Runner, RunState, Usage, type Model, type ModelProvider
 import { durableTool } from "../adapter/durable";
 import { defineAdapter, type AdapterContext } from "../adapter/types";
 import { currentInternals, type RunInternals } from "../runtime/context";
+import type { TokenUsage } from "../types";
 import { toJsonSafe } from "../runtime/serialize";
 
 // The OpenAI Agents SDK pauses for tool approvals with a serializable RunState. This adapter
@@ -23,7 +24,77 @@ type TurnOutcome = { output: unknown } | { state: string; approvals: Approval[] 
 const turns = new WeakMap<RunInternals, number>();
 const modelKey = (run: RunInternals) => run.allocate(`openai-agents:${turns.get(run) ?? 0}:model`);
 
-type StreamEvent = { type: string; delta?: string; itemId?: string; response?: { output?: unknown[] } };
+type StreamEvent = {
+  type: string;
+  delta?: string;
+  itemId?: string;
+  response?: { output?: unknown[]; usage?: unknown };
+  /** Raw provider events (`type: "model"`), such as the Responses API's reasoning deltas. */
+  event?: { type?: string; delta?: string; item_id?: string };
+};
+
+/** AG-UI reasoning events for a model response: streamed deltas, or whole reasoning items. */
+function reasoningEmitter(run: RunInternals, key: string) {
+  const open = new Set<string>();
+  const done = new Set<string>();
+  const messageId = (itemId = "0") => `${key}:reasoning:${itemId}`;
+  const end = (id: string) => {
+    run.emitEvent({ type: "REASONING_MESSAGE_END", messageId: id });
+    run.emitEvent({ type: "REASONING_END", messageId: id });
+  };
+  return {
+    delta(delta: string, itemId?: string) {
+      const id = messageId(itemId);
+      if (!open.has(id)) {
+        open.add(id);
+        done.add(id);
+        run.emitEvent({ type: "REASONING_START", messageId: id });
+        run.emitEvent({ type: "REASONING_MESSAGE_START", messageId: id, role: "reasoning" });
+      }
+      run.emitEvent({ type: "REASONING_MESSAGE_CONTENT", messageId: id, delta });
+    },
+    /** Reasoning items of a finished response that were not streamed. */
+    items(output: unknown[] | undefined) {
+      for (const item of output ?? []) {
+        const reasoning = item as { type?: string; id?: string; content?: { text?: string }[]; rawContent?: { text?: string }[] };
+        if (reasoning.type !== "reasoning" || done.has(messageId(reasoning.id))) continue;
+        const text = [...(reasoning.content ?? []), ...(reasoning.rawContent ?? [])].map((part) => part.text ?? "").join("\n");
+        if (!text) continue;
+        this.delta(text, reasoning.id);
+        this.close();
+      }
+    },
+    close() {
+      for (const id of open) end(id);
+      open.clear();
+    },
+  };
+}
+
+const count = (value: unknown) => (typeof value === "number" && Number.isFinite(value) ? value : undefined);
+/** A detail count (`cached_tokens`, `reasoning_tokens`) from an object or an array of objects. */
+const detail = (details: unknown, name: string) => {
+  const values = (Array.isArray(details) ? details : [details]).map((entry) => count((entry as Record<string, unknown> | undefined)?.[name]));
+  return values.some((value) => value !== undefined) ? values.reduce<number>((sum, value) => sum + (value ?? 0), 0) : undefined;
+};
+
+/** AG-UI token usage from an Agents SDK usage object, with the model's name when it is known. */
+function agentsUsage(usage: unknown, model: Model): TokenUsage | undefined {
+  if (!usage || typeof usage !== "object") return undefined;
+  const raw = usage as Record<string, unknown>;
+  const result: TokenUsage = {
+    inputTokens: count(raw.inputTokens),
+    outputTokens: count(raw.outputTokens),
+    totalTokens: count(raw.totalTokens),
+    reasoningTokens: detail(raw.outputTokensDetails, "reasoning_tokens"),
+    cachedInputTokens: detail(raw.inputTokensDetails, "cached_tokens"),
+  };
+  const name = (model as unknown as { _model?: unknown })._model;
+  if (typeof name === "string") result.model = name;
+  if (/^OpenAI/.test(model.constructor?.name ?? "")) result.provider = "openai";
+  for (const field of Object.keys(result) as (keyof TokenUsage)[]) if (result[field] === undefined) delete result[field];
+  return result;
+}
 
 function textEmitter(run: RunInternals, key: string) {
   let open: string | undefined;
@@ -71,9 +142,13 @@ function durableAgentsModel(model: Model): Model {
           journalErrors: false,
         });
         if (!replayed) {
+          const reasoning = reasoningEmitter(run, key);
+          reasoning.items(value.output);
           const text = textEmitter(run, key);
           for (const { id, text: chunk } of outputText(value.output)) text.delta(chunk, id);
           text.close();
+          const usage = agentsUsage(value.usage, model);
+          if (usage) run.addUsage(usage);
         }
         return { ...value, usage: new Usage(value.usage as never) };
       },
@@ -94,15 +169,30 @@ function durableAgentsModel(model: Model): Model {
         await run.assertLive();
         const events: StreamEvent[] = [];
         const text = textEmitter(run, key);
+        const reasoning = reasoningEmitter(run, key);
         let completed = false;
         try {
           for await (const event of model.getStreamedResponse(request) as AsyncIterable<StreamEvent>) {
             events.push(toJsonSafe(event) as StreamEvent);
-            if (event.type === "output_text_delta" && event.delta) text.delta(event.delta, event.itemId);
-            if (event.type === "response_done") completed = true;
+            const raw = event.type === "model" ? event.event : undefined;
+            if (raw?.delta && (raw.type === "response.reasoning_summary_text.delta" || raw.type === "response.reasoning_text.delta")) {
+              reasoning.delta(raw.delta, raw.item_id);
+            }
+            if (event.type === "output_text_delta" && event.delta) {
+              reasoning.close();
+              text.delta(event.delta, event.itemId);
+            }
+            if (event.type === "response_done") {
+              completed = true;
+              reasoning.close();
+              reasoning.items(event.response?.output);
+              const usage = agentsUsage(event.response?.usage, model);
+              if (usage) run.addUsage(usage);
+            }
             yield event;
           }
         } finally {
+          reasoning.close();
           text.close();
         }
         // Recorded only once the whole response arrived: a cut-off stream is re-requested on replay.

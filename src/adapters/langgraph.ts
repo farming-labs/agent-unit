@@ -3,7 +3,7 @@ import type { RunnableConfig } from "@langchain/core/runnables";
 import { defineAdapter, type AdapterContext } from "../adapter/types";
 import type { RunInternals } from "../runtime/context";
 import type { KeyValueStore } from "../runtime/store";
-import type { AgentEventBody } from "../types";
+import type { AgentEventBody, TokenUsage } from "../types";
 
 // LangGraph keeps its own durable state in checkpoints, so this adapter does not journal model or
 // tool calls. It gives the graph a checkpointer on agent-unit storage, journals one step per graph
@@ -171,6 +171,15 @@ type MessageLike = {
   tool_call_id?: string;
   name?: string;
   type?: string;
+  additional_kwargs?: { reasoning_content?: unknown; reasoning?: { summary?: { text?: string }[] } };
+  usage_metadata?: {
+    input_tokens?: number;
+    output_tokens?: number;
+    total_tokens?: number;
+    input_token_details?: { cache_read?: number; cache_creation?: number };
+    output_token_details?: { reasoning?: number };
+  };
+  response_metadata?: { model_name?: string; model?: string; model_provider?: string };
   getType?(): string;
   _getType?(): string;
 };
@@ -183,6 +192,37 @@ function textOf(content: unknown): string {
     return content.map((block) => (typeof block === "string" ? block : block?.type === "text" ? String(block.text ?? "") : "")).join("");
   }
   return "";
+}
+
+/** A model's reasoning in a message: LangChain reasoning blocks, Anthropic thinking blocks, or provider kwargs. */
+function reasoningOf(message: MessageLike): string {
+  const blocks = Array.isArray(message.content) ? (message.content as { type?: string; reasoning?: unknown; thinking?: unknown }[]) : [];
+  const fromBlocks = blocks
+    .map((block) => (block?.type === "reasoning" ? block.reasoning : block?.type === "thinking" ? block.thinking : undefined))
+    .filter((text): text is string => typeof text === "string")
+    .join("");
+  if (fromBlocks) return fromBlocks;
+  const kwargs = message.additional_kwargs;
+  if (typeof kwargs?.reasoning_content === "string") return kwargs.reasoning_content;
+  return (kwargs?.reasoning?.summary ?? []).map((part) => part.text ?? "").join("");
+}
+
+/** AG-UI token usage from a message's `usage_metadata`. */
+function usageOf(message: MessageLike): TokenUsage | undefined {
+  const usage = message.usage_metadata;
+  if (!usage) return undefined;
+  const result: TokenUsage = {
+    inputTokens: usage.input_tokens,
+    outputTokens: usage.output_tokens,
+    totalTokens: usage.total_tokens,
+    reasoningTokens: usage.output_token_details?.reasoning,
+    cachedInputTokens: usage.input_token_details?.cache_read,
+    cacheWriteInputTokens: usage.input_token_details?.cache_creation,
+    model: message.response_metadata?.model_name ?? message.response_metadata?.model,
+    provider: message.response_metadata?.model_provider,
+  };
+  for (const name of Object.keys(result) as (keyof TokenUsage)[]) if (result[name] === undefined) delete result[name];
+  return Object.keys(result).length ? result : undefined;
 }
 
 const isMessage = (value: unknown): value is MessageLike =>
@@ -205,9 +245,16 @@ function plain(value: unknown): unknown {
   return value;
 }
 
-/** Turns LangGraph `messages` stream chunks into AG-UI text and tool events. */
-function messageEvents(emit: (event: AgentEventBody) => void) {
+/** Turns LangGraph `messages` stream chunks into AG-UI text, reasoning and tool events, and counts usage. */
+function messageEvents(emit: (event: AgentEventBody) => void, addUsage: (usage: TokenUsage) => void = () => {}) {
   let openText: string | undefined;
+  let openReasoning: string | undefined;
+  const closeReasoning = () => {
+    if (!openReasoning) return;
+    emit({ type: "REASONING_MESSAGE_END", messageId: openReasoning });
+    emit({ type: "REASONING_END", messageId: openReasoning });
+    openReasoning = undefined;
+  };
   const openTools = new Map<string, string>(); // tool call id -> name
   const chunkIds = new Map<string, string>(); // `${messageId}:${index}` -> tool call id
   const closeText = () => {
@@ -227,8 +274,22 @@ function messageEvents(emit: (event: AgentEventBody) => void) {
       }
       if (type !== "ai" && type !== "AIMessageChunk") return;
       const messageId = message.id ?? "ai";
+      const usage = usageOf(message);
+      if (usage) addUsage(usage);
+      const reasoning = reasoningOf(message);
+      if (reasoning) {
+        const reasoningId = `${messageId}:reasoning`;
+        if (openReasoning !== reasoningId) {
+          closeReasoning();
+          openReasoning = reasoningId;
+          emit({ type: "REASONING_START", messageId: reasoningId });
+          emit({ type: "REASONING_MESSAGE_START", messageId: reasoningId, role: "reasoning" });
+        }
+        emit({ type: "REASONING_MESSAGE_CONTENT", messageId: reasoningId, delta: reasoning });
+      }
       const text = textOf(message.content);
       if (text) {
+        closeReasoning();
         if (openText !== messageId) {
           closeText();
           openText = messageId;
@@ -260,6 +321,7 @@ function messageEvents(emit: (event: AgentEventBody) => void) {
       }
     },
     end() {
+      closeReasoning();
       closeText();
       for (const id of [...openTools.keys()]) closeTool(id);
     },
@@ -334,7 +396,7 @@ export const langGraphAdapter = defineAdapter<CompiledGraph>({
         }
 
         if (payload !== undefined) {
-          const events = messageEvents(ctx.emit);
+          const events = messageEvents(ctx.emit, (usage) => (ctx.run as RunInternals).addUsage(usage));
           const stream = await graph.stream(payload, { ...config, streamMode: ["messages"], signal: ctx.signal });
           try {
             for await (const chunk of stream) {

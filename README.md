@@ -87,6 +87,11 @@ Every framework is tested on every host below (Node, Bun, Deno, Cloudflare Worke
 Objects, Vercel, Netlify and AWS Lambda): a run pauses for approval, the host restarts, and the
 resume repeats no model call or side effect.
 
+Events follow [AG-UI](https://docs.ag-ui.com): text streams as `TEXT_MESSAGE_*`, a model's
+reasoning as `REASONING_*`, and `RUN_FINISHED` carries token usage per provider and model (also on
+the run as `usage`). An agent that asks for structured output (AI SDK `output`, Mastra
+`structuredOutput`, OpenAI Agents `outputType`) finishes with that object as its `output`.
+
 A framework's own pauses become agent-unit interrupts, answered with `POST /runs/:id/resume`:
 
 - **Tool approvals** (OpenAI Agents `needsApproval`, Mastra `requireApproval` or
