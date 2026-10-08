@@ -9,6 +9,6 @@
     "try": "node scripts/try-all.mjs"
   },
   "dependencies": {
-    "agent-unit": "file:../.."
+    "agent-unit": "0.1.8"
   }
 }
