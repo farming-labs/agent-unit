@@ -32,6 +32,10 @@ describe.skipIf(!workerd)("Durable Objects runtime with the app's own Durable Ob
   it("exports and binds the app's classes beside agent-unit's", () => {
     expect(wrangler.durable_objects.bindings.map((binding) => binding.class_name)).toEqual(["AgentUnitRun", "AgentUnitIndex", "NoteStore"]);
     expect(wrangler.migrations.map((migration) => migration.tag)).toEqual(["agent-unit-v1"]);
+    // Storage bindings from the top-level `cloudflare` option land in wrangler.json as written.
+    expect((wrangler as unknown as { d1_databases: unknown[] }).d1_databases).toEqual([
+      { binding: "DB", database_name: "notes", database_id: "00000000-0000-0000-0000-000000000000" },
+    ]);
     const entry = readFileSync(join(out, "server/index.mjs"), "utf8");
     for (const name of ["AgentUnitRun", "AgentUnitIndex", "NoteStore"]) expect(entry).toMatch(new RegExp(`export \\{[^}]*\\b${name}\\b`));
   });

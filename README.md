@@ -207,12 +207,29 @@ alarm wakes it from `run.sleep`, continues it after a long step, and picks it up
 isolate running it dies. A shared index object keeps the run list and thread, agent and app state.
 The build exports both classes and writes their bindings and migration into `wrangler.json`.
 
-Your app can bring its own Durable Objects too (a storage provider's, such as Mastra's Cloudflare
-store, or a Workflow). Export them from `exports.cloudflare.ts` (or point `nitro.cloudflare.exports`
-at a file) and bind them under `nitro.cloudflare.wrangler.durable_objects`: they are exported and
-bound beside agent-unit's two classes, never in their place. The names `AGENT_UNIT_RUNS`,
+Your app can bring its own Cloudflare resources beside agent-unit's: D1, KV or R2 for a storage
+provider, or its own Durable Objects (Mastra's Cloudflare store ships one, as does a Workflow). Write
+them in Cloudflare's own `wrangler.json` format under `cloudflare`, and export your classes from a
+file:
+
+```ts
+export default defineConfig({
+  preset: "cloudflare-module",
+  runtime: "durable-objects",
+  cloudflare: {
+    wrangler: {
+      d1_databases: [{ binding: "DB", database_name: "memory", database_id: "…" }],
+      durable_objects: { bindings: [{ name: "STORE", class_name: "StoreObject" }] },
+    },
+    exports: "./store.ts", // or exports.cloudflare.ts, picked up on its own
+  },
+});
+```
+
+They are merged into what agent-unit generates, never in its place: the names `AGENT_UNIT_RUNS`,
 `AGENT_UNIT_INDEX`, `AgentUnitRun`, `AgentUnitIndex` and the migration tag `agent-unit-v1` are
-reserved.
+reserved, and the build says so if you reuse one. (`nitro.cloudflare` is the same setting and still
+works.)
 
 In a Worker you write yourself:
 

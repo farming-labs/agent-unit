@@ -43,6 +43,16 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
   retention?: string | number;
   /** Cron for the sweep that wakes sleepers and recovers stalled runs. Default every minute. `false` disables it. */
   sweep?: string | false;
+  /**
+   * Cloudflare settings your app needs beside agent-unit's, in Cloudflare's own format: `wrangler`
+   * is merged into the generated `wrangler.json` (D1, KV, R2 and Durable Object bindings, vars,
+   * routes), and `exports` names a file whose classes the Worker also exports (a storage
+   * provider's Durable Object, a Workflow). Same as `nitro.cloudflare`, which still works.
+   */
+  cloudflare?: {
+    wrangler?: Record<string, unknown>;
+    exports?: string;
+  };
   /** Passed through to Nitro, merged over what agent-unit generates. */
   nitro?: Record<string, unknown>;
 }

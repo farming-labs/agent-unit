@@ -353,7 +353,15 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
   }
 
   const { createNitro, prepare, copyPublicAssets, build: buildNitro } = await import("nitro/builder");
-  const { cloudflare: userCloudflare, ...userNitro } = project.config.nitro ?? {};
+  const { cloudflare: nitroCloudflare, ...userNitro } = project.config.nitro ?? {};
+  // `cloudflare` and the older `nitro.cloudflare` are the same settings; both apply.
+  const fromNitro = (nitroCloudflare ?? {}) as CloudflareOptions;
+  const own = project.config.cloudflare ?? {};
+  const userCloudflare: CloudflareOptions = {
+    ...fromNitro,
+    ...own,
+    wrangler: { ...(fromNitro.wrangler as object | undefined), ...own.wrangler },
+  } as CloudflareOptions;
   const cloudflare = /^cloudflare/.test(preset);
   const alias: Record<string, string> = {};
   if (cloudflare) {
@@ -373,7 +381,7 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     ...(options.outDir ? { output: { dir: resolve(project.root, options.outDir) } } : {}),
     serverEntry: { handler: join(genDir, "entry.mjs"), format: "web" },
     ...(durable ? {} : { storage: { "agent-unit": storage } }),
-    ...(cloudflare ? { cloudflare: cloudflareConfig(project.root, genDir, durable, userCloudflare as CloudflareOptions | undefined) } : {}),
+    ...(cloudflare ? { cloudflare: cloudflareConfig(project.root, genDir, durable, userCloudflare) } : {}),
     experimental: { tasks: Object.keys(tasks).length > 0 },
     tasks,
     scheduledTasks,
