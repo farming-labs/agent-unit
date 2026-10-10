@@ -146,21 +146,31 @@ export function durableModel<M>(model: M): M {
         const result = await model.doStream(options);
         const parts: unknown[] = [];
         const events = streamEvents(run, key);
+        let recorded = false;
+        const record = async () => {
+          if (recorded || parts.some((part) => (part as StreamPart).type === "error")) return;
+          recorded = true;
+          await run.record(key, { parts, response: result.response });
+        };
         const stream = result.stream.pipeThrough(
           new TransformStream<StreamPart, StreamPart>({
-            transform(part, controller) {
+            async transform(part, controller) {
               parts.push(part);
               events.part(part);
               if (part.type === "finish") {
                 const usage = aiSdkUsage(part.usage, model);
                 if (usage) run.addUsage(usage);
+                // Journaled before the finish part reaches the AI SDK, which runs the response's tool
+                // calls on it: a tool that pauses the run cancels this stream before it closes, and a
+                // response recorded only on close would be requested again on resume (with new tool call ids).
+                await record();
               }
               controller.enqueue(part);
             },
             async flush() {
               events.close();
               // Recorded only once the whole response arrived: a cut-off stream is simply re-requested on replay.
-              if (!parts.some((part) => (part as StreamPart).type === "error")) await run.record(key, { parts, response: result.response });
+              await record();
             },
           }),
         );

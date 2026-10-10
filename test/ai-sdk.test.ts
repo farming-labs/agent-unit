@@ -6,7 +6,7 @@ import { aiSdkAdapter } from "../src/adapters/ai-sdk";
 import { useRun } from "../src/runtime/context";
 import { createStorage, type Driver } from "unstorage";
 import { RunStore } from "../src/runtime/store";
-import { collect, createEngine, types } from "./helpers";
+import { collect, createEngine, memoryStore, types } from "./helpers";
 
 /**
  * Storage whose writes take two awaited chunks, like a non-atomic file write: two overlapping
@@ -210,5 +210,86 @@ describe("AI SDK adapter errors", () => {
     const engine = createEngine({ support: new ToolLoopAgent({ model }) });
     const { done } = await engine.start("support", { prompt: "hi" });
     expect(await done).toMatchObject({ status: "failed", error: { message: "Incorrect API key provided: sk-fake" } });
+  });
+});
+
+describe("AI SDK adapter with real-model timing", () => {
+  it("journals the model call that asked for a pausing tool, so resuming does not ask again", async () => {
+    // Real providers stream the tool call, then the finish part, and close the response a moment
+    // later; every tool call gets a fresh id. The AI SDK runs the tool on the finish part, so the
+    // pause must not cut the response off before it is journaled.
+    let calls = 0;
+    const model = new MockLanguageModelV4({
+      doStream: async ({ prompt, abortSignal }) => {
+        calls++;
+        const answered = prompt.some((message) => message.role === "tool");
+        return {
+          stream: new ReadableStream({
+            async start(controller) {
+              // Like a real HTTP response: aborting the request ends the stream with an error.
+              abortSignal?.addEventListener("abort", () => controller.error(abortSignal.reason));
+              controller.enqueue({ type: "stream-start", warnings: [] });
+              if (answered) {
+                controller.enqueue({ type: "text-start", id: "t" });
+                controller.enqueue({ type: "text-delta", id: "t", delta: "Refunded." });
+                controller.enqueue({ type: "text-end", id: "t" });
+              } else {
+                controller.enqueue({ type: "tool-call", toolCallId: `call_${crypto.randomUUID()}`, toolName: "refund", input: JSON.stringify({ orderId: "o_1" }) });
+              }
+              await new Promise((resolve) => setTimeout(resolve, 30));
+              if (abortSignal?.aborted) return;
+              controller.enqueue({ type: "finish", finishReason: { unified: answered ? "stop" : "tool-calls", raw: "x" }, usage });
+              // A real response closes a moment after its last event.
+              await new Promise((resolve) => setTimeout(resolve, 30));
+              if (abortSignal?.aborted) return;
+              controller.close();
+            },
+          }),
+        } as never;
+      },
+    });
+    let refunds = 0;
+    const agent = () =>
+      new ToolLoopAgent({
+        model,
+        tools: {
+          refund: tool({
+            inputSchema: jsonSchema<{ orderId: string }>({ type: "object", properties: { orderId: { type: "string" } } }),
+            execute: async ({ orderId }) => {
+              const decision = await useRun().interrupt<{ approved: boolean }>("approve-refund", { orderId });
+              if (!decision.approved) return "declined";
+              refunds++;
+              return "refunded";
+            },
+          }),
+        },
+      });
+    // Journal writes take a moment, and the process stops the instant the run reports its pause: only
+    // what was written by then survives.
+    const data = new Map<string, unknown>();
+    let alive = true;
+    const slowDriver = {
+      name: "slow",
+      hasItem: (key: string) => data.has(key),
+      getItem: (key: string) => data.get(key) ?? null,
+      setItem: async (key: string, value: unknown) => {
+        if (key.startsWith("steps:")) await new Promise((resolve) => setTimeout(resolve, 40));
+        if (alive) data.set(key, value);
+      },
+      removeItem: (key: string) => void data.delete(key),
+      getKeys: () => [...data.keys()],
+      clear: () => data.clear(),
+    };
+    const store = new RunStore(createStorage({ driver: slowDriver as never }));
+    const { run, done } = await createEngine({ support: agent() }, { store }).start("support", { prompt: "refund o_1" });
+    expect((await done)?.status).toBe("interrupted");
+    alive = false;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+    alive = true;
+    // A fresh process resumes it.
+    const resumed = await createEngine({ support: agent() }, { store }).resume(run.id, { approved: true });
+    expect(await resumed.done).toMatchObject({ status: "completed", output: "Refunded." });
+    expect(refunds).toBe(1);
+    expect(calls).toBe(2);
   });
 });
