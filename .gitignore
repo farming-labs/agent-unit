@@ -13,3 +13,9 @@ coverage
 
 # Farm output
 .farm
+
+# Local secrets
+.env
+.env.*
+!.env.example
+.dev.vars
