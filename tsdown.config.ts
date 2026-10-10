@@ -8,6 +8,8 @@ export default defineConfig({
     nitro: "src/nitro.ts",
     cloudflare: "src/cloudflare/index.ts",
     redis: "src/redis.ts",
+    env: "src/env/index.ts",
+    "env.workerd": "src/env/workerd.ts",
     runtime: "src/runtime/index.ts",
     adapter: "src/adapter/index.ts",
     server: "src/server/index.ts",

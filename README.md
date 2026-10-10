@@ -226,6 +226,16 @@ export default defineConfig({
 });
 ```
 
+To connect your storage the same way on every host, read your bindings and secrets from
+`agent-unit/env`. Builds for Workers resolve it to the Workers environment (bindings included);
+everywhere else it is `process.env`:
+
+```ts
+import { env } from "agent-unit/env";
+
+const storage = env.DB ? new D1Store({ binding: env.DB }) : new LibSQLStore({ url: env.DATABASE_URL });
+```
+
 They are merged into what agent-unit generates, never in its place: the names `AGENT_UNIT_RUNS`,
 `AGENT_UNIT_INDEX`, `AgentUnitRun`, `AgentUnitIndex` and the migration tag `agent-unit-v1` are
 reserved, and the build says so if you reuse one. (`nitro.cloudflare` is the same setting and still

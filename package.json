@@ -66,6 +66,12 @@
       "types": "./dist/redis.d.mts",
       "import": "./dist/redis.mjs"
     },
+    "./env": {
+      "types": "./dist/env.d.mts",
+      "workerd": "./dist/env.workerd.mjs",
+      "worker": "./dist/env.workerd.mjs",
+      "import": "./dist/env.mjs"
+    },
     "./client": {
       "types": "./dist/client.d.mts",
       "import": "./dist/client.mjs"
