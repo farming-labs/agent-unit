@@ -207,6 +207,13 @@ alarm wakes it from `run.sleep`, continues it after a long step, and picks it up
 isolate running it dies. A shared index object keeps the run list and thread, agent and app state.
 The build exports both classes and writes their bindings and migration into `wrangler.json`.
 
+Your app can bring its own Durable Objects too (a storage provider's, such as Mastra's Cloudflare
+store, or a Workflow). Export them from `exports.cloudflare.ts` (or point `nitro.cloudflare.exports`
+at a file) and bind them under `nitro.cloudflare.wrangler.durable_objects`: they are exported and
+bound beside agent-unit's two classes, never in their place. The names `AGENT_UNIT_RUNS`,
+`AGENT_UNIT_INDEX`, `AgentUnitRun`, `AgentUnitIndex` and the migration tag `agent-unit-v1` are
+reserved.
+
 In a Worker you write yourself:
 
 ```ts
