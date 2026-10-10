@@ -129,9 +129,9 @@ let server = await startWorkerd(config);
 let failed = false;
 try {
   for (const { agent } of AGENTS) {
-    console.log(`\n${agent}: "Hi, order o_1001 arrived broken. Can I get a refund?"`);
+    console.log(`\n${agent}: "Hi, order o_1001 arrived broken. Please refund it."`);
     const first = await stream(
-      await fetch(`${BASE}/agents/${agent}/runs`, post({ input: { prompt: "Hi, order o_1001 arrived broken. Can I get a refund?" } })),
+      await fetch(`${BASE}/agents/${agent}/runs`, post({ input: { prompt: "Hi, order o_1001 arrived broken. Please refund it." } })),
       agent,
     );
     const parked = first.at(-1);
