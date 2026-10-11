@@ -2,7 +2,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { buildManifest } from "./agents";
 import { dirname, join, relative, resolve } from "node:path";
 import type { StorageConfig } from "../config";
-import { parseDuration } from "../runtime/util";
+import { parseDuration } from "@agent-unit/runtime/runtime";
 import { detectAdapters } from "./adapters";
 import { distEntry, loadProject, type LoadedProject } from "./load";
 

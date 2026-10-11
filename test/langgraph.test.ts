@@ -5,9 +5,9 @@ import { END, interrupt, MemorySaver, MessagesAnnotation, START, StateGraph } fr
 import { ToolNode } from "@langchain/langgraph/prebuilt";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { functionAdapter } from "../src/agents";
-import { useRun } from "../src/runtime/context";
-import { langGraphAdapter } from "../src/adapters/langgraph";
+import { functionAdapter } from "../packages/runtime/src/agents";
+import { useRun } from "../packages/runtime/src/runtime/context";
+import { langGraphAdapter } from "../packages/runtime/src/adapters/langgraph";
 import { collect, createEngine, memoryStore, types } from "./helpers";
 
 const adapters = [langGraphAdapter, functionAdapter];

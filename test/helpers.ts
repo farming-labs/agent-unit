@@ -1,11 +1,11 @@
 import { createStorage } from "unstorage";
 import memory from "unstorage/drivers/memory";
-import { functionAdapter, resolveAgent } from "../src/agents";
-import type { AgentAdapter } from "../src/adapter/types";
-import { aiSdkAdapter } from "../src/adapters/ai-sdk";
-import { RunEngine, type EngineOptions } from "../src/runtime/engine";
-import { RunStore } from "../src/runtime/store";
-import type { AgentEvent } from "../src/types";
+import { functionAdapter, resolveAgent } from "../packages/runtime/src/agents";
+import type { AgentAdapter } from "../packages/runtime/src/adapter/types";
+import { aiSdkAdapter } from "../packages/runtime/src/adapters/ai-sdk";
+import { RunEngine, type EngineOptions } from "../packages/runtime/src/runtime/engine";
+import { RunStore } from "../packages/runtime/src/runtime/store";
+import type { AgentEvent } from "../packages/runtime/src/types";
 
 export const defaultAdapters: AgentAdapter<any>[] = [functionAdapter, aiSdkAdapter];
 

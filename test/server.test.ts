@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { defineAgent } from "../src/agents";
-import { createAgentClient, parseEventStream } from "../src/client";
-import { createHandler } from "../src/server";
-import type { AgentEvent } from "../src/types";
+import { defineAgent } from "../packages/runtime/src/agents";
+import { createAgentClient, parseEventStream } from "../packages/runtime/src/client";
+import { createHandler } from "../packages/runtime/src/server";
+import type { AgentEvent } from "../packages/runtime/src/types";
 import { createEngine, types } from "./helpers";
 
 const ORIGIN = "http://agents.test";

@@ -20,17 +20,35 @@
     "noEmit": true,
     "resolveJsonModule": true,
     "paths": {
+      "@agent-unit/runtime": [
+        "./packages/runtime/src/index.ts"
+      ],
+      "@agent-unit/runtime/redis": [
+        "./packages/runtime/src/redis.ts"
+      ],
+      "@agent-unit/runtime/adapters/*": [
+        "./packages/runtime/src/adapters/*.ts"
+      ],
+      "@agent-unit/runtime/*": [
+        "./packages/runtime/src/*/index.ts"
+      ],
       "agent-unit": [
         "./src/index.ts"
       ],
       "agent-unit/nitro": [
         "./src/nitro.ts"
       ],
+      "agent-unit/build": [
+        "./src/build/index.ts"
+      ],
+      "agent-unit/env": [
+        "./src/env/index.ts"
+      ],
       "agent-unit/adapters/*": [
-        "./src/adapters/*.ts"
+        "./src/exports/adapters/*.ts"
       ],
       "agent-unit/*": [
-        "./src/*/index.ts"
+        "./src/exports/*.ts"
       ],
       "tiny-agents": [
         "./test/e2e/fixtures/third-party/vendor/tiny-agents/index.d.ts"
@@ -42,6 +60,7 @@
   },
   "include": [
     "src",
+    "packages/runtime/src",
     "test",
     "*.config.ts"
   ]
