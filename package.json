@@ -88,20 +88,45 @@
   },
   "scripts": {
     "build": "pnpm --filter @agent-unit/runtime build && tsdown",
-    "dev": "tsdown --watch",
+    "dev": "pnpm --filter @agent-unit/runtime build && tsdown --watch",
     "test": "vitest run",
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "typecheck": "tsc --noEmit",
-    "prepublishOnly": "pnpm build"
+    "prepublishOnly": "pnpm build",
+    "check:pack": "node scripts/check-pack.mjs"
   },
   "dependencies": {
-    "@agent-unit/runtime": "workspace:*",
+    "@agent-unit/runtime": "workspace:^",
     "citty": "0.2.2",
     "h3": "2.0.1-rc.32",
     "jiti": "2.7.0",
     "nitro": "3.0.260903-beta",
     "srvx": "1.0.5",
     "unstorage": "2.0.0-alpha.10"
+  },
+  "peerDependencies": {
+    "@langchain/core": ">=1",
+    "@langchain/langgraph": ">=1",
+    "@mastra/core": ">=1",
+    "@openai/agents": ">=0.19",
+    "ai": ">=7"
+  },
+  "peerDependenciesMeta": {
+    "ai": {
+      "optional": true
+    },
+    "@langchain/core": {
+      "optional": true
+    },
+    "@langchain/langgraph": {
+      "optional": true
+    },
+    "@openai/agents": {
+      "optional": true
+    },
+    "@mastra/core": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@langchain/core": "1.2.14",

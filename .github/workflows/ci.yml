@@ -54,6 +54,8 @@ jobs:
           deno-version: v2.x
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
+      - name: Published packages install and share one runtime
+        run: pnpm check:pack
       - run: pnpm test:e2e
 
   examples:
