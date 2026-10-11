@@ -1,0 +1,11 @@
+{
+  "name": "mastra-server",
+  "private": true,
+  "type": "module",
+  "imports": {
+    "#storage": {
+      "workerd": "./src/storage.d1.ts",
+      "default": "./src/storage.libsql.ts"
+    }
+  }
+}

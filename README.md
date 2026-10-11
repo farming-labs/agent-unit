@@ -221,6 +221,44 @@ configuration the same way on every host. `agent-unit dev` serves it with reload
 engine settings (`agents`, `storage`, `runtime`, `budget`, `sweep`, `retention`, `basePath`,
 `authorize`, `origin`, `maxBodyBytes`, `adapters`) do not apply and are rejected with `server`.
 
+#### Mastra
+
+A Mastra app does not need a server file: the Mastra preset serves your Mastra instance with
+Mastra's own Hono adapter, so every Mastra route, its auth, memory and workflows work as they do
+under `mastra dev`, on the storage your instance configures.
+
+```sh
+npm install agent-unit @mastra/hono hono
+```
+
+```ts
+// agent-unit.config.ts
+import { defineConfig } from "agent-unit";
+import { mastra } from "agent-unit/presets/mastra";
+
+export default defineConfig({ server: mastra() }); // src/mastra/index.ts, export const mastra
+```
+
+Storage stays Mastra's. To use a different store per host, let the build pick it with a
+`package.json` import condition: Cloudflare builds resolve `workerd`, everything else `default`.
+
+```json
+{ "imports": { "#storage": { "workerd": "./src/storage.d1.ts", "default": "./src/storage.libsql.ts" } } }
+```
+
+```ts
+// src/storage.d1.ts: Mastra's D1 store on the Worker's DB binding (declare it in `cloudflare.wrangler`)
+import { D1Store } from "@mastra/cloudflare-d1";
+import { env } from "agent-unit/env";
+
+export const storage = new D1Store({ id: "app", binding: env.DB });
+```
+
+Mastra's D1 store cannot de-duplicate two simultaneous resumes of the same workflow run (Mastra
+logs a warning saying so); stores with atomic updates, such as LibSQL and Postgres, can. Other
+frameworks can publish a preset the same way: `server` takes any object with a `name` and an
+`entry({ root, genDir, preset })` that returns the path of a server module.
+
 ### Cloudflare Durable Objects
 
 On Cloudflare, give every run its own Durable Object, the same primitive Cloudflare's own agents

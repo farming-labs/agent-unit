@@ -7,6 +7,7 @@ export default defineConfig({
     build: "src/build/index.ts",
     nitro: "src/nitro.ts",
     env: "src/env/index.ts",
+    "presets/mastra": "src/presets/mastra.ts",
     "env.workerd": "src/env/workerd.ts",
     // agent-unit/runtime, agent-unit/server, ... keep working: each re-exports @agent-unit/runtime.
     runtime: "src/exports/runtime.ts",

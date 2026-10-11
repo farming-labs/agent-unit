@@ -72,6 +72,10 @@
       "worker": "./dist/env.workerd.mjs",
       "import": "./dist/env.mjs"
     },
+    "./presets/mastra": {
+      "types": "./dist/presets/mastra.d.mts",
+      "import": "./dist/presets/mastra.mjs"
+    },
     "./client": {
       "types": "./dist/client.d.mts",
       "import": "./dist/client.mjs"
@@ -131,13 +135,17 @@
   "devDependencies": {
     "@langchain/core": "1.2.14",
     "@langchain/langgraph": "1.4.19",
+    "@mastra/cloudflare-d1": "1.4.1",
     "@mastra/core": "1.74.0",
+    "@mastra/hono": "1.7.16",
+    "@mastra/libsql": "1.25.1",
     "@mastra/memory": "1.36.0",
     "@openai/agents": "0.19.0",
     "@types/node": "^20.19.43",
     "ai": "7.0.30",
     "hono": "4.13.13",
     "ioredis": "6.0.0",
+    "miniflare": "4.20260730.0",
     "tsdown": "0.15.7",
     "typescript": "5.9.3",
     "vitest": "3.2.7",

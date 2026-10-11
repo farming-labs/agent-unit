@@ -44,6 +44,9 @@
       "agent-unit/env": [
         "./src/env/index.ts"
       ],
+      "agent-unit/presets/*": [
+        "./src/presets/*.ts"
+      ],
       "agent-unit/adapters/*": [
         "./src/exports/adapters/*.ts"
       ],

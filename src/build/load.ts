@@ -1,4 +1,4 @@
-import { existsSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { createJiti } from "jiti";
@@ -15,6 +15,9 @@ export interface LoadedProject {
   /** Agent modules found in `agentsDir`, by name. Empty when the config lists `agents`. */
   agentFiles: Record<string, string>;
 }
+
+/** Where Mastra's CLI keeps the app's Mastra instance. */
+export const MASTRA_ENTRIES = ["src/mastra/index.ts", "src/mastra/index.js", "src/mastra/index.mts", "src/mastra/index.mjs"];
 
 /** Settings that only agent-unit's engine reads. */
 const ENGINE_OPTIONS = [
@@ -110,7 +113,11 @@ export async function loadProject(rootDir = process.cwd()): Promise<LoadedProjec
     name = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: string }).name;
   }
   if (config.server !== undefined) {
-    if (typeof config.server !== "string" || !config.server) throw new Error(`${configFile}: \`server\` must be the path of your server file, e.g. "./src/server.ts".`);
+    const server = config.server as unknown;
+    const preset = typeof server === "object" && server !== null && typeof (server as { name?: unknown }).name === "string" && typeof (server as { entry?: unknown }).entry === "function";
+    if ((typeof server !== "string" || !server) && !preset) {
+      throw new Error(`${configFile}: \`server\` must be the path of your server file, e.g. "./src/server.ts", or a framework preset such as mastra().`);
+    }
     // With its own server the app's framework owns runs, storage and routes; engine settings would be ignored silently.
     const engineOnly = ENGINE_OPTIONS.filter((key) => config[key] !== undefined);
     if (engineOnly.length) {
@@ -122,9 +129,33 @@ export async function loadProject(rootDir = process.cwd()): Promise<LoadedProjec
   }
   const agentFiles = config.agents ? {} : scanAgents(resolve(root, config.agentsDir ?? "agents"));
   if (!config.agents && Object.keys(agentFiles).length === 0) {
+    // A Mastra app keeps its instance in src/mastra/index.ts; point at the preset rather than at agents/.
+    if (MASTRA_ENTRIES.some((file) => existsSync(join(root, file)))) {
+      throw new Error(
+        `No agents found, but this looks like a Mastra app. To build Mastra's own server, set \`server: mastra()\` (import { mastra } from "agent-unit/presets/mastra") in agent-unit.config.ts.`,
+      );
+    }
     throw new Error(
       `No agents found. Add modules to ${resolve(root, config.agentsDir ?? "agents")}, list them in agent-unit.config.ts, or set \`server\` to your own server file.`,
     );
   }
   return { root, name: name ?? basename(root), configFile, config, agentFiles };
+}
+
+/**
+ * The app's own server module (`server` in the config): its file, or the one its framework preset
+ * writes into `genDir`. `label` names it in build and dev output.
+ */
+export async function resolveServer(project: LoadedProject, genDir: string, preset: string): Promise<{ file: string; label: string }> {
+  const server = project.config.server;
+  if (!server) throw new Error("agent-unit: this app has no `server`.");
+  if (typeof server === "string") {
+    const file = resolve(project.root, server);
+    if (!existsSync(file)) throw new Error(`agent-unit: the server file "${server}" does not exist.`);
+    return { file, label: server };
+  }
+  mkdirSync(genDir, { recursive: true });
+  const file = await server.entry({ root: project.root, genDir, preset });
+  if (typeof file !== "string" || !existsSync(file)) throw new Error(`agent-unit: the ${server.name} preset returned "${String(file)}", which does not exist.`);
+  return { file, label: server.name };
 }

@@ -1,10 +1,11 @@
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { startDev, type DevServer } from "../src/build/dev";
 import { loadProject } from "../src/build/load";
 import { build } from "../src/build/nitro";
+import { mastra } from "../src/presets/mastra";
 
 // `server`: the app brings its own server and agent-unit only builds and serves it.
 
@@ -64,5 +65,45 @@ describe("the server option", () => {
     await dev.reload();
     // A broken edit keeps the last working server.
     expect(await (await fetch(dev.url)).text()).toBe("reloaded GET");
+  });
+
+  it("accepts a framework preset: a plain object that writes the server module", async () => {
+    const root = app({
+      "agent-unit.config.mjs": `import { writeFileSync } from "node:fs";
+import { join } from "node:path";
+export default {
+  server: {
+    name: "tiny-framework",
+    entry({ genDir, preset }) {
+      const file = join(genDir, "tiny-server.mjs");
+      writeFileSync(file, \`export default { fetch: () => new Response("tiny on \${preset}") };\`);
+      return file;
+    },
+  },
+};`,
+    });
+    const dev = await startDev({ root, port: 0, watch: false, logger: quiet });
+    servers.push(dev);
+    expect(dev.server).toBe("tiny-framework");
+    expect(await (await fetch(dev.url)).text()).toBe("tiny on dev");
+
+    const broken = app({ "agent-unit.config.mjs": `export default { server: { name: "broken", entry: () => "/nowhere/server.mjs" } };` });
+    await expect(build({ root: broken, logger: quiet })).rejects.toThrow(/the broken preset returned "\/nowhere\/server\.mjs", which does not exist/);
+    await expect(loadProject(app({ "agent-unit.config.mjs": `export default { server: { name: "half" } };` }))).rejects.toThrow(/or a framework preset such as mastra\(\)/);
+  });
+
+  it("tells a Mastra app how to build Mastra's own server", async () => {
+    const root = app({});
+    mkdirSync(join(root, "src/mastra"), { recursive: true });
+    writeFileSync(join(root, "src/mastra/index.ts"), `export const mastra = {};`);
+    await expect(loadProject(root)).rejects.toThrow(/this looks like a Mastra app\. To build Mastra's own server, set `server: mastra\(\)`/);
+  });
+
+  it("explains what the Mastra preset needs", () => {
+    const context = (root: string) => ({ root, genDir: join(root, ".agent-unit"), preset: "node-server" });
+    const empty = app({});
+    expect(() => mastra().entry(context(empty))).toThrow(/could not find your Mastra instance \(src\/mastra\/index\.ts\)\. Pass its file: mastra\(\{ entry/);
+    const withInstance = app({ "agents.ts": "export const mastra = {};" });
+    expect(() => mastra({ entry: "./agents.ts" }).entry(context(withInstance))).toThrow(/Install @mastra\/hono and hono: npm install @mastra\/hono hono/);
   });
 });
