@@ -1,6 +1,6 @@
 {
   "name": "@agent-unit/runtime",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "description": "agent-unit's optional run engine: journaled runs, pauses, the /runs API and adapters for AI SDK, Mastra, OpenAI Agents and LangGraph.",
   "keywords": [
     "agents",
