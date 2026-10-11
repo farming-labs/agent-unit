@@ -51,6 +51,9 @@ importers:
       ai:
         specifier: 7.0.30
         version: 7.0.30(zod@4.3.6)
+      hono:
+        specifier: 4.13.13
+        version: 4.13.13
       ioredis:
         specifier: 6.0.0
         version: 6.0.0

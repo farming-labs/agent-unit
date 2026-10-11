@@ -1,96 +1,93 @@
 import { watch } from "node:fs";
 import { resolve } from "node:path";
+import { createJiti } from "jiti";
 import { serve } from "srvx";
-import { createStorage, type Driver } from "unstorage";
-import type { StorageConfig } from "../config";
-import { createAgentUnit, type AgentUnit } from "@agent-unit/runtime/server";
-import { redisCoordination, type RedisLike } from "@agent-unit/runtime/redis";
-import { RunStore } from "@agent-unit/runtime/runtime";
-import { loadAgents } from "./agents";
-import { loadProject } from "./load";
-import { DEFAULT_STORAGE, withSafeDefaults } from "./nitro";
-
-async function loadDriver(root: string, config: StorageConfig): Promise<Driver> {
-  const { driver, ...options } = withSafeDefaults(config);
-  if (!/^[a-z0-9-]+$/.test(driver)) throw new Error(`Invalid storage driver name "${driver}".`);
-  const module = (await import(`unstorage/drivers/${driver}`)) as { default: (options: unknown) => Driver };
-  // Relative fs paths resolve against the app root, matching the built server's working directory.
-  if (typeof options.base === "string" && /^(fs|fs-lite)$/.test(driver)) options.base = resolve(root, options.base);
-  return module.default(options);
-}
+import type { AgentUnit } from "@agent-unit/runtime/server";
+import { loadProject, type LoadedProject } from "./load";
 
 export interface DevOptions {
   root?: string;
   port?: number;
   hostname?: string;
-  /** Reload agents when files change. Default true. */
+  /** Reload when files change. Default true. */
   watch?: boolean;
   logger?: { info(message: string): void; warn(message: string): void; error(message: string, error?: unknown): void };
 }
 
 export interface DevServer {
   url: string;
+  /** The app's own server file, when it has one (`server` in agent-unit.config.ts). */
+  server?: string;
+  /** agent-unit's engine. Throws when the app brings its own `server`. */
   unit(): AgentUnit;
+  /** What is being served: the agents and their frameworks, or the server file. */
+  describe(): string;
   reload(): Promise<void>;
   close(): Promise<void>;
 }
 
-/** Serves the app's agents from source with reload on change. Runs survive reloads in storage. */
+/** What the dev server serves; rebuilt from source on every reload. */
+export interface DevApp {
+  fetch(request: Request, waitUntil: (promise: Promise<unknown>) => void): Response | Promise<Response>;
+  describe(): string;
+  close(): void;
+  sweep?(): Promise<unknown>;
+  unit?: AgentUnit;
+}
+
+/** The app's own server from source: its default export, called the way the built entry calls it. */
+async function createServerApp(project: LoadedProject, server: string): Promise<DevApp> {
+  const jiti = createJiti(resolve(project.root, "package.json"), { moduleCache: false, fsCache: false });
+  const module = (await jiti.import(resolve(project.root, server))) as { default?: unknown };
+  const app = (module.default ?? module) as { fetch?: (...args: unknown[]) => Response | Promise<Response> } | ((...args: unknown[]) => Response | Promise<Response>);
+  const handle = typeof app === "function" ? app : typeof app?.fetch === "function" ? app.fetch.bind(app) : undefined;
+  if (!handle) {
+    throw new Error(`agent-unit: ${server} must export default a fetch handler: a function (request) => Response, or an object with a fetch method (a Hono app, { fetch }).`);
+  }
+  return {
+    fetch: (request, waitUntil) => handle(request, undefined, { waitUntil, passThroughOnException() {} }),
+    describe: () => server,
+    close() {},
+  };
+}
+
+async function createApp(root: string): Promise<DevApp> {
+  const project = await loadProject(root);
+  if (project.config.server) return createServerApp(project, project.config.server);
+  // The engine is imported only when it is the server.
+  return (await import("./engine-dev")).createEngineApp(project);
+}
+
+/** Serves the app from source with reload on change: its own server, or its agents on agent-unit's engine. */
 export async function startDev(options: DevOptions = {}): Promise<DevServer> {
   const logger = options.logger ?? { info: console.log, warn: console.warn, error: console.error };
   const root = resolve(options.root ?? process.cwd());
 
-  async function create(): Promise<AgentUnit> {
-    const project = await loadProject(root);
-    const { agents, adapters } = await loadAgents(project);
-    const driver = await loadDriver(project.root, project.config.storage ?? DEFAULT_STORAGE);
-    const plain = createStorage({ driver });
-    const redis = driver as Driver & { getInstance?: () => unknown; options?: { base?: string } };
-    // On Redis, runs and leases change atomically, as they do in the built server.
-    const storage =
-      driver.name === "redis" && typeof redis.getInstance === "function"
-        ? new RunStore(plain, redisCoordination({ client: () => redis.getInstance!() as RedisLike, base: redis.options?.base }))
-        : plain;
-    return createAgentUnit({
-      name: project.name,
-      agents,
-      adapters,
-      storage,
-      budget: project.config.budget,
-      basePath: project.config.basePath,
-      authorize: project.config.authorize,
-      origin: project.config.origin,
-      retention: project.config.retention,
-      maxBodyBytes: project.config.maxBodyBytes,
-    });
-  }
-
-  let current = await create();
+  let current = await createApp(root);
   const server = serve({
     port: options.port ?? Number(process.env.PORT ?? 3000),
     hostname: options.hostname,
     silent: true,
-    fetch: (request) => current.handler(request, { waitUntil: (promise) => server.waitUntil?.(promise) }),
+    fetch: (request) => current.fetch(request, (promise) => server.waitUntil?.(promise)),
   });
   await server.ready();
   const url = (server.url ?? `http://localhost:${options.port ?? 3000}/`).replace(/\/\/(\[::\]|0\.0\.0\.0)/, "//localhost");
 
-  // Wake sleepers and recover stalled runs, as the scheduled sweep does in production.
-  const sweep = setInterval(() => void current.engine.sweep().catch((error) => logger.error("agent-unit: sweep failed", error)), 60_000);
+  const sweep = setInterval(() => void current.sweep?.().catch((error) => logger.error("agent-unit: sweep failed", error)), 60_000);
   sweep.unref();
 
   let reloading: Promise<void> | undefined;
   async function reload() {
     reloading ??= (async () => {
       try {
-        const next = await create();
+        const next = await createApp(root);
         const previous = current;
         current = next;
         // In-flight executions keep running on the previous engine; its timers move to storage-driven wakes.
         previous.close();
-        logger.info(`agent-unit: reloaded ${next.engine.manifest().agents.map((agent) => agent.name).join(", ")}`);
+        logger.info(`agent-unit: reloaded ${next.describe()}`);
       } catch (error) {
-        logger.error("agent-unit: reload failed, still serving the previous agents", error);
+        logger.error("agent-unit: reload failed, still serving the previous version", error);
       } finally {
         reloading = undefined;
       }
@@ -110,7 +107,12 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
 
   return {
     url,
-    unit: () => current,
+    server: current.unit ? undefined : current.describe(),
+    unit() {
+      if (!current.unit) throw new Error("agent-unit: this app brings its own `server`, so agent-unit's engine is not running.");
+      return current.unit;
+    },
+    describe: () => current.describe(),
     reload,
     async close() {
       clearInterval(sweep);

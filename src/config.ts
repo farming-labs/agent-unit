@@ -8,6 +8,14 @@ export interface StorageConfig {
 }
 
 export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "authorize" | "origin" | "maxBodyBytes"> {
+  /**
+   * Your own server, to build for any host instead of agent-unit's engine: the path of a module whose
+   * default export handles web requests, a Hono app, `export default { fetch }` or a function
+   * `(request, env, ctx) => Response`. Your framework then owns its routes, runs and storage, so the
+   * engine settings (`agents`, `storage`, `runtime`, ...) do not apply. On Workers it gets the
+   * Worker's `env` and `ctx`; read configuration anywhere with `agent-unit/env`.
+   */
+  server?: string;
   /** App name for the manifest, MCP server info and A2A card. Default: package.json name. */
   name?: string;
   /**

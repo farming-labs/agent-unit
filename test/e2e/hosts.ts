@@ -14,7 +14,7 @@ export const workerd: string | undefined = await import("workerd").then(
 const files = (dir: string): string[] =>
   readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? files(join(dir, entry.name)) : [join(dir, entry.name)]));
 
-/** A workerd config from a durable-objects build's wrangler.json: its Durable Object bindings, kept on local disk. */
+/** A workerd config from a Cloudflare build's wrangler.json: its Durable Object bindings (kept on local disk), if any, and `vars` as text bindings. */
 export function writeDurableConfig(out: string, disk: string, port: number, vars: Record<string, string> = {}) {
   const serverDir = join(out, "server");
   const wrangler = JSON.parse(readFileSync(join(serverDir, "wrangler.json"), "utf8"));
@@ -23,8 +23,8 @@ export function writeDurableConfig(out: string, disk: string, port: number, vars
     .map((file) => relative(serverDir, file).replaceAll("\\", "/"))
     .sort((a, b) => (a === wrangler.main ? -1 : b === wrangler.main ? 1 : a.localeCompare(b)))
     .map((name) => `(name = ${JSON.stringify(name)}, esModule = embed ${JSON.stringify(`server/${name}`)})`);
-  const objects: { name: string; class_name: string }[] = wrangler.durable_objects.bindings;
-  const sqlite = new Set<string>(wrangler.migrations.flatMap((migration: { new_sqlite_classes?: string[] }) => migration.new_sqlite_classes ?? []));
+  const objects: { name: string; class_name: string }[] = wrangler.durable_objects?.bindings ?? [];
+  const sqlite = new Set<string>((wrangler.migrations ?? []).flatMap((migration: { new_sqlite_classes?: string[] }) => migration.new_sqlite_classes ?? []));
   const bindings = [
     ...objects.map((object) => `(name = ${JSON.stringify(object.name)}, durableObjectNamespace = ${JSON.stringify(object.class_name)})`),
     ...Object.entries(vars).map(([name, value]) => `(name = ${JSON.stringify(name)}, text = ${JSON.stringify(value)})`),
@@ -37,7 +37,7 @@ export function writeDurableConfig(out: string, disk: string, port: number, vars
     config,
     `using Workerd = import "/workerd/workerd.capnp";
 const config :Workerd.Config = (
-  services = [(name = "main", worker = .worker), (name = "do-disk", disk = (path = ${JSON.stringify(disk)}, writable = true))],
+  services = [(name = "main", worker = .worker)${objects.length ? `, (name = "do-disk", disk = (path = ${JSON.stringify(disk)}, writable = true))` : ""}],
   sockets = [(name = "http", address = "127.0.0.1:${port}", http = (), service = "main")],
 );
 const worker :Workerd.Worker = (
@@ -45,8 +45,8 @@ const worker :Workerd.Worker = (
   compatibilityDate = ${JSON.stringify(wrangler.compatibility_date)},
   compatibilityFlags = ${JSON.stringify(wrangler.compatibility_flags)},
   bindings = [${bindings.join(", ")}],
-  durableObjectNamespaces = [${namespaces.join(", ")}],
-  durableObjectStorage = (localDisk = "do-disk"),
+  durableObjectNamespaces = [${namespaces.join(", ")}],${objects.length ? `
+  durableObjectStorage = (localDisk = "do-disk"),` : ""}
 );
 `,
   );
