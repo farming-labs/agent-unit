@@ -1,7 +1,7 @@
 # @agent-unit/runtime
 
-agent-unit's optional run engine: journaled runs that survive restarts, pauses for approval, the `/runs` API, MCP and A2A endpoints, and adapters for the AI SDK, Mastra, OpenAI Agents and LangGraph.
+agent-unit's run engine: journaled runs that survive restarts, pauses for approval, the `/runs` API, MCP and A2A endpoints, and adapters for the AI SDK, Mastra, OpenAI Agents and LangGraph.
 
-`agent-unit` itself is the compiler that builds an agent server for any host. Install this package when you want agent-unit's engine as that server. If your framework already has its own server and storage, you do not need it.
+`agent-unit` is the compiler that builds an agent server for any host. Today it depends on this package and builds it as the server, so installing `agent-unit` is enough: every path here is also available as `agent-unit/server`, `agent-unit/testing`, `agent-unit/adapters/*` and so on. Later releases make the engine optional, for apps whose framework already has its own server and storage.
 
-Every import path is also available through `agent-unit` (`agent-unit/server`, `agent-unit/testing`, ...) while the two packages finish separating. See the [agent-unit README](https://github.com/farming-labs/agent-unit#readme).
+See the [agent-unit README](https://github.com/farming-labs/agent-unit#readme).

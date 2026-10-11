@@ -9,7 +9,7 @@ importers:
   .:
     dependencies:
       '@agent-unit/runtime':
-        specifier: workspace:*
+        specifier: workspace:^
         version: link:packages/runtime
       citty:
         specifier: 0.2.2
