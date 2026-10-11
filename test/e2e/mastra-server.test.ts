@@ -1,10 +1,9 @@
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
-import { Miniflare } from "miniflare";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildFixture, cleanup, prepareFixture, ROOT, startServer, tempDir, type RunningServer } from "./helpers";
-import { vercel } from "./hosts";
+import { startMiniflare, vercel } from "./hosts";
 
 // Mastra's own server, built with `server: mastra()`: its routes and its storage (LibSQL on servers
 // and functions, D1 on Workers), with nothing of agent-unit's engine. A workflow pauses for approval,
@@ -70,35 +69,7 @@ const vercelFunction: Host = {
 /** The Worker in Miniflare with a D1 database kept on disk; a restart is a fresh runtime on the same database. */
 const workers: Host = {
   preset: "cloudflare-module",
-  async launch(out, _root, data) {
-    const serverDir = join(out, "server");
-    const wrangler = JSON.parse(readFileSync(join(serverDir, "wrangler.json"), "utf8"));
-    const start = async () => {
-      const miniflare = new Miniflare({
-        // Every module listed: Miniflare cannot follow the bundle's computed dynamic imports itself.
-        modules: files(serverDir)
-          .filter((file) => /\.(m?js|wasm)$/.test(file))
-          .sort((a, b) => Number(b === join(serverDir, wrangler.main)) - Number(a === join(serverDir, wrangler.main)))
-          .map((path) => ({ type: path.endsWith(".wasm") ? ("CompiledWasm" as const) : ("ESModule" as const), path })),
-        modulesRoot: serverDir,
-        compatibilityDate: wrangler.compatibility_date,
-        compatibilityFlags: wrangler.compatibility_flags,
-        d1Databases: Object.fromEntries(wrangler.d1_databases.map((db: { binding: string; database_id: string }) => [db.binding, db.database_id])),
-        d1Persist: join(data, "d1"),
-      });
-      await miniflare.ready;
-      return miniflare;
-    };
-    let miniflare = await start();
-    return {
-      fetch: async (path, init) => (await miniflare.dispatchFetch(`http://localhost${path}`, init as never)) as unknown as Response,
-      async restart() {
-        await miniflare.dispose();
-        miniflare = await start();
-      },
-      stop: () => miniflare.dispose(),
-    };
-  },
+  launch: (out, _root, data) => startMiniflare(out, data),
 };
 
 for (const host of [node, vercelFunction, workers]) {

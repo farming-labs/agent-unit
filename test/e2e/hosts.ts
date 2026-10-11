@@ -1,5 +1,6 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
+import { Miniflare } from "miniflare";
 
 // How each host runs a build, shared by the per-host suites and the framework × host matrix.
 
@@ -111,3 +112,43 @@ export const lambda: FunctionHost = {
     return new Response(result.statusCode === 204 ? null : body, { status: result.statusCode, headers });
   },
 };
+
+/**
+ * A cloudflare-module build in Miniflare, with the D1 databases its wrangler.json declares kept in
+ * `persist`. `scheduled(cron)` fires its Cron Trigger; a restart is a fresh runtime on the same data.
+ */
+export async function startMiniflare(out: string, persist: string) {
+  const serverDir = join(out, "server");
+  const wrangler = JSON.parse(readFileSync(join(serverDir, "wrangler.json"), "utf8"));
+  const main = join(serverDir, wrangler.main);
+  const start = async () => {
+    const miniflare = new Miniflare({
+      // Every module listed: Miniflare cannot follow a bundle's computed dynamic imports itself.
+      modules: files(serverDir)
+        .filter((file) => /\.(m?js|wasm)$/.test(file))
+        .sort((a, b) => Number(b === main) - Number(a === main))
+        .map((path) => ({ type: path.endsWith(".wasm") ? ("CompiledWasm" as const) : ("ESModule" as const), path })),
+      modulesRoot: serverDir,
+      compatibilityDate: wrangler.compatibility_date,
+      compatibilityFlags: wrangler.compatibility_flags,
+      d1Databases: Object.fromEntries(((wrangler.d1_databases ?? []) as { binding: string; database_id: string }[]).map((db) => [db.binding, db.database_id])),
+      d1Persist: join(persist, "d1"),
+      unsafeTriggerHandlers: true,
+    });
+    await miniflare.ready;
+    return miniflare;
+  };
+  let miniflare = await start();
+  const fetch = async (path: string, init?: RequestInit) => (await miniflare.dispatchFetch(`http://localhost${path}`, init as never)) as unknown as Response;
+  return {
+    wrangler,
+    fetch,
+    /** Fires the Worker's scheduled handler for `cron`, as a Cron Trigger would. */
+    scheduled: (cron: string) => fetch(`/cdn-cgi/handler/scheduled?cron=${encodeURIComponent(cron)}`),
+    async restart() {
+      await miniflare.dispose();
+      miniflare = await start();
+    },
+    stop: () => miniflare.dispose(),
+  };
+}

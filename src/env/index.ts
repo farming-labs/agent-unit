@@ -11,3 +11,4 @@
  * condition); everywhere else it is `process.env`.
  */
 export const env: Record<string, any> = typeof process !== "undefined" && process.env ? process.env : {};
+export { runInScope, waitUntil } from "./scope";
