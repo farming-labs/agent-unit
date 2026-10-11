@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { NitroModule } from "nitro/types";
 import { loadProject } from "./build/load";
-import { generateEntry, resolveBudget, resolveStorage } from "./build/nitro";
+import { generateEntry, resolveBudget, resolveStorage } from "./build/engine";
 
 export interface AgentUnitNitroOptions {
   /** Directory holding `agent-unit.config.ts` and `agents/`. Default: the Nitro root. */

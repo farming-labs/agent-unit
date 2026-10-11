@@ -187,6 +187,40 @@ endpoints, which serverless hosts use to continue long runs. A long run continue
 invocation at the deployment's own URL, read from `AGENT_UNIT_URL` (or `VERCEL_URL`, Netlify's `URL`,
 or the `origin` option) and never from an incoming request; without one it continues in-process.
 
+### Your own server
+
+Already have a server, from your agent framework or written by hand? Point `server` at it and
+agent-unit builds it for every preset above, with none of its own engine, routes or storage added.
+Your framework keeps its own runs, memory and storage.
+
+```ts
+// agent-unit.config.ts
+import { defineConfig } from "agent-unit";
+
+export default defineConfig({
+  server: "./src/server.ts",
+  cloudflare: { wrangler: { d1_databases: [{ binding: "DB", database_name: "app", database_id: "…" }] } },
+});
+```
+
+```ts
+// src/server.ts
+import { Hono } from "hono";
+import { env } from "agent-unit/env";
+
+const app = new Hono();
+app.get("/", (c) => c.text(`hello from ${env.APP_NAME}`));
+
+export default app;
+```
+
+The default export handles web requests: a Hono app, `export default { fetch }`, or a function
+`(request, env, ctx) => Response`. On Workers it receives the Worker's `env` and `ctx`; elsewhere `ctx`
+has `waitUntil` where the host keeps work alive after the response. `agent-unit/env` reads
+configuration the same way on every host. `agent-unit dev` serves it with reload on change. The
+engine settings (`agents`, `storage`, `runtime`, `budget`, `sweep`, `retention`, `basePath`,
+`authorize`, `origin`, `maxBodyBytes`, `adapters`) do not apply and are rejected with `server`.
+
 ### Cloudflare Durable Objects
 
 On Cloudflare, give every run its own Durable Object, the same primitive Cloudflare's own agents
@@ -330,6 +364,7 @@ export default defineConfig({
   authorize: (request) => request.headers.get("authorization") === `Bearer ${process.env.API_TOKEN}`,
   retention: "30d",                                  // delete finished runs 30 days after they finish
   maxBodyBytes: 1_000_000,                           // largest accepted request body (default 1 MB)
+  // server: "./src/server.ts",                      // your own server instead (see "Your own server")
   // agents: { support },                            // instead of the agents/ directory
   // adapters: [myAdapter],                          // extra framework adapters
   // nitro: { … },                                   // passed through to Nitro
