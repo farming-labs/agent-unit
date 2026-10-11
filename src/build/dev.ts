@@ -3,7 +3,7 @@ import { resolve } from "node:path";
 import { createJiti } from "jiti";
 import { serve } from "srvx";
 import type { AgentUnit } from "@agent-unit/runtime/server";
-import { loadProject, type LoadedProject } from "./load";
+import { loadProject, resolveServer, type LoadedProject } from "./load";
 
 export interface DevOptions {
   root?: string;
@@ -36,9 +36,10 @@ export interface DevApp {
 }
 
 /** The app's own server from source: its default export, called the way the built entry calls it. */
-async function createServerApp(project: LoadedProject, server: string): Promise<DevApp> {
+async function createServerApp(project: LoadedProject): Promise<DevApp> {
+  const { file, label: server } = await resolveServer(project, resolve(project.root, ".agent-unit"), "dev");
   const jiti = createJiti(resolve(project.root, "package.json"), { moduleCache: false, fsCache: false });
-  const module = (await jiti.import(resolve(project.root, server))) as { default?: unknown };
+  const module = (await jiti.import(file)) as { default?: unknown };
   const app = (module.default ?? module) as { fetch?: (...args: unknown[]) => Response | Promise<Response> } | ((...args: unknown[]) => Response | Promise<Response>);
   const handle = typeof app === "function" ? app : typeof app?.fetch === "function" ? app.fetch.bind(app) : undefined;
   if (!handle) {
@@ -53,7 +54,7 @@ async function createServerApp(project: LoadedProject, server: string): Promise<
 
 async function createApp(root: string): Promise<DevApp> {
   const project = await loadProject(root);
-  if (project.config.server) return createServerApp(project, project.config.server);
+  if (project.config.server) return createServerApp(project);
   // The engine is imported only when it is the server.
   return (await import("./engine-dev")).createEngineApp(project);
 }

@@ -1,12 +1,12 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import type { StorageConfig } from "../config";
-import { loadProject, toImport, type LoadedProject } from "./load";
+import { loadProject, resolveServer, toImport } from "./load";
 
 // The compiler: one Nitro build of the app's server for any preset. The server is the app's own
 // (`server` in agent-unit.config.ts) or, without one, agent-unit's engine from ./engine.
 
-export function resolvePreset(project: LoadedProject, preset?: string): string {
+export function resolvePreset(project: { config: { preset?: string } }, preset?: string): string {
   return preset ?? project.config.preset ?? process.env.NITRO_PRESET ?? "node-server";
 }
 
@@ -16,9 +16,7 @@ export function resolvePreset(project: LoadedProject, preset?: string): string {
  * app, `export default { fetch }`). On Workers it gets the Worker's `env` and `ctx`, elsewhere
  * a `ctx` with `waitUntil` where the host keeps work alive after the response.
  */
-function writeServerEntry(project: LoadedProject, server: string, genDir: string): string {
-  const file = resolve(project.root, server);
-  if (!existsSync(file)) throw new Error(`agent-unit: the server file "${server}" does not exist.`);
+function writeServerEntry(file: string, label: string, genDir: string): string {
   mkdirSync(genDir, { recursive: true });
   const entry = join(genDir, "server.mjs");
   writeFileSync(
@@ -28,7 +26,7 @@ import { defineHandler } from "nitro";
 import app from ${toImport(genDir, file)};
 
 const handle = typeof app === "function" ? app : typeof app?.fetch === "function" ? app.fetch.bind(app) : undefined;
-if (!handle) throw new Error(${JSON.stringify(`agent-unit: ${server} must export default a fetch handler: a function (request) => Response, or an object with a fetch method (a Hono app, { fetch }).`)});
+if (!handle) throw new Error(${JSON.stringify(`agent-unit: ${label} must export default a fetch handler: a function (request) => Response, or an object with a fetch method (a Hono app, { fetch }).`)});
 
 export default defineHandler((event) => {
   const cloudflare = event.req.runtime?.cloudflare;
@@ -151,21 +149,22 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
   const project = await loadProject(options.root);
   const preset = resolvePreset(project, options.preset);
   const genDir = join(project.root, ".agent-unit");
-  const server = project.config.server;
   // The engine is imported only when it is the server, so an app's own server builds without it.
-  const engine = server ? undefined : (await import("./engine")).prepareEngine(project, preset, genDir, logger.warn);
-  const entry = server ? writeServerEntry(project, server, genDir) : engine!.entry;
+  const own = project.config.server ? await resolveServer(project, genDir, preset) : undefined;
+  const engine = own ? undefined : (await import("./engine")).prepareEngine(project, preset, genDir, logger.warn);
+  const entry = own ? writeServerEntry(own.file, own.label, genDir) : engine!.entry;
+  const server = own?.label;
   const durable = engine?.runtime === "durable-objects";
 
   const { createNitro, prepare, copyPublicAssets, build: buildNitro } = await import("nitro/builder");
   const { cloudflare: nitroCloudflare, ...userNitro } = project.config.nitro ?? {};
   // `cloudflare` and the older `nitro.cloudflare` are the same settings; both apply.
   const fromNitro = (nitroCloudflare ?? {}) as CloudflareOptions;
-  const own = project.config.cloudflare ?? {};
+  const fromConfig = project.config.cloudflare ?? {};
   const userCloudflare: CloudflareOptions = {
     ...fromNitro,
-    ...own,
-    wrangler: { ...(fromNitro.wrangler as object | undefined), ...own.wrangler },
+    ...fromConfig,
+    wrangler: { ...(fromNitro.wrangler as object | undefined), ...fromConfig.wrangler },
   } as CloudflareOptions;
   const cloudflare = /^cloudflare/.test(preset);
   const alias: Record<string, string> = {};

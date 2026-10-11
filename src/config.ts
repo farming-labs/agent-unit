@@ -7,15 +7,44 @@ export interface StorageConfig {
   [option: string]: unknown;
 }
 
+/**
+ * Builds a framework's own server: writes (or finds) the module whose default export handles web
+ * requests, the same contract as a `server` file. Presets are plain objects, so a framework can
+ * publish its own without agent-unit knowing about it.
+ *
+ * ```ts
+ * export const myFramework = (): ServerPreset => ({
+ *   name: "my-framework",
+ *   entry: ({ root, genDir }) => writeServerFile(root, genDir),
+ * });
+ * ```
+ */
+export interface ServerPreset {
+  /** Shown in build and dev output. */
+  name: string;
+  /** Returns the absolute path of the server module. Called once per build, and on every dev reload. */
+  entry(context: ServerPresetContext): string | Promise<string>;
+}
+
+export interface ServerPresetContext {
+  /** The app's directory. */
+  root: string;
+  /** agent-unit's generated-files directory inside the app (`.agent-unit`), for files the preset writes. */
+  genDir: string;
+  /** The Nitro preset being built for (`node-server`, `cloudflare-module`, ...), or `"dev"`. */
+  preset: string;
+}
+
 export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "authorize" | "origin" | "maxBodyBytes"> {
   /**
    * Your own server, to build for any host instead of agent-unit's engine: the path of a module whose
    * default export handles web requests, a Hono app, `export default { fetch }` or a function
    * `(request, env, ctx) => Response`. Your framework then owns its routes, runs and storage, so the
    * engine settings (`agents`, `storage`, `runtime`, ...) do not apply. On Workers it gets the
-   * Worker's `env` and `ctx`; read configuration anywhere with `agent-unit/env`.
+   * Worker's `env` and `ctx`; read configuration anywhere with `agent-unit/env`. A framework's
+   * preset (`mastra()` from `agent-unit/presets/mastra`) writes that server for you.
    */
-  server?: string;
+  server?: string | ServerPreset;
   /** App name for the manifest, MCP server info and A2A card. Default: package.json name. */
   name?: string;
   /**
