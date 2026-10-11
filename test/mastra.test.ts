@@ -5,10 +5,10 @@ import { Memory } from "@mastra/memory";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { functionAdapter } from "../src/agents";
-import { aiSdkAdapter } from "../src/adapters/ai-sdk";
-import { mastraAdapter } from "../src/adapters/mastra";
-import { useRun } from "../src/runtime/context";
+import { functionAdapter } from "../packages/runtime/src/agents";
+import { aiSdkAdapter } from "../packages/runtime/src/adapters/ai-sdk";
+import { mastraAdapter } from "../packages/runtime/src/adapters/mastra";
+import { useRun } from "../packages/runtime/src/runtime/context";
 import { collect, createEngine, memoryStore, types } from "./helpers";
 
 const adapters = [mastraAdapter, aiSdkAdapter, functionAdapter];

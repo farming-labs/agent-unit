@@ -1,8 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { defineAgent } from "../src/agents";
-import { parseEventStream } from "../src/client";
-import { createDurableAgentUnit } from "../src/cloudflare";
-import type { AgentEvent } from "../src/types";
+import { defineAgent } from "../packages/runtime/src/agents";
+import { parseEventStream } from "../packages/runtime/src/client";
+import { createDurableAgentUnit } from "../packages/runtime/src/cloudflare";
+import type { AgentEvent } from "../packages/runtime/src/types";
 import { FakeNamespace } from "./fakes/durable-objects";
 
 const ORIGIN = "https://agents.example.com";
@@ -139,7 +139,7 @@ describe("Durable Objects runtime", () => {
     // An isolate died while executing: the record says running, a lease from the dead isolate
     // remains, nothing was journaled. That is exactly what its watchdog alarm finds.
     const id = "run_orphaned0000000000";
-    const object = runs.instance(id) as unknown as { engine: import("../src/runtime/engine").RunEngine };
+    const object = runs.instance(id) as unknown as { engine: import("../packages/runtime/src/runtime/engine").RunEngine };
     const now = new Date().toISOString();
     await runs.storages.get(id)!.put("agent-unit:run-id", id);
     await object.engine.store.putRun({ id, agent: "long", threadId: id, status: "running", input: {}, attempt: 1, eventCount: 1, createdAt: now, updatedAt: now });
@@ -199,7 +199,7 @@ describe("Durable Objects runtime: versioned writes", () => {
     const { call, settle, runs, index } = setup();
     const run = await (await call("/agents/refund/runs", post({ input: { orderId: "o_5" } }))).json();
     await settle();
-    const store = (runs.instance(run.id) as unknown as { engine: import("../src/runtime/engine").RunEngine }).engine.store;
+    const store = (runs.instance(run.id) as unknown as { engine: import("../packages/runtime/src/runtime/engine").RunEngine }).engine.store;
     expect(store.atomicWrites).toBe(true);
     const read = (await store.getRun(run.id))!;
     expect(read).toMatchObject({ status: "interrupted", version: expect.any(Number) });

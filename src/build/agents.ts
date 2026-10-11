@@ -1,16 +1,16 @@
 import { createJiti } from "jiti";
-import type { AgentAdapter } from "../adapter/types";
-import { functionAdapter, resolveAgent } from "../agents";
-import type { Manifest } from "../types";
+import type { AgentAdapter } from "@agent-unit/runtime/adapter";
+import { functionAdapter, resolveAgent } from "@agent-unit/runtime/runtime";
+import type { Manifest } from "@agent-unit/runtime";
 import { detectAdapters, type BuiltinAdapter } from "./adapters";
 import type { LoadedProject } from "./load";
 
 // Literal imports, so the package build keeps each adapter as its own chunk.
 const ADAPTER_MODULES: Record<BuiltinAdapter["entry"], () => Promise<Record<string, unknown>>> = {
-  "adapters/ai-sdk": () => import("../adapters/ai-sdk"),
-  "adapters/mastra": () => import("../adapters/mastra"),
-  "adapters/langgraph": () => import("../adapters/langgraph"),
-  "adapters/openai-agents": () => import("../adapters/openai-agents"),
+  "adapters/ai-sdk": () => import("@agent-unit/runtime/adapters/ai-sdk"),
+  "adapters/mastra": () => import("@agent-unit/runtime/adapters/mastra"),
+  "adapters/langgraph": () => import("@agent-unit/runtime/adapters/langgraph"),
+  "adapters/openai-agents": () => import("@agent-unit/runtime/adapters/openai-agents"),
 };
 
 /** Imports the project's agents from source and the adapters for the frameworks it declares. */

@@ -1,5 +1,5 @@
-import type { AgentAdapter } from "./adapter/types";
-import type { HandlerOptions } from "./server/handler";
+import type { AgentAdapter } from "@agent-unit/runtime/adapter";
+import type { HandlerOptions } from "@agent-unit/runtime/server";
 
 /** An unstorage driver by name plus its options, e.g. `{ driver: "redis", url: process.env.REDIS_URL }`. */
 export interface StorageConfig {

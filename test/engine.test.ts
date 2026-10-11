@@ -1,9 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { defineAgent } from "../src/agents";
-import { durableTool } from "../src/adapter/durable";
-import { useRun } from "../src/runtime/context";
-import { decode, encode } from "../src/runtime/serialize";
-import { RunStore } from "../src/runtime/store";
+import { defineAgent } from "../packages/runtime/src/agents";
+import { durableTool } from "../packages/runtime/src/adapter/durable";
+import { useRun } from "../packages/runtime/src/runtime/context";
+import { decode, encode } from "../packages/runtime/src/runtime/serialize";
+import { RunStore } from "../packages/runtime/src/runtime/store";
 import { collect, createEngine, memoryStore, types } from "./helpers";
 
 describe("durable run engine", () => {
@@ -423,7 +423,7 @@ describe("custom schedulers", () => {
 
 describe("exactly-once execution", () => {
   const pause = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-  const orphan = async (engine: ReturnType<typeof createEngine>, agent: string, extra: Partial<import("../src/types").RunRecord> = {}) => {
+  const orphan = async (engine: ReturnType<typeof createEngine>, agent: string, extra: Partial<import("../packages/runtime/src/types").RunRecord> = {}) => {
     const id = "run_orphan000000000000";
     const now = new Date().toISOString();
     await engine.store.putRun({ id, agent, threadId: id, status: "running", input: {}, attempt: 1, eventCount: 1, createdAt: now, updatedAt: now, ...extra });

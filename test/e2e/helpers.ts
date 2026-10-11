@@ -3,7 +3,7 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { createAgentClient, type AgentEvent, type RunRecord } from "../../src/client";
+import { createAgentClient, type AgentEvent, type RunRecord } from "../../packages/runtime/src/client";
 
 export const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), "../..");
 export const FIXTURES = join(ROOT, "test/e2e/fixtures");

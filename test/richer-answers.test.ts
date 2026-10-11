@@ -6,13 +6,13 @@ import { jsonSchema, Output, tool, ToolLoopAgent } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { functionAdapter } from "../src/agents";
-import { aiSdkAdapter } from "../src/adapters/ai-sdk";
-import { langGraphAdapter } from "../src/adapters/langgraph";
-import { mastraAdapter } from "../src/adapters/mastra";
-import { openAIAgentsAdapter } from "../src/adapters/openai-agents";
-import { useRun } from "../src/runtime/context";
-import type { AgentEvent } from "../src/types";
+import { functionAdapter } from "../packages/runtime/src/agents";
+import { aiSdkAdapter } from "../packages/runtime/src/adapters/ai-sdk";
+import { langGraphAdapter } from "../packages/runtime/src/adapters/langgraph";
+import { mastraAdapter } from "../packages/runtime/src/adapters/mastra";
+import { openAIAgentsAdapter } from "../packages/runtime/src/adapters/openai-agents";
+import { useRun } from "../packages/runtime/src/runtime/context";
+import type { AgentEvent } from "../packages/runtime/src/types";
 import { collect, createEngine, memoryStore, types } from "./helpers";
 
 // Reasoning, token usage and structured output reach clients the way AG-UI defines them.

@@ -1,11 +1,11 @@
 import { generateText, jsonSchema, stepCountIs, tool, ToolLoopAgent } from "ai";
 import { MockLanguageModelV4 } from "ai/test";
 import { describe, expect, it } from "vitest";
-import { defineAgent } from "../src/agents";
-import { aiSdkAdapter } from "../src/adapters/ai-sdk";
-import { useRun } from "../src/runtime/context";
+import { defineAgent } from "../packages/runtime/src/agents";
+import { aiSdkAdapter } from "../packages/runtime/src/adapters/ai-sdk";
+import { useRun } from "../packages/runtime/src/runtime/context";
 import { createStorage, type Driver } from "unstorage";
-import { RunStore } from "../src/runtime/store";
+import { RunStore } from "../packages/runtime/src/runtime/store";
 import { collect, createEngine, memoryStore, types } from "./helpers";
 
 /**

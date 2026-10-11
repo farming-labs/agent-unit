@@ -1,0 +1,108 @@
+{
+  "name": "@agent-unit/runtime",
+  "version": "0.1.12",
+  "description": "agent-unit's optional run engine: journaled runs, pauses, the /runs API and adapters for AI SDK, Mastra, OpenAI Agents and LangGraph.",
+  "keywords": [
+    "agents",
+    "ai",
+    "durable",
+    "runtime",
+    "ai-sdk",
+    "mastra",
+    "langgraph"
+  ],
+  "license": "MIT",
+  "author": "Farming Labs",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/farming-labs/agent-unit.git",
+    "directory": "packages/runtime"
+  },
+  "homepage": "https://github.com/farming-labs/agent-unit#readme",
+  "type": "module",
+  "sideEffects": false,
+  "engines": {
+    "node": ">=20.19"
+  },
+  "files": [
+    "dist"
+  ],
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.mts",
+      "import": "./dist/index.mjs"
+    },
+    "./runtime": {
+      "types": "./dist/runtime.d.mts",
+      "import": "./dist/runtime.mjs"
+    },
+    "./adapter": {
+      "types": "./dist/adapter.d.mts",
+      "import": "./dist/adapter.mjs"
+    },
+    "./server": {
+      "types": "./dist/server.d.mts",
+      "import": "./dist/server.mjs"
+    },
+    "./cloudflare": {
+      "types": "./dist/cloudflare.d.mts",
+      "import": "./dist/cloudflare.mjs"
+    },
+    "./redis": {
+      "types": "./dist/redis.d.mts",
+      "import": "./dist/redis.mjs"
+    },
+    "./client": {
+      "types": "./dist/client.d.mts",
+      "import": "./dist/client.mjs"
+    },
+    "./testing": {
+      "types": "./dist/testing.d.mts",
+      "import": "./dist/testing.mjs"
+    },
+    "./adapters/*": {
+      "types": "./dist/adapters/*.d.mts",
+      "import": "./dist/adapters/*.mjs"
+    },
+    "./package.json": "./package.json"
+  },
+  "scripts": {
+    "build": "tsdown",
+    "prepublishOnly": "pnpm build"
+  },
+  "dependencies": {
+    "unstorage": "2.0.0-alpha.10"
+  },
+  "peerDependencies": {
+    "@langchain/core": ">=1",
+    "@langchain/langgraph": ">=1",
+    "@mastra/core": ">=1",
+    "@openai/agents": ">=0.19",
+    "ai": ">=7"
+  },
+  "peerDependenciesMeta": {
+    "ai": {
+      "optional": true
+    },
+    "@langchain/core": {
+      "optional": true
+    },
+    "@langchain/langgraph": {
+      "optional": true
+    },
+    "@openai/agents": {
+      "optional": true
+    },
+    "@mastra/core": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "@langchain/core": "1.2.14",
+    "@langchain/langgraph": "1.4.19",
+    "@mastra/core": "1.74.0",
+    "@openai/agents": "0.19.0",
+    "ai": "7.0.30",
+    "zod": "4.3.6"
+  }
+}

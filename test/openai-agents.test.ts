@@ -2,8 +2,8 @@ import { Agent, tool, type Model, type ModelRequest, type ModelResponse } from "
 import { Usage } from "@openai/agents";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
-import { functionAdapter } from "../src/agents";
-import { openAIAgentsAdapter } from "../src/adapters/openai-agents";
+import { functionAdapter } from "../packages/runtime/src/agents";
+import { openAIAgentsAdapter } from "../packages/runtime/src/adapters/openai-agents";
 import { collect, createEngine, memoryStore, types } from "./helpers";
 
 const adapters = [openAIAgentsAdapter, functionAdapter];

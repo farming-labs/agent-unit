@@ -1,4 +1,4 @@
-import type { DurableObjectStorageLike } from "../../src/cloudflare/types";
+import type { DurableObjectStorageLike } from "../../packages/runtime/src/cloudflare/types";
 
 /** In-memory Durable Object storage with an alarm, like the Workers runtime's. */
 export class FakeStorage implements DurableObjectStorageLike {

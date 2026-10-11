@@ -4,11 +4,11 @@ import { Redis } from "ioredis";
 import { createStorage } from "unstorage";
 import redisDriver from "unstorage/drivers/redis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { defineAgent, functionAdapter, resolveAgent } from "../../src/agents";
-import { redisCoordination } from "../../src/redis";
-import { RunEngine } from "../../src/runtime/engine";
-import { RunStore } from "../../src/runtime/store";
-import type { RunRecord } from "../../src/types";
+import { defineAgent, functionAdapter, resolveAgent } from "../../packages/runtime/src/agents";
+import { redisCoordination } from "../../packages/runtime/src/redis";
+import { RunEngine } from "../../packages/runtime/src/runtime/engine";
+import { RunStore } from "../../packages/runtime/src/runtime/store";
+import type { RunRecord } from "../../packages/runtime/src/types";
 import { ROOT, buildFixture, cleanup, createAgentClient, hasBinary, prepareFixture, startServer, tempDir, waitForStatus, type RunningServer } from "./helpers";
 
 // Real Redis: REDIS_URL (CI runs a Redis service), or a throwaway redis-server when one is installed.

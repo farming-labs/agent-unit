@@ -8,6 +8,9 @@ importers:
 
   .:
     dependencies:
+      '@agent-unit/runtime':
+        specifier: workspace:*
+        version: link:packages/runtime
       citty:
         specifier: 0.2.2
         version: 0.2.2
@@ -63,6 +66,31 @@ importers:
       workerd:
         specifier: ^1.20261006.1
         version: 1.20261006.1
+      zod:
+        specifier: 4.3.6
+        version: 4.3.6
+
+  packages/runtime:
+    dependencies:
+      unstorage:
+        specifier: 2.0.0-alpha.10
+        version: 2.0.0-alpha.10
+    devDependencies:
+      '@langchain/core':
+        specifier: 1.2.14
+        version: 1.2.14(openai@7.28.0(ws@8.22.0)(zod@4.3.6))(ws@8.22.0)
+      '@langchain/langgraph':
+        specifier: 1.4.19
+        version: 1.4.19(@langchain/core@1.2.14(openai@7.28.0(ws@8.22.0)(zod@4.3.6))(ws@8.22.0))(zod@4.3.6)
+      '@mastra/core':
+        specifier: 1.74.0
+        version: 1.74.0(ai@7.0.30(zod@4.3.6))(zod@4.3.6)
+      '@openai/agents':
+        specifier: 0.19.0
+        version: 0.19.0(ws@8.22.0)(zod@4.3.6)
+      ai:
+        specifier: 7.0.30
+        version: 7.0.30(zod@4.3.6)
       zod:
         specifier: 4.3.6
         version: 4.3.6

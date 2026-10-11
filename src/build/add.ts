@@ -3,7 +3,7 @@ import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 import { createInterface } from "node:readline/promises";
 import { createJiti } from "jiti";
-import { validateAdapter } from "../adapter/types";
+import { validateAdapter } from "@agent-unit/runtime/adapter";
 import { BUILTIN_ADAPTERS } from "./adapters";
 import { findConfigFile } from "./load";
 
