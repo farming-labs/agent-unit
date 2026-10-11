@@ -28,12 +28,13 @@ async function project(tasks: string, files: Record<string, string> = {}) {
 describe("tasks", () => {
   it("runs a task once from source, finishing its follow-up work first", async () => {
     const app = await project(`{ digest: { schedule: "0 8 * * *", handler: "./tasks/digest.ts" } }`, {
-      "tasks/digest.ts": `import { waitUntil } from "../../src/env/scope";
+      // An absolute import of this repo's source, quoted so Windows backslashes survive.
+      "tasks/digest.ts": `import { waitUntil } from ${JSON.stringify(join(process.cwd(), "src/env/scope.ts"))};
 const sent: string[] = [];
 export default ({ name }: { name: string }) => {
   waitUntil(new Promise((resolve) => setTimeout(resolve, 10)).then(() => sent.push(name)));
   return { sent };
-};`.replace("../../src/env/scope", join(process.cwd(), "src/env/scope.ts")),
+};`,
     });
     expect(await runTask(app, "digest")).toEqual({ sent: ["digest"] });
     await expect(runTask(app, "nightly")).rejects.toThrow(/there is no task "nightly"\. Tasks: digest\./);
