@@ -24,6 +24,8 @@ interface Deployment {
 interface Host {
   preset: string;
   available: boolean;
+  /** Whether the host keeps work alive after the response; without it, waitUntil work finishes first. */
+  waitUntil: boolean;
   launch(out: string, root: string): Promise<Deployment>;
 }
 
@@ -31,6 +33,7 @@ function processHost(preset: string, command: string, args: (out: string) => str
   return {
     preset,
     available,
+    waitUntil: true,
     async launch(out, root) {
       const server: RunningServer = await startServer(command, args(out), { cwd: root, env: { GREETING }, readyPath: "/" });
       return { fetch: (path, init) => fetch(`${server.url}${path}`, init), stop: () => server.stop() };
@@ -42,6 +45,7 @@ function functionHost(host: FunctionHost): Host {
   return {
     preset: host.preset,
     available: true,
+    waitUntil: host.waitUntil,
     async launch(out) {
       const module = (await import(pathToFileURL(join(out, host.entry)).href)) as Record<string, any>;
       return {
@@ -67,6 +71,7 @@ function functionHost(host: FunctionHost): Host {
 const cloudflare: Host = {
   preset: "cloudflare-module",
   available: Boolean(workerd),
+  waitUntil: true,
   async launch(out) {
     const disk = join(out, "do-disk");
     mkdirSync(disk, { recursive: true });
@@ -132,6 +137,23 @@ for (const host of HOSTS) {
 
     it("reads the host's configuration through agent-unit/env", async () => {
       expect(await (await deployment.fetch("/env")).json()).toEqual({ greeting: GREETING });
+    });
+
+    it("runs work handed to waitUntil after the response, or before it where the host would freeze", async () => {
+      expect(await (await deployment.fetch("/later", { method: "POST" })).text()).toBe("accepted");
+      const both = ["executionCtx", "waitUntil"];
+      if (!host.waitUntil) {
+        // Netlify and Lambda may freeze after the response, so the work was done before it.
+        expect((await (await deployment.fetch("/later")).json()) as { finished: string[] }).toEqual({ finished: both });
+        return;
+      }
+      const deadline = Date.now() + 5_000;
+      let finished: string[] = [];
+      while (finished.length < 2 && Date.now() < deadline) {
+        finished = ((await (await deployment.fetch("/later")).json()) as { finished: string[] }).finished;
+        if (finished.length < 2) await new Promise((resolve) => setTimeout(resolve, 25));
+      }
+      expect(finished).toEqual(both);
     });
 
     it("contains none of agent-unit's engine", () => {

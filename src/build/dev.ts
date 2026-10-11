@@ -3,6 +3,7 @@ import { resolve } from "node:path";
 import { createJiti } from "jiti";
 import { serve } from "srvx";
 import type { AgentUnit } from "@agent-unit/runtime/server";
+import { runInScope, waitUntil as scopedWaitUntil } from "../env/scope";
 import { loadProject, resolveServer, type LoadedProject } from "./load";
 
 export interface DevOptions {
@@ -46,7 +47,7 @@ async function createServerApp(project: LoadedProject): Promise<DevApp> {
     throw new Error(`agent-unit: ${server} must export default a fetch handler: a function (request) => Response, or an object with a fetch method (a Hono app, { fetch }).`);
   }
   return {
-    fetch: (request, waitUntil) => handle(request, undefined, { waitUntil, passThroughOnException() {} }),
+    fetch: (request, waitUntil) => runInScope(waitUntil, () => handle(request, undefined, { waitUntil: scopedWaitUntil, passThroughOnException() {} })),
     describe: () => server,
     close() {},
   };

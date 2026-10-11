@@ -221,6 +221,43 @@ configuration the same way on every host. `agent-unit dev` serves it with reload
 engine settings (`agents`, `storage`, `runtime`, `budget`, `sweep`, `retention`, `basePath`,
 `authorize`, `origin`, `maxBodyBytes`, `adapters`) do not apply and are rejected with `server`.
 
+#### Background work and scheduled tasks
+
+`waitUntil` from `agent-unit/env` keeps work running after the response (an email, a webhook, a
+cache write). It uses the host's own `waitUntil` on Node, Bun, Deno, Workers and Vercel; on Netlify
+and AWS Lambda, which may freeze after a response, the response waits for the work instead. Hono's
+`c.executionCtx.waitUntil` does the same.
+
+```ts
+import { waitUntil } from "agent-unit/env";
+
+app.post("/orders", async (c) => {
+  const order = await createOrder(await c.req.json());
+  waitUntil(sendReceipt(order));
+  return c.json(order, 201);
+});
+```
+
+`tasks` runs work on a schedule with the host's own scheduler: in-process cron on Node, Bun and
+Deno, Cron Triggers on Workers, Vercel Cron Jobs on Vercel. Other presets build with a warning, and
+the task runs only when you trigger it there.
+
+```ts
+export default defineConfig({
+  server: "./src/server.ts",
+  tasks: { "send-digest": { schedule: "0 8 * * *", handler: "./src/tasks/digest.ts" } },
+});
+```
+
+```ts
+// src/tasks/digest.ts
+export default async ({ name, scheduledTime }: { name: string; scheduledTime: number }) => {
+  await sendDigest(new Date(scheduledTime));
+};
+```
+
+`npx agent-unit task send-digest` runs it once from source.
+
 #### Mastra
 
 A Mastra app does not need a server file: the Mastra preset serves your Mastra instance with
@@ -258,6 +295,57 @@ Mastra's D1 store cannot de-duplicate two simultaneous resumes of the same workf
 logs a warning saying so); stores with atomic updates, such as LibSQL and Postgres, can. Other
 frameworks can publish a preset the same way: `server` takes any object with a `name` and an
 `entry({ root, genDir, preset })` that returns the path of a server module.
+
+#### LangGraph, the OpenAI Agents SDK and others
+
+Frameworks without a server of their own run in yours. Give the framework its own durable storage
+and point `server` at the file:
+
+```ts
+// src/server.ts: LangGraph, paused and resumed from its own checkpointer
+import { Hono } from "hono";
+import { Command } from "@langchain/langgraph";
+import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
+import { env } from "agent-unit/env";
+import { workflow } from "./graph";
+
+const checkpointer = PostgresSaver.fromConnString(env.DATABASE_URL);
+await checkpointer.setup(); // creates LangGraph's tables the first time
+const graph = workflow.compile({ checkpointer });
+const app = new Hono();
+app.post("/threads/:id/runs", async (c) =>
+  c.json(await graph.invoke(await c.req.json(), { configurable: { thread_id: c.req.param("id") } })));
+app.post("/threads/:id/resume", async (c) =>
+  c.json(await graph.invoke(new Command({ resume: await c.req.json() }), { configurable: { thread_id: c.req.param("id") } })));
+
+export default app;
+```
+
+```ts
+// src/server.ts: the OpenAI Agents SDK, approvals kept as a serialized RunState
+import { Hono } from "hono";
+import { RunState, run } from "@openai/agents";
+import { support } from "./agent";
+import { pending } from "./store"; // any key-value store you choose
+
+const app = new Hono();
+app.post("/runs", async (c) => {
+  const result = await run(support, (await c.req.json()).input);
+  if (!result.interruptions?.length) return c.json({ output: result.finalOutput });
+  const id = crypto.randomUUID();
+  await pending.set(id, result.state.toString());
+  return c.json({ id, approvals: result.interruptions.map((item) => item.rawItem) }, 202);
+});
+app.post("/runs/:id/approve", async (c) => {
+  const state = await RunState.fromString(support, await pending.get(c.req.param("id")));
+  for (const item of state.getInterruptions()) state.approve(item);
+  return c.json({ output: (await run(support, state)).finalOutput });
+});
+
+export default app;
+```
+
+Prefer agent-unit to handle durability for you? Leave `server` out and use its engine.
 
 ### Cloudflare Durable Objects
 

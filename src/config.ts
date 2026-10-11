@@ -35,6 +35,14 @@ export interface ServerPresetContext {
   preset: string;
 }
 
+export interface TaskConfig {
+  /** When it runs: a cron expression (`"0 8 * * *"` is every day at 08:00). Servers also take a seconds field; Workers and Vercel take five fields. */
+  schedule: string;
+  /** The module whose default export runs the task. */
+  handler: string;
+  description?: string;
+}
+
 export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "authorize" | "origin" | "maxBodyBytes"> {
   /**
    * Your own server, to build for any host instead of agent-unit's engine: the path of a module whose
@@ -45,6 +53,17 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
    * preset (`mastra()` from `agent-unit/presets/mastra`) writes that server for you.
    */
   server?: string | ServerPreset;
+  /**
+   * Work on a schedule, run by the host's own scheduler: in-process cron on Node, Bun and Deno,
+   * Cron Triggers on Workers, Vercel Cron Jobs on Vercel. Each task's module default-exports a
+   * function called with `{ name, scheduledTime }`; hand follow-up work to `waitUntil` from
+   * `agent-unit/env`. Run one now with `agent-unit task <name>`.
+   *
+   * ```ts
+   * tasks: { "send-digest": { schedule: "0 8 * * *", handler: "./src/tasks/digest.ts" } }
+   * ```
+   */
+  tasks?: Record<string, TaskConfig>;
   /** App name for the manifest, MCP server info and A2A card. Default: package.json name. */
   name?: string;
   /**

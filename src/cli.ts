@@ -61,6 +61,24 @@ const add = defineCommand({
   },
 });
 
+const task = defineCommand({
+  meta: { name: "task", description: "Run one of your scheduled tasks now, from source" },
+  args: {
+    name: { type: "positional", description: "The task's name in agent-unit.config.ts", required: true },
+    root,
+  },
+  async run({ args }) {
+    const [{ loadProject }, { runTask }] = await Promise.all([import("./build/load"), import("./build/tasks")]);
+    try {
+      const result = await runTask(await loadProject(args.root), args.name);
+      console.log(`agent-unit task ${args.name}: done${result === undefined ? "" : `\n${JSON.stringify(result, null, 2)}`}`);
+    } catch (error) {
+      console.error(`agent-unit task ${args.name}: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+  },
+});
+
 const manifest = defineCommand({
   meta: { name: "manifest", description: "Print the agents, frameworks and tools agent-unit finds" },
   args: { root },
@@ -81,6 +99,6 @@ const manifest = defineCommand({
 void runMain(
   defineCommand({
     meta: { name: "agent-unit", version, description: "Durable runs for any agent framework, on any host" },
-    subCommands: { dev, build, add, manifest },
+    subCommands: { dev, build, add, task, manifest },
   }),
 );
