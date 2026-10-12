@@ -1,15 +1,16 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, relative, resolve } from "node:path";
 import type { StorageConfig } from "../config";
-import { loadProject, resolveServer, toImport } from "./load";
+import { configForPreset, loadProject, resolveServer, toImport } from "./load";
 import { prepareTasks } from "./tasks";
 import { dedupeWranglerFile } from "./wrangler";
 
 // The compiler: one Nitro build of the app's server for any preset. The server is the app's own
 // (`server` in agent-unit.config.ts) or, without one, agent-unit's engine from ./engine.
 
+/** The preset to build for, in Nitro's own spelling: `cloudflare_module` is `cloudflare-module`. */
 export function resolvePreset(project: { config: { preset?: string } }, preset?: string): string {
-  return preset ?? project.config.preset ?? process.env.NITRO_PRESET ?? "node-server";
+  return (preset ?? project.config.preset ?? process.env.NITRO_PRESET ?? "node-server").replaceAll("_", "-");
 }
 
 /**
@@ -151,8 +152,10 @@ export interface BuildResult {
 /** Builds the app's server (its own, or agent-unit's engine serving its agents) for the chosen preset. */
 export async function build(options: BuildOptions = {}): Promise<BuildResult> {
   const logger = options.logger ?? { info: console.log, warn: console.warn };
-  const project = await loadProject(options.root);
-  const preset = resolvePreset(project, options.preset);
+  const loaded = await loadProject(options.root);
+  const preset = resolvePreset(loaded, options.preset);
+  // From here on the config is the one for this preset: its `presets` entry over the top level.
+  const project = { ...loaded, config: configForPreset(loaded.config, preset) };
   const genDir = join(project.root, ".agent-unit");
   // The engine is imported only when it is the server, so an app's own server builds without it.
   const own = project.config.server ? await resolveServer(project, genDir, preset) : undefined;

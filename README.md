@@ -206,6 +206,26 @@ endpoints, which serverless hosts use to continue long runs. A long run continue
 invocation at the deployment's own URL, read from `AGENT_UNIT_URL` (or `VERCEL_URL`, Netlify's `URL`,
 or the `origin` option) and never from an incoming request; without one it continues in-process.
 
+### One config for every host
+
+Hosts need different settings: runs on disk on Node, a Durable Object per run on Workers, Redis on
+Vercel. `presets` sets them per preset, over the top-level settings, so one app builds for all of
+them with no environment variables to switch:
+
+```ts
+export default defineConfig({
+  retention: "30d",
+  presets: {
+    "cloudflare-module": { runtime: "durable-objects" },
+    vercel: { storage: { driver: "upstash", url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN } },
+  },
+});
+```
+
+Each setting there replaces the top-level value whole. The settings that can differ per preset are
+`storage`, `runtime`, `budget`, `retention`, `sweep`, `basePath`, `authorize`, `origin`,
+`maxBodyBytes`, `tasks`, `cloudflare` and `nitro`. `agent-unit dev` uses the top-level settings.
+
 ### Your own server
 
 Already have a server, from your agent framework or written by hand? Point `server` at it and
@@ -521,6 +541,7 @@ export default defineConfig({
   // agents: { support },                            // instead of the agents/ directory
   // adapters: [myAdapter],                          // extra framework adapters
   // nitro: { … },                                   // passed through to Nitro
+  // presets: { vercel: { … } },                     // settings per host (see "One config for every host")
 });
 ```
 
