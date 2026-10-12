@@ -4,7 +4,7 @@ import { createJiti } from "jiti";
 import { serve } from "srvx";
 import type { AgentUnit } from "@agent-unit/runtime/server";
 import { runInScope, waitUntil as scopedWaitUntil } from "../env/scope";
-import { loadProject, resolveServer, type LoadedProject } from "./load";
+import { loadEnvFile, loadProject, resolveServer, type LoadedProject } from "./load";
 
 export interface DevOptions {
   root?: string;
@@ -64,6 +64,7 @@ async function createApp(root: string): Promise<DevApp> {
 export async function startDev(options: DevOptions = {}): Promise<DevServer> {
   const logger = options.logger ?? { info: console.log, warn: console.warn, error: console.error };
   const root = resolve(options.root ?? process.cwd());
+  loadEnvFile(root);
 
   let current = await createApp(root);
   const server = serve({

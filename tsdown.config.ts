@@ -32,5 +32,5 @@ export default defineConfig({
   // (Declaration entries are emitted as chunks too, flagged isEntry.)
   outputOptions: { chunkFileNames: (chunk) => (chunk.isEntry ? "[name].mjs" : "_chunks/[name]-[hash].mjs") },
   // The runtime stays its own package: one copy of the engine, whichever entry imports it.
-  external: [/^@agent-unit\//, /^node:/, /^cloudflare:/, "ai", /^@ai-sdk\//, /^@mastra\//, /^@langchain\//, /^@openai\//, "nitro", /^nitro\//, "h3", "unstorage", /^unstorage\//, "jiti", "citty", "srvx", /^srvx\//],
+  external: [/^@agent-unit\//, /^node:/, /^cloudflare:/, "ai", /^@ai-sdk\//, /^@mastra\//, /^@langchain\//, /^@openai\//, "nitro", /^nitro\//, "h3", "unstorage", /^unstorage\//, "jiti", "citty", "consola", "srvx", /^srvx\//],
 });

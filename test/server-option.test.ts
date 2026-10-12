@@ -67,6 +67,23 @@ describe("the server option", () => {
     expect(await (await fetch(dev.url)).text()).toBe("reloaded GET");
   });
 
+  it("reads the app's .env in dev, without overriding variables already set", async () => {
+    const root = app({
+      "agent-unit.config.mjs": `export default { server: "./server.ts" };`,
+      "server.ts": `export default () => Response.json({ key: process.env.INIT_TEST_KEY, set: process.env.INIT_TEST_SET });`,
+      ".env": `# from agent-unit init\nINIT_TEST_KEY="from .env"\nINIT_TEST_SET=from .env\n`,
+    });
+    process.env.INIT_TEST_SET = "from the shell";
+    try {
+      const dev = await startDev({ root, port: 0, watch: false, logger: quiet });
+      servers.push(dev);
+      expect(await (await fetch(dev.url)).json()).toEqual({ key: "from .env", set: "from the shell" });
+    } finally {
+      delete process.env.INIT_TEST_KEY;
+      delete process.env.INIT_TEST_SET;
+    }
+  });
+
   it("accepts a framework preset: a plain object that writes the server module", async () => {
     const root = app({
       "agent-unit.config.mjs": `import { writeFileSync } from "node:fs";

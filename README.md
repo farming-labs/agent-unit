@@ -30,6 +30,25 @@ and one runtime contract, with presets for every host.
 - **No deployers to maintain.** Framework authors write one small adapter; agent-unit and Nitro
   handle hosts, storage and scheduling.
 
+## Start a new app
+
+```sh
+npx agent-unit init my-agent
+```
+
+It asks for the framework (Mastra, the AI SDK on a Hono server, or plain Hono), the hosts to deploy
+to, Mastra's storage, the model provider and extras (a scheduled task, bearer-token auth), and writes
+an app with one working agent, `build` and `deploy` scripts per host, and a README. A Mastra app on
+Workers gets Mastra's D1 store there and the store you chose everywhere else. Every answer has a flag,
+for scripts and CI:
+
+```sh
+npx agent-unit init my-agent --framework mastra --hosts node,cloudflare --store libsql \
+  --provider openai --extras task --no-install
+```
+
+`--yes` takes the default for anything not given.
+
 ## Quick start
 
 ```sh
@@ -217,9 +236,10 @@ export default app;
 The default export handles web requests: a Hono app, `export default { fetch }`, or a function
 `(request, env, ctx) => Response`. On Workers it receives the Worker's `env` and `ctx`; elsewhere `ctx`
 has `waitUntil` where the host keeps work alive after the response. `agent-unit/env` reads
-configuration the same way on every host. `agent-unit dev` serves it with reload on change. The
-engine settings (`agents`, `storage`, `runtime`, `budget`, `sweep`, `retention`, `basePath`,
-`authorize`, `origin`, `maxBodyBytes`, `adapters`) do not apply and are rejected with `server`.
+configuration the same way on every host. `agent-unit dev` serves it with reload on change and
+reads `.env` (variables already set win). The engine settings (`agents`, `storage`, `runtime`,
+`budget`, `sweep`, `retention`, `basePath`, `authorize`, `origin`, `maxBodyBytes`, `adapters`) do
+not apply and are rejected with `server`.
 
 #### Background work and scheduled tasks
 

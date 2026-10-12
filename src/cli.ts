@@ -7,8 +7,31 @@ const version = (JSON.parse(readFileSync(`${packageRoot()}/package.json`, "utf8"
 
 const root = { type: "string", description: "App directory", default: "." } as const;
 
+const init = defineCommand({
+  meta: { name: "init", description: "Create a new app: framework, hosts, storage and model provider chosen up front" },
+  args: {
+    dir: { type: "positional", description: "Directory for the new app", required: false },
+    framework: { type: "string", description: "mastra, ai-sdk or hono" },
+    hosts: { type: "string", description: "Comma-separated: node, bun, deno, cloudflare, vercel, netlify, lambda" },
+    store: { type: "string", description: "Mastra's store off Workers: libsql or postgres (Workers use D1)" },
+    provider: { type: "string", description: "Model provider: openai, anthropic or google" },
+    extras: { type: "string", description: "Comma-separated: task, auth, or none" },
+    install: { type: "boolean", description: "Install dependencies (--no-install to skip)" },
+    yes: { type: "boolean", description: "Take the default for every question not answered by a flag", default: false },
+  },
+  async run({ args }) {
+    const { init: createApp } = await import("./build/init");
+    try {
+      await createApp({ ...args, dir: args.dir || undefined, version });
+    } catch (error) {
+      console.error(`agent-unit init: ${error instanceof Error ? error.message : String(error)}`);
+      process.exitCode = 1;
+    }
+  },
+});
+
 const dev = defineCommand({
-  meta: { name: "dev", description: "Serve your server or your agents from source, reloading on change" },
+  meta: { name: "dev", description: "Serve your server or your agents from source, reloading on change (reads .env)" },
   args: {
     root,
     port: { type: "string", description: "Port", default: process.env.PORT ?? "3000" },
@@ -68,8 +91,9 @@ const task = defineCommand({
     root,
   },
   async run({ args }) {
-    const [{ loadProject }, { runTask }] = await Promise.all([import("./build/load"), import("./build/tasks")]);
+    const [{ loadEnvFile, loadProject }, { runTask }] = await Promise.all([import("./build/load"), import("./build/tasks")]);
     try {
+      loadEnvFile(args.root);
       const result = await runTask(await loadProject(args.root), args.name);
       console.log(`agent-unit task ${args.name}: done${result === undefined ? "" : `\n${JSON.stringify(result, null, 2)}`}`);
     } catch (error) {
@@ -99,6 +123,6 @@ const manifest = defineCommand({
 void runMain(
   defineCommand({
     meta: { name: "agent-unit", version, description: "Durable runs for any agent framework, on any host" },
-    subCommands: { dev, build, add, task, manifest },
+    subCommands: { init, dev, build, add, task, manifest },
   }),
 );
