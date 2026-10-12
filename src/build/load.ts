@@ -1,6 +1,7 @@
 import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { parseEnv } from "node:util";
 import { createJiti } from "jiti";
 import type { AgentUnitConfig } from "../config";
 
@@ -34,6 +35,23 @@ const ENGINE_OPTIONS = [
   "origin",
   "maxBodyBytes",
 ] as const satisfies readonly (keyof AgentUnitConfig)[];
+
+/**
+ * Loads the app's `.env` into `process.env` for runs from source (`agent-unit dev`, `agent-unit task`),
+ * as `mastra dev` and `nitro dev` do. Variables already set win. Builds never read it: hosts have
+ * their own settings. Returns the names it set.
+ */
+export function loadEnvFile(root: string): string[] {
+  const file = join(root, ".env");
+  if (!existsSync(file)) return [];
+  const loaded: string[] = [];
+  for (const [key, value] of Object.entries(parseEnv(readFileSync(file, "utf8")))) {
+    if (process.env[key] !== undefined) continue;
+    process.env[key] = value;
+    loaded.push(key);
+  }
+  return loaded;
+}
 
 /** The installed agent-unit package root, whether running from `dist/` or from source. */
 export function packageRoot(): string {

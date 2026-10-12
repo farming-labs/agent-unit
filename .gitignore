@@ -19,3 +19,4 @@ coverage
 .env.*
 !.env.example
 .dev.vars
+test/e2e/.init
