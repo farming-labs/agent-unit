@@ -27,7 +27,7 @@ const node: Host = {
   preset: "node-server",
   async launch(out, root, data) {
     const start = () =>
-      startServer(process.execPath, [join(out, "server/index.mjs")], { cwd: root, env: { MASTRA_DB_URL: `file:${join(data, "mastra.db")}` }, readyPath: "/api/workflows" });
+      startServer(process.execPath, [join(out, "server/index.mjs")], { cwd: root, env: { MASTRA_DB_URL: `file:${join(data, "mastra.db")}` }, readyPath: "/mastra/workflows" });
     let server: RunningServer = await start();
     return {
       fetch: (path, init) => fetch(`${server.url}${path}`, init),
@@ -103,24 +103,41 @@ for (const host of [node, vercelFunction, workers]) {
     });
 
     it("serves Mastra's routes", async () => {
-      expect(Object.keys(await call("/api/workflows"))).toEqual(["refund"]);
+      expect(Object.keys(await call("/mastra/workflows"))).toEqual(["refund"]);
     });
 
     it("pauses a workflow, survives a restart, and resumes it from Mastra's store without repeating steps", async () => {
-      const { runId } = await call("/api/workflows/refund/create-run", {});
-      const started = await call(`/api/workflows/refund/start-async?runId=${runId}`, { inputData: { orderId: "o_42" } });
+      const { runId } = await call("/mastra/workflows/refund/create-run", {});
+      const started = await call(`/mastra/workflows/refund/start-async?runId=${runId}`, { inputData: { orderId: "o_42" } });
       expect(started.status).toBe("suspended");
       const token = started.steps.lookup.output.token;
       expect(token).toMatch(/^[0-9a-f-]{36}$/);
 
       await deployment.restart();
 
-      const resumed = await call(`/api/workflows/refund/resume-async?runId=${runId}`, { step: "approve", resumeData: { approved: true } });
+      const resumed = await call(`/mastra/workflows/refund/resume-async?runId=${runId}`, { step: "approve", resumeData: { approved: true } });
       expect(resumed.status).toBe("success");
       // The lookup step made a new token whenever it ran: the same token means it did not run again.
       expect(resumed.result).toEqual({ orderId: "o_42", token, approved: true });
-      expect(await call(`/api/workflows/refund/runs/${runId}`)).toMatchObject({ runId, status: "success" });
+      expect(await call(`/mastra/workflows/refund/runs/${runId}`)).toMatchObject({ runId, status: "success" });
     });
+
+    it("follows Mastra's own server settings, as mastra build does", async () => {
+      // apiPrefix (every route above is under /mastra), /health, CORS from server.cors, a custom route.
+      const health = await deployment.fetch("/health");
+      expect(await health.json()).toEqual({ success: true });
+      const cors = await deployment.fetch("/mastra/workflows", { headers: { origin: "https://app.example.com" } });
+      expect(cors.headers.get("access-control-allow-origin")).toBe("https://app.example.com");
+      expect(await (await deployment.fetch("/hello")).json()).toEqual({ hello: "custom route" });
+      expect((await deployment.fetch("/api/workflows")).status).toBe(404);
+    });
+
+    if (host.preset === "cloudflare-module") {
+      it("declares the D1 binding once, though both wrangler.jsonc and the config declare it", () => {
+        const wrangler = JSON.parse(readFileSync(join(out, "server/wrangler.json"), "utf8"));
+        expect(wrangler.d1_databases).toEqual([{ binding: "DB", database_name: "refunds", database_id: "00000000-0000-0000-0000-000000000000" }]);
+      });
+    }
 
     it("contains none of agent-unit's engine", () => {
       const found = files(out)
@@ -141,7 +158,7 @@ describe("Mastra's own server in agent-unit dev", () => {
     const dev = await startDev({ root, port: 0, watch: false, logger: { info() {}, warn() {}, error() {} } });
     try {
       expect(dev.server).toBe("mastra");
-      const workflows = (await (await fetch(new URL("/api/workflows", dev.url))).json()) as Record<string, unknown>;
+      const workflows = (await (await fetch(new URL("/mastra/workflows", dev.url))).json()) as Record<string, unknown>;
       expect(Object.keys(workflows)).toEqual(["refund"]);
     } finally {
       await dev.close();

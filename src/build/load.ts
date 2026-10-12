@@ -112,6 +112,15 @@ export async function loadProject(rootDir = process.cwd()): Promise<LoadedProjec
   if (!name && existsSync(join(root, "package.json"))) {
     name = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: string }).name;
   }
+  // A Mastra app (src/mastra/index.ts) with neither agents nor engine settings needs no config at all:
+  // it is built as Mastra's own server, as `server: mastra()` would.
+  if (config.server === undefined && !config.agents && MASTRA_ENTRIES.some((file) => existsSync(join(root, file)))) {
+    const engineOnly = ENGINE_OPTIONS.filter((key) => config[key] !== undefined);
+    if (!engineOnly.length && Object.keys(scanAgents(resolve(root, config.agentsDir ?? "agents"))).length === 0) {
+      const { mastra } = await import("../presets/mastra");
+      config = { ...config, server: mastra() };
+    }
+  }
   if (config.server !== undefined) {
     const server = config.server as unknown;
     const preset = typeof server === "object" && server !== null && typeof (server as { name?: unknown }).name === "string" && typeof (server as { entry?: unknown }).entry === "function";
@@ -129,10 +138,11 @@ export async function loadProject(rootDir = process.cwd()): Promise<LoadedProjec
   }
   const agentFiles = config.agents ? {} : scanAgents(resolve(root, config.agentsDir ?? "agents"));
   if (!config.agents && Object.keys(agentFiles).length === 0) {
-    // A Mastra app keeps its instance in src/mastra/index.ts; point at the preset rather than at agents/.
+    // A Mastra app that also sets engine settings: say which ones keep it from being built as Mastra's server.
     if (MASTRA_ENTRIES.some((file) => existsSync(join(root, file)))) {
+      const engineOnly = ENGINE_OPTIONS.filter((key) => config[key] !== undefined);
       throw new Error(
-        `No agents found, but this looks like a Mastra app. To build Mastra's own server, set \`server: mastra()\` (import { mastra } from "agent-unit/presets/mastra") in agent-unit.config.ts.`,
+        `No agents found, but this looks like a Mastra app. agent-unit builds Mastra's own server on its own unless the config sets agent-unit's engine settings (${engineOnly.map((key) => `\`${key}\``).join(", ")}); remove them, or set \`server: mastra()\` to choose explicitly.`,
       );
     }
     throw new Error(
@@ -146,7 +156,7 @@ export async function loadProject(rootDir = process.cwd()): Promise<LoadedProjec
  * The app's own server module (`server` in the config): its file, or the one its framework preset
  * writes into `genDir`. `label` names it in build and dev output.
  */
-export async function resolveServer(project: LoadedProject, genDir: string, preset: string): Promise<{ file: string; label: string }> {
+export async function resolveServer(project: LoadedProject, genDir: string, preset: string): Promise<{ file: string; label: string; alias?: Record<string, string> }> {
   const server = project.config.server;
   if (!server) throw new Error("agent-unit: this app has no `server`.");
   if (typeof server === "string") {
@@ -155,7 +165,8 @@ export async function resolveServer(project: LoadedProject, genDir: string, pres
     return { file, label: server };
   }
   mkdirSync(genDir, { recursive: true });
-  const file = await server.entry({ root: project.root, genDir, preset });
+  const result = await server.entry({ root: project.root, genDir, preset });
+  const { file, alias } = typeof result === "string" ? { file: result, alias: undefined } : (result ?? { file: undefined, alias: undefined });
   if (typeof file !== "string" || !existsSync(file)) throw new Error(`agent-unit: the ${server.name} preset returned "${String(file)}", which does not exist.`);
-  return { file, label: server.name };
+  return { file, label: server.name, ...(alias ? { alias } : {}) };
 }

@@ -260,20 +260,26 @@ export default async ({ name, scheduledTime }: { name: string; scheduledTime: nu
 
 #### Mastra
 
-A Mastra app does not need a server file: the Mastra preset serves your Mastra instance with
-Mastra's own Hono adapter, so every Mastra route, its auth, memory and workflows work as they do
-under `mastra dev`, on the storage your instance configures.
+A Mastra app needs no server file and no config. agent-unit finds your Mastra instance
+(`src/mastra/index.ts`, `export const mastra`) and serves it with Mastra's own Hono adapter, so
+every Mastra route, its auth, memory and workflows work as they do under `mastra dev`, on the
+storage your instance configures.
 
 ```sh
 npm install agent-unit @mastra/hono hono
+npx agent-unit build --preset vercel
 ```
+
+It follows your instance's `server` settings the way `mastra build` does: `apiPrefix`, `cors`,
+`timeout`, `bodySizeLimit`, `apiRoutes`, `middleware`, and a `/health` route. A `deployer` left over
+from `mastra build` is ignored. To point at another file or export, set the preset yourself:
 
 ```ts
 // agent-unit.config.ts
 import { defineConfig } from "agent-unit";
 import { mastra } from "agent-unit/presets/mastra";
 
-export default defineConfig({ server: mastra() }); // src/mastra/index.ts, export const mastra
+export default defineConfig({ server: mastra({ entry: "./src/ai/mastra.ts", export: "app" }) });
 ```
 
 Storage stays Mastra's. To use a different store per host, let the build pick it with a
@@ -284,7 +290,8 @@ Storage stays Mastra's. To use a different store per host, let the build pick it
 ```
 
 ```ts
-// src/storage.d1.ts: Mastra's D1 store on the Worker's DB binding (declare it in `cloudflare.wrangler`)
+// src/storage.d1.ts: Mastra's D1 store on the Worker's DB binding (declare it in your
+// wrangler file or in `cloudflare.wrangler`; a binding declared in both is kept once)
 import { D1Store } from "@mastra/cloudflare-d1";
 import { env } from "agent-unit/env";
 

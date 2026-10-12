@@ -1,4 +1,6 @@
 import { Mastra } from "@mastra/core";
+import { registerApiRoute } from "@mastra/core/server";
+import { VercelDeployer } from "@mastra/deployer-vercel";
 import { createStep, createWorkflow } from "@mastra/core/workflows";
 import { storage } from "#storage";
 import { z } from "zod";
@@ -35,4 +37,12 @@ const refund = createWorkflow({ id: "refund", inputSchema: z.object({ orderId: z
 export const mastra = new Mastra({
   workflows: { refund },
   storage,
+  // Left over from `mastra build`, as in an app moving to agent-unit; agent-unit builds never load it.
+  deployer: new VercelDeployer(),
+  // Mastra's own server settings, which agent-unit's build follows as `mastra build` does.
+  server: {
+    apiPrefix: "/mastra",
+    cors: { origin: "https://app.example.com" },
+    apiRoutes: [registerApiRoute("/hello", { method: "GET", handler: async (c) => c.json({ hello: "custom route" }) })],
+  },
 });

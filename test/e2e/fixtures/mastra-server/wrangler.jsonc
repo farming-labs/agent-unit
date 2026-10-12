@@ -1,0 +1,4 @@
+{
+  // The app's own wrangler file, declaring the same D1 binding as agent-unit.config.ts.
+  "d1_databases": [{ "binding": "DB", "database_name": "refunds", "database_id": "00000000-0000-0000-0000-000000000000" }]
+}

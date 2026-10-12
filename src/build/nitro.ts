@@ -3,6 +3,7 @@ import { join, relative, resolve } from "node:path";
 import type { StorageConfig } from "../config";
 import { loadProject, resolveServer, toImport } from "./load";
 import { prepareTasks } from "./tasks";
+import { dedupeWranglerFile } from "./wrangler";
 
 // The compiler: one Nitro build of the app's server for any preset. The server is the app's own
 // (`server` in agent-unit.config.ts) or, without one, agent-unit's engine from ./engine.
@@ -179,7 +180,7 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     wrangler: { ...(fromNitro.wrangler as object | undefined), ...fromConfig.wrangler },
   } as CloudflareOptions;
   const cloudflare = /^cloudflare/.test(preset);
-  const alias: Record<string, string> = {};
+  const alias: Record<string, string> = { ...own?.alias };
   if (cloudflare) {
     // The Node \`ws\` package (Mastra imports it) cannot run on Workers, and loading it crashes the
     // Worker at startup; Workers have a WebSocket client built in.
@@ -217,6 +218,7 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     await prepare(nitro);
     await copyPublicAssets(nitro);
     await buildNitro(nitro);
+    if (cloudflare) dedupeWranglerFile(join(nitro.options.output.serverDir, "wrangler.json"));
   } finally {
     await nitro.close();
   }

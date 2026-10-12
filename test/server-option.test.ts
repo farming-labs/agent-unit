@@ -92,11 +92,24 @@ export default {
     await expect(loadProject(app({ "agent-unit.config.mjs": `export default { server: { name: "half" } };` }))).rejects.toThrow(/or a framework preset such as mastra\(\)/);
   });
 
-  it("tells a Mastra app how to build Mastra's own server", async () => {
-    const root = app({});
-    mkdirSync(join(root, "src/mastra"), { recursive: true });
-    writeFileSync(join(root, "src/mastra/index.ts"), `export const mastra = {};`);
-    await expect(loadProject(root)).rejects.toThrow(/this looks like a Mastra app\. To build Mastra's own server, set `server: mastra\(\)`/);
+  it("builds a Mastra app as Mastra's own server without any config", async () => {
+    const mastraApp = (files: Record<string, string> = {}) => {
+      const root = app(files);
+      mkdirSync(join(root, "src/mastra"), { recursive: true });
+      writeFileSync(join(root, "src/mastra/index.ts"), `export const mastra = {};`);
+      return root;
+    };
+    const found = await loadProject(mastraApp());
+    expect(typeof found.config.server === "object" && found.config.server.name).toBe("mastra");
+    // Engine settings mean the app wanted the engine: say so instead of choosing for it.
+    await expect(loadProject(mastraApp({ "agent-unit.config.mjs": `export default { storage: { driver: "memory" } };` }))).rejects.toThrow(
+      /looks like a Mastra app\. agent-unit builds Mastra's own server on its own unless the config sets agent-unit's engine settings \(`storage`\)/,
+    );
+    // Agents in agents\/ keep using the engine.
+    const both = mastraApp({ "agent-unit.config.mjs": "export default {};" });
+    mkdirSync(join(both, "agents"));
+    writeFileSync(join(both, "agents/greeter.mjs"), "export default { run: () => 'hi' };");
+    expect((await loadProject(both)).config.server).toBeUndefined();
   });
 
   it("explains what the Mastra preset needs", () => {
