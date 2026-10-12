@@ -23,7 +23,14 @@ export interface ServerPreset {
   /** Shown in build and dev output. */
   name: string;
   /** Returns the absolute path of the server module. Called once per build, and on every dev reload. */
-  entry(context: ServerPresetContext): string | Promise<string>;
+  entry(context: ServerPresetContext): string | ServerPresetEntry | Promise<string | ServerPresetEntry>;
+}
+
+export interface ServerPresetEntry {
+  /** Absolute path of the server module. */
+  file: string;
+  /** Module replacements for the production bundle only, such as build-time packages the server must not load. */
+  alias?: Record<string, string>;
 }
 
 export interface ServerPresetContext {

@@ -38,8 +38,8 @@ export interface DevApp {
 
 /** The app's own server from source: its default export, called the way the built entry calls it. */
 async function createServerApp(project: LoadedProject): Promise<DevApp> {
-  const { file, label: server } = await resolveServer(project, resolve(project.root, ".agent-unit"), "dev");
-  const jiti = createJiti(resolve(project.root, "package.json"), { moduleCache: false, fsCache: false });
+  const { file, label: server, alias } = await resolveServer(project, resolve(project.root, ".agent-unit"), "dev");
+  const jiti = createJiti(resolve(project.root, "package.json"), { moduleCache: false, fsCache: false, ...(alias ? { alias } : {}) });
   const module = (await jiti.import(file)) as { default?: unknown };
   const app = (module.default ?? module) as { fetch?: (...args: unknown[]) => Response | Promise<Response> } | ((...args: unknown[]) => Response | Promise<Response>);
   const handle = typeof app === "function" ? app : typeof app?.fetch === "function" ? app.fetch.bind(app) : undefined;
