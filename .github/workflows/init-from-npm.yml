@@ -27,6 +27,11 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
+      # The apps that choose Bun or Deno are started on them too.
+      - uses: oven-sh/setup-bun@v2
+      - uses: denoland/setup-deno@v2
+        with:
+          deno-version: v2.x
       - run: pnpm install --frozen-lockfile
       - run: pnpm build
       - run: pnpm check:init

@@ -2,10 +2,11 @@
 // the way a new user gets it: agent-unit from its packed tarballs, every other dependency from npm at
 // the ranges the templates pin. Each app has to install with npm (no peer conflicts), typecheck,
 // build for every host it chose, resolve one copy of its framework (so `instanceof` checks hold), and
-// answer a request from its Node build.
+// answer a request from its Node build, and from its Bun and Deno builds when it chose those hosts
+// and they are installed.
 // The e2e suite checks the same apps against the SDK versions in agent-unit's lockfile; this catches
 // what npm resolves today. Usage: node scripts/check-init.mjs [name ...] (after pnpm build)
-import { execFileSync, spawn } from "node:child_process";
+import { execFileSync, spawn, spawnSync } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { createServer } from "node:net";
 import { tmpdir } from "node:os";
@@ -28,7 +29,7 @@ const APPS = [
   { name: "ai-sdk-server", args: ["--framework", "ai-sdk", "--runner", "server", "--hosts", "node,cloudflare", "--provider", "google", "--extras", "auth,background,test"], smoke: ["/", '"ok":true'] },
   { name: "langgraph", args: ["--framework", "langgraph", "--hosts", "node,cloudflare", "--provider", "anthropic", "--extras", "test"], smoke: ["/agents", '"refund"'] },
   { name: "openai-agents", args: ["--framework", "openai-agents", "--hosts", "node,lambda", "--extras", "test"], smoke: ["/agents", '"refund"'] },
-  { name: "define-agent", args: ["--framework", "agent-unit", "--hosts", "node,cloudflare,vercel", "--extras", "task,test"], smoke: ["/agents", '"refund"'] },
+  { name: "define-agent", args: ["--framework", "agent-unit", "--hosts", "node,cloudflare,vercel,deno", "--extras", "task,test"], smoke: ["/agents", '"refund"'] },
   { name: "hono", args: ["--framework", "hono", "--hosts", "node,bun,deno"], smoke: ["/hello", '"hello":"world"'] },
 ];
 
@@ -50,10 +51,17 @@ const freePort = () =>
     });
   });
 
-/** Starts the app's Node build and checks the first answer to `path` contains `expected`. */
-async function smoke(root, [path, expected]) {
+/** Runtimes besides Node that an app may choose, each started on its own build. */
+const RUNTIMES = {
+  bun: { preset: "bun", command: "bun", args: (entry) => ["run", entry] },
+  deno: { preset: "deno-server", command: "deno", args: (entry) => ["run", "-A", entry] },
+};
+const has = (command) => spawnSync(command, ["--version"], { stdio: "ignore", shell }).status === 0;
+
+/** Starts a server build and checks the first answer to `path` contains `expected`. */
+async function smoke(root, [path, expected], command = process.execPath, args = [join(root, ".output/server/index.mjs")], label = "Node") {
   const port = await freePort();
-  const child = spawn(process.execPath, [join(root, ".output/server/index.mjs")], {
+  const child = spawn(command, args, {
     cwd: root,
     env: { ...process.env, ...ENV, PORT: String(port), NITRO_PORT: String(port), HOST: "127.0.0.1" },
     stdio: ["ignore", "pipe", "pipe"],
@@ -66,13 +74,13 @@ async function smoke(root, [path, expected]) {
   const tail = () => output.trim().split("\n").slice(-20).join("\n");
   try {
     for (const deadline = Date.now() + 30_000; ; ) {
-      if (exited) throw new Error(`its Node build exited before answering:\n${tail()}`);
-      if (Date.now() > deadline) throw new Error(`its Node build did not answer ${path} within 30s:\n${tail()}`);
+      if (exited) throw new Error(`its ${label} build exited before answering:\n${tail()}`);
+      if (Date.now() > deadline) throw new Error(`its ${label} build did not answer ${path} within 30s:\n${tail()}`);
       // Polls until the server accepts the connection; the first answer is the one checked.
       const response = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { authorization: `Bearer ${ENV.API_TOKEN}` } }).catch(() => undefined);
       if (response) {
         const body = await response.text();
-        if (!response.ok || !body.includes(expected)) throw new Error(`GET ${path} on its Node build answered ${response.status}: ${body.slice(0, 300)}`);
+        if (!response.ok || !body.includes(expected)) throw new Error(`GET ${path} on its ${label} build answered ${response.status}: ${body.slice(0, 300)}`);
         return `GET ${path} ${response.status}`;
       }
       await new Promise((resolve) => setTimeout(resolve, 100));
@@ -142,8 +150,21 @@ try {
       // The Node build last, so its .output is the one served (Workers, Bun and Deno builds use the same directory).
       step("node build", "npx", ["--no-install", "agent-unit", "build", "--preset", "node-server"]);
       const answered = await smoke(root, app.smoke);
+      // The same request on the other runtimes the app chose, each from its own build.
+      const runtimes = [];
+      for (const [host, runtime] of Object.entries(RUNTIMES)) {
+        if (!manifest.scripts[`build:${host}`]) continue;
+        if (!has(runtime.command)) {
+          runtimes.push(`${host} skipped (${runtime.command} not installed)`);
+          continue;
+        }
+        const out = `.output-${host}`;
+        step(`${host} build`, "npx", ["--no-install", "agent-unit", "build", "--preset", runtime.preset, "--out", out]);
+        await smoke(root, app.smoke, runtime.command, runtime.args(join(root, out, "server/index.mjs")), host);
+        runtimes.push(`${host} too`);
+      }
       const resolved = ["@mastra/core", "@langchain/core", "@openai/agents", "ai", "hono"].flatMap((name) => [...versions(root, name)].map((version) => `${name}@${version}`));
-      console.log(`check-init: ${app.name} installs, typechecks, builds for ${builds.length > 1 ? builds.length - 1 : 1} host(s) and answers ${answered}${resolved.length ? ` (${resolved.join(", ")})` : ""}`);
+      console.log(`check-init: ${app.name} installs, typechecks, builds for ${builds.length > 1 ? builds.length - 1 : 1} host(s) and answers ${answered}${runtimes.length ? ` (${runtimes.join(", ")})` : ""}${resolved.length ? ` [${resolved.join(", ")}]` : ""}`);
     } catch (error) {
       failures.push(app.name);
       console.error(`check-init: ${app.name}: ${error.message}`);
