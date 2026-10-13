@@ -38,14 +38,16 @@ export interface ResolvedAgent {
 
 /** Finds the adapter that recognises an agent and builds its manifest card. */
 export function resolveAgent(name: string, value: unknown, adapters: AgentAdapter<any>[]): ResolvedAgent {
-  // A module namespace resolves to its default export when the namespace itself is not an agent.
-  const candidates = [value];
-  if (value && typeof value === "object" && "default" in value) candidates.push((value as { default: unknown }).default);
+  // A module resolves to its default export first, then to the module itself (an agent written as named
+  // exports). The default goes first because a loader's interop namespace (jiti's, in agent-unit dev)
+  // exposes the default's properties: an adapter would otherwise take the namespace for the agent, and a
+  // copy made from its constructor would have none of the agent's methods.
+  const candidates = value && typeof value === "object" && "default" in value ? [(value as { default: unknown }).default, value] : [value];
   for (const agent of candidates) {
     const resolved = matchAdapter(name, agent, adapters);
     if (resolved) return resolved;
   }
-  const agent = candidates.at(-1);
+  const agent = candidates[0];
   const kind = agent === null ? "null" : typeof agent === "object" ? ((agent as object).constructor?.name ?? "object") : typeof agent;
   throw new Error(
     `No adapter recognises agent "${name}" (${kind}). Export an agent from a supported framework, wrap it with defineAgent(), or add an adapter in agent-unit.config.ts.`,

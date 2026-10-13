@@ -1,0 +1,8 @@
+{
+  "name": "dev-ai-sdk",
+  "private": true,
+  "type": "module",
+  "dependencies": {
+    "ai": "*"
+  }
+}

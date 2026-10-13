@@ -21,3 +21,23 @@ describe("dedupeWrangler", () => {
     expect(() => dedupeWrangler(config)).toThrow(/kv_namespaces "CACHE" is declared twice with different settings/);
   });
 });
+
+describe("agent-unit's Durable Objects migration among the app's", () => {
+  const ours = [{ tag: "agent-unit-v1", new_sqlite_classes: ["AgentUnitRun", "AgentUnitIndex"] }];
+  it("goes first unless the app places it, so a Worker that already applied its own migrations can list it after them", async () => {
+    const { orderMigrations } = await import("../src/build/nitro");
+    const app = [{ tag: "v1", new_sqlite_classes: ["Notes"] }];
+    expect(orderMigrations(ours, app).map((migration) => migration.tag)).toEqual(["agent-unit-v1", "v1"]);
+    expect(orderMigrations(ours, [...app, { tag: "agent-unit-v1" }, { tag: "v2" }])).toEqual([...app, ...ours, { tag: "v2" }]);
+    expect(orderMigrations([], app)).toEqual(app);
+  });
+
+  it("refuses the reserved tag with content of the app's, and a placement without the Durable Objects runtime", async () => {
+    const { orderMigrations } = await import("../src/build/nitro");
+    expect(() => orderMigrations(ours, [{ tag: "agent-unit-v1", new_classes: ["Mine"] } as { tag: string }])).toThrow(
+      `Use another tag, or list a bare { tag: "agent-unit-v1" } to place agent-unit's migration there.`,
+    );
+    expect(() => orderMigrations([], [{ tag: "agent-unit-v1" }])).toThrow(`only the "durable-objects" runtime has`);
+  });
+});
+

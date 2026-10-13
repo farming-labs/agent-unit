@@ -65,6 +65,13 @@ describe("agent-unit init: a Mastra app for Node and Workers", () => {
     } finally {
       await server.stop();
     }
+    // As after `cp .env.example .env`: MASTRA_DB_URL is set but empty, so the local file is used.
+    const blank = await startServer(process.execPath, [join(out, "server/index.mjs")], { cwd: data, env: { MASTRA_DB_URL: "" }, readyPath: "/health" });
+    try {
+      expect((await fetch(`${blank.url}/api/agents`)).status).toBe(200);
+    } finally {
+      await blank.stop();
+    }
   });
 
   it("serves them on Workers, on D1, with the daily task as a Cron Trigger", async () => {
