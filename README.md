@@ -368,6 +368,10 @@ import { env } from "agent-unit/env";
 export const storage = new D1Store({ id: "app", binding: env.DB });
 ```
 
+On Workers, the Mastra preset leaves out the TypeScript compiler, which Mastra's server imports
+only to check project files on disk: it was 1.4 MB gzipped of a 4.7 MB Worker. To bundle it
+anyway, set `nitro: { alias: { typescript: "typescript" } }`.
+
 Mastra's D1 store cannot de-duplicate two simultaneous resumes of the same workflow run (Mastra
 logs a warning saying so); stores with atomic updates, such as LibSQL and Postgres, can. Other
 frameworks can publish a preset the same way: `server` takes any object with a `name` and an

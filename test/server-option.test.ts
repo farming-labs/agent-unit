@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -127,6 +127,22 @@ export default {
     mkdirSync(join(both, "agents"));
     writeFileSync(join(both, "agents/greeter.mjs"), "export default { run: () => 'hi' };");
     expect((await loadProject(both)).config.server).toBeUndefined();
+  });
+
+  it("leaves the TypeScript compiler out of Mastra's Workers builds only, and keeps its deployer stand-ins everywhere", () => {
+    const root = app({ "mastra.ts": "export const mastra = {};" });
+    for (const pkg of ["@mastra/hono", "hono"]) {
+      mkdirSync(join(root, "node_modules", pkg), { recursive: true });
+      writeFileSync(join(root, "node_modules", pkg, "package.json"), "{}");
+    }
+    mkdirSync(join(root, ".agent-unit")); // the build creates it before calling the preset
+    const entry = (preset: string) => mastra({ entry: "./mastra.ts" }).entry({ root, genDir: join(root, ".agent-unit"), preset }) as { alias: Record<string, string> };
+    const workers = entry("cloudflare-module").alias;
+    expect(workers.typescript).toBe(join(root, ".agent-unit/typescript.mjs"));
+    expect(readFileSync(workers.typescript!, "utf8")).toContain("leaves the TypeScript compiler out of Workers builds");
+    expect(workers["@mastra/deployer-cloudflare"]).toBeDefined();
+    expect(entry("vercel").alias).not.toHaveProperty("typescript");
+    expect(entry("node-server").alias).not.toHaveProperty("typescript");
   });
 
   it("explains what the Mastra preset needs", () => {
