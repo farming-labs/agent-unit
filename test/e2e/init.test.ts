@@ -1,5 +1,5 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync, writeFileSync } from "node:fs";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
@@ -319,5 +319,69 @@ describe("agent-unit init: agents on agent-unit's engine, one config for every h
       typecheck(await generate(`langgraph-${provider}`, { framework: "langgraph", hosts: "node", provider, extras: "none" }));
     });
   }
+});
+
+describe("agent-unit init in an app that is already there", () => {
+  const outs: string[] = [];
+  afterAll(() => cleanup(...outs));
+
+  /** An app written by hand, then `agent-unit init` in it with the defaults. */
+  async function existing(name: string, files: Record<string, string>, options: Omit<InitOptions, "dir" | "version" | "install"> = {}) {
+    prepareFixture("server");
+    const { init } = (await import(join(ROOT, "dist/build.mjs"))) as typeof import("../../src/build");
+    const root = join(GENERATED, name);
+    cleanup(root);
+    for (const [path, content] of Object.entries(files)) {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      writeFileSync(join(root, path), content);
+    }
+    const result = await init({ yes: true, hosts: "node", ...options, dir: root, install: false, version: "0.0.0", logger: { info() {}, warn() {} } });
+    expect(result.existing).toBe(true);
+    const link = join(root, "node_modules/agent-unit");
+    mkdirSync(dirname(link), { recursive: true });
+    symlinkSync(ROOT, link, process.platform === "win32" ? "junction" : "dir");
+    return root;
+  }
+
+  it("builds the app's own Hono server", async () => {
+    const root = await existing("existing-hono", {
+      "package.json": JSON.stringify({ name: "shop", type: "module", scripts: { build: "tsc" }, dependencies: { hono: "^4.0.0" } }),
+      "src/server.ts": `import { Hono } from "hono";\n\nexport default new Hono().get("/", (c) => c.json({ shop: "open" }));\n`,
+      "tsconfig.json": JSON.stringify({ compilerOptions: { target: "ES2022", module: "ESNext", moduleResolution: "Bundler", strict: true, skipLibCheck: true, noEmit: true }, include: ["src", "agent-unit.config.ts"] }),
+    });
+    typecheck(root);
+    const out = tempDir("init-out");
+    outs.push(out);
+    await buildFixture(root, "node-server", out);
+    const server = await startServer(process.execPath, [join(out, "server/index.mjs")], { cwd: root, readyPath: "/" });
+    try {
+      expect(await (await fetch(server.url)).json()).toEqual({ shop: "open" });
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it("serves an existing Mastra instance, on its own storage", async () => {
+    const root = await existing("existing-mastra", {
+      "package.json": JSON.stringify({ name: "desk", type: "module", dependencies: { "@mastra/core": "^1.74.0" } }),
+      "src/mastra/index.ts": `import { Mastra } from "@mastra/core";
+import { Agent } from "@mastra/core/agent";
+
+export const mastra = new Mastra({
+  agents: { helper: new Agent({ id: "helper", name: "Helper", instructions: "Help.", model: "openai/gpt-5-mini" }) },
+});
+`,
+    });
+    expect(readdirSync(join(root, "src"))).toEqual(["mastra"]);
+    const out = tempDir("init-out");
+    outs.push(out);
+    await buildFixture(root, "node-server", out);
+    const server = await startServer(process.execPath, [join(out, "server/index.mjs")], { cwd: root, readyPath: "/health" });
+    try {
+      expect(await (await fetch(`${server.url}/api/agents`)).json()).toHaveProperty("helper");
+    } finally {
+      await server.stop();
+    }
+  });
 });
 
