@@ -217,14 +217,19 @@ export default defineConfig({
   retention: "30d",
   presets: {
     "cloudflare-module": { runtime: "durable-objects" },
-    vercel: { storage: { driver: "upstash", url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN } },
+    // Reads UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN when it runs.
+    vercel: { storage: { driver: "upstash" } },
   },
 });
 ```
 
 Each setting there replaces the top-level value whole. The settings that can differ per preset are
 `storage`, `runtime`, `budget`, `retention`, `sweep`, `basePath`, `authorize`, `origin`,
-`maxBodyBytes`, `tasks`, `cloudflare` and `nitro`. The `agent-unit/nitro` module applies the entry for the app's Nitro preset too. `agent-unit dev` and `nitro dev` use the top-level settings.
+`maxBodyBytes`, `tasks`, `cloudflare` and `nitro`. The `agent-unit/nitro` module applies the entry
+for the app's Nitro preset too. `agent-unit dev` and `nitro dev` use the top-level settings.
+
+`storage` options are written into the build output. Leave secrets out of them when the driver
+reads its own environment variables when it runs, as Upstash's does.
 
 ### Your own server
 
