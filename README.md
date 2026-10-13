@@ -58,6 +58,18 @@ npx agent-unit init my-agent --framework ai-sdk --runner engine --hosts node,clo
 
 `--yes` takes the default for anything not given.
 
+Run it in an app you already have (a directory with a `package.json`) to add agent-unit to it. The
+framework the app uses is the default, and nothing of yours is replaced:
+
+- **Your own server.** If `src/server.ts` or `src/index.ts` (any of `.ts`, `.mts`, `.js`, `.mjs`)
+  exists, the config points at it and agent-unit builds it as it is.
+- **Your Mastra instance.** It keeps its own storage and model keys.
+- **`package.json`.** It gains only missing dependencies and scripts. A script name you already use
+  gets agent-unit's under `agent-unit:<name>`, so `npm run dev` stays yours.
+- **`.gitignore` and `.env.example`.** They gain only missing lines.
+- **Other files.** Each is written only where none exists. Your README and TypeScript setup are left
+  alone.
+
 ## Quick start
 
 ```sh

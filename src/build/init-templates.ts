@@ -146,6 +146,104 @@ export function normalizeAnswers(answers: InitAnswers): Required<InitAnswers> {
 const and = (items: string[]) => (items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items.at(-1)}` : items.join(""));
 const objectKey = (key: string) => (/^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key));
 
+/** What an existing app already has, when `agent-unit init` adds agent-unit to it. */
+export interface ExistingApp {
+  /** Its own Mastra instance in src/mastra: Mastra's storage and agents stay the app's. */
+  mastra?: boolean;
+  /** Its own server module, as a path from the app's root (`./src/index.ts`): built instead of a new one. */
+  server?: string;
+}
+
+type Manifest = Record<string, unknown> & { dependencies?: Record<string, string>; devDependencies?: Record<string, string>; peerDependencies?: Record<string, string> };
+
+/** The framework an app already uses, from its package.json, as the default answer. */
+export function detectFramework(manifest: Manifest): InitFramework | undefined {
+  const deps = { ...manifest.devDependencies, ...manifest.peerDependencies, ...manifest.dependencies };
+  if (deps["@mastra/core"]) return "mastra";
+  if (deps["@langchain/langgraph"]) return "langgraph";
+  if (deps["@openai/agents"]) return "openai-agents";
+  if (deps.ai) return "ai-sdk";
+  if (deps.hono) return "hono";
+  return undefined;
+}
+
+export interface AppMerge {
+  /** What to write, by path: new files, and the app's own files with lines added. */
+  files: Record<string, string>;
+  created: string[];
+  updated: string[];
+  /** The app's files left as they are, where agent-unit would have written its own. */
+  kept: string[];
+  /** agent-unit's scripts whose names the app already uses, under their new names. */
+  renamed: Record<string, string>;
+}
+
+/**
+ * Adds a plan to an existing app without replacing anything in it: package.json gains only missing
+ * dependencies, scripts and imports (a script whose name is taken is added as `agent-unit:<name>`),
+ * .gitignore and .env.example only missing lines, and every other file only where none exists.
+ */
+export function mergeIntoApp(plan: Record<string, string>, read: (path: string) => string | undefined): AppMerge {
+  const merge: AppMerge = { files: {}, created: [], updated: [], kept: [], renamed: {} };
+  for (const [path, content] of Object.entries(plan)) {
+    const current = read(path);
+    // The app's README describes the app, and its TypeScript setup is its own: agent-unit builds
+    // without one.
+    if (path === "README.md" || path === "tsconfig.json") continue;
+    if (current === undefined) {
+      merge.files[path] = content;
+      merge.created.push(path);
+      continue;
+    }
+    const next = path === "package.json" ? mergeManifest(current, content, merge.renamed) : path === ".gitignore" ? mergeLines(current, content) : path === ".env.example" ? mergeEnv(current, content) : current;
+    if (next !== current) {
+      merge.files[path] = next;
+      merge.updated.push(path);
+    } else if (path !== "package.json" && path !== ".gitignore" && path !== ".env.example" && current !== content) {
+      merge.kept.push(path);
+    }
+  }
+  return merge;
+}
+
+function mergeManifest(current: string, planned: string, renamed: Record<string, string>): string {
+  const app = JSON.parse(current) as Manifest & { scripts?: Record<string, string>; imports?: Record<string, unknown> };
+  const plan = JSON.parse(planned) as Manifest & { scripts: Record<string, string>; imports?: Record<string, unknown> };
+  const has = (name: string) => [app.dependencies, app.devDependencies, app.peerDependencies].some((deps) => deps?.[name] !== undefined);
+  for (const [name, range] of Object.entries(plan.dependencies ?? {})) if (!has(name)) app.dependencies = { ...app.dependencies, [name]: range };
+  for (const [name, command] of Object.entries(plan.scripts)) {
+    if (name === "typecheck") continue;
+    const scripts = (app.scripts ??= {});
+    if (scripts[name] === undefined || scripts[name] === command) {
+      scripts[name] = command;
+      continue;
+    }
+    const alias = `agent-unit:${name}`;
+    if (scripts[alias] === undefined || scripts[alias] === command) {
+      scripts[alias] = command;
+      renamed[name] = alias;
+    }
+  }
+  for (const [key, target] of Object.entries(plan.imports ?? {})) if (app.imports?.[key] === undefined) app.imports = { ...app.imports, [key]: target };
+  const indent = /^([ \t]+)"/m.exec(current)?.[1] ?? "  ";
+  return `${JSON.stringify(app, null, indent)}\n`;
+}
+
+function mergeLines(current: string, planned: string): string {
+  const have = new Set(current.split(/\r?\n/).map((line) => line.trim()));
+  const missing = planned.split("\n").filter((line) => line.trim() && !have.has(line.trim()));
+  return missing.length ? `${current.replace(/\n*$/, "\n")}\n# agent-unit\n${missing.join("\n")}\n` : current;
+}
+
+function mergeEnv(current: string, planned: string): string {
+  const keys = new Set([...current.matchAll(/^\s*([A-Za-z_][\w]*)\s*=/gm)].map((match) => match[1]));
+  const missing = planned.split("\n\n").filter((block) => {
+    const key = /^([A-Za-z_][\w]*)=/m.exec(block)?.[1];
+    return key !== undefined && !keys.has(key);
+  });
+  return missing.length ? `${current.replace(/\n*$/, "\n")}\n${missing.map((block) => block.replace(/\n*$/, "\n")).join("\n")}` : current;
+}
+
 export interface InitPlan {
   files: Record<string, string>;
   /** Environment variables the app reads, for the summary. */
@@ -153,21 +251,27 @@ export interface InitPlan {
 }
 
 /** Everything `agent-unit init` writes for these answers, by path relative to the new app. */
-export function initFiles(input: InitAnswers, agentUnitVersion: string): InitPlan {
+export function initFiles(input: InitAnswers, agentUnitVersion: string, app: ExistingApp = {}): InitPlan {
   const answers = normalizeAnswers(input);
   const { framework, hosts, extras } = answers;
   const engine = answers.runner === "engine";
+  // The app's own Mastra instance: its agents, model keys and storage stay as they are.
+  const ownMastra = !!app.mastra && framework === "mastra" && !engine;
+  // The app's own server: agent-unit builds it as it is, so it needs no model, route or package of ours.
+  const ownServer = !!app.server && framework !== "mastra" && !engine;
   const provider = PROVIDERS[answers.provider];
   const workers = hosts.includes("cloudflare");
   const serverless = hosts.filter((host) => SERVERLESS.includes(host));
   const task = extras.includes("task");
-  const auth = extras.includes("auth");
+  const auth = extras.includes("auth") && !ownServer;
   const files: Record<string, string> = {};
 
   // Dependencies
-  const dependencies = ["zod"];
+  const dependencies = ownMastra || ownServer ? [] : ["zod"];
   const devDependencies = ["typescript", "@types/node"];
-  if (engine) {
+  if (ownMastra) {
+    dependencies.push("@mastra/hono", "hono");
+  } else if (engine) {
     if (framework === "mastra") dependencies.push("@mastra/core");
     if (framework === "mastra" || framework === "ai-sdk") dependencies.push("ai", provider.package);
     if (framework === "langgraph") dependencies.push("@langchain/core", "@langchain/langgraph", provider.langchain);
@@ -176,7 +280,7 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string): InitPla
   } else if (framework === "mastra") {
     dependencies.push("@mastra/core", "@mastra/hono", "hono", answers.store === "postgres" ? "@mastra/pg" : "@mastra/libsql");
     if (workers) dependencies.push("@mastra/cloudflare-d1");
-  } else {
+  } else if (!ownServer) {
     dependencies.push("hono");
     if (framework === "ai-sdk") dependencies.push("ai", provider.package);
   }
@@ -197,7 +301,7 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string): InitPla
   scripts.typecheck = "tsc --noEmit";
 
   const manifest: Record<string, unknown> = { name: answers.name, private: true, type: "module", scripts };
-  if (framework === "mastra" && !engine) {
+  if (framework === "mastra" && !engine && !ownMastra) {
     // Each host gets its own store: the build for Workers resolves `workerd`, every other host `default`.
     const store = `./src/storage.${answers.store}.ts`;
     manifest.imports = { "#storage": workers ? { workerd: "./src/storage.d1.ts", default: store } : store };
@@ -208,14 +312,14 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string): InitPla
 
   // agent-unit.config.ts
   const config: string[] = [];
-  if (!engine && framework !== "mastra") config.push(`  server: "./src/server.ts",`);
+  if (!engine && framework !== "mastra") config.push(`  server: ${JSON.stringify(app.server ?? "./src/server.ts")},`);
   if (engine && auth) {
     config.push(
       `  // Clients send \`Authorization: Bearer <API_TOKEN>\`.`,
       `  authorize: (request) => !!env.API_TOKEN && request.headers.get("authorization") === \`Bearer \${env.API_TOKEN}\`,`,
     );
   }
-  if (workers && framework === "mastra" && !engine) {
+  if (workers && framework === "mastra" && !engine && !ownMastra) {
     config.push(
       `  // Mastra's D1 store on Workers. Create the database with \`npx wrangler d1 create ${answers.name}\``,
       `  // and put the id it prints here.`,
@@ -248,8 +352,8 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string): InitPla
 
   // The app
   if (engine) Object.assign(files, engineAgent(answers));
-  else if (framework === "mastra") Object.assign(files, mastraFiles(answers, workers));
-  else files["src/server.ts"] = serverFile(framework as "ai-sdk" | "hono", provider, auth);
+  else if (framework === "mastra") Object.assign(files, ownMastra ? {} : mastraFiles(answers, workers));
+  else if (!app.server) files["src/server.ts"] = serverFile(framework as "ai-sdk" | "hono", provider, auth);
   if (task) {
     files["src/tasks/daily-summary.ts"] = `// Runs every day at 08:00 UTC: in-process on Node, Bun and Deno, a Cron Trigger on Workers, a Cron
 // Job on Vercel. \`npm run task\` runs it once now.
@@ -261,7 +365,7 @@ export default async ({ scheduledTime }: { name: string; scheduledTime: number }
 
   // Environment
   const env: [string, string][] = [];
-  if (callsModel(framework)) env.push([provider.key, `Your ${provider.label} API key`]);
+  if (callsModel(framework) && !ownMastra && !ownServer) env.push([provider.key, `Your ${provider.label} API key`]);
   if (engine && serverless.length) {
     env.push(["UPSTASH_REDIS_REST_URL", `Upstash Redis REST URL, where runs are kept on ${and(serverless.map((host) => HOSTS[host].label))}`]);
     env.push(["UPSTASH_REDIS_REST_TOKEN", "Upstash Redis REST token"]);
@@ -269,11 +373,11 @@ export default async ({ scheduledTime }: { name: string; scheduledTime: number }
   if (engine && serverless.length) {
     env.push(["AGENT_UNIT_SECRET", "Any long random string in production: protects the internal continue and sweep endpoints"]);
   }
-  if (framework === "mastra" && !engine && answers.store === "libsql") {
+  if (framework === "mastra" && !engine && !ownMastra && answers.store === "libsql") {
     env.push(["MASTRA_DB_URL", "LibSQL database. Default file:./mastra.db; serverless hosts need a hosted one, such as libsql://<db>.turso.io"]);
     env.push(["MASTRA_DB_AUTH_TOKEN", "Token for a hosted LibSQL database (Turso)"]);
   }
-  if (framework === "mastra" && !engine && answers.store === "postgres") env.push(["DATABASE_URL", "Postgres connection string"]);
+  if (framework === "mastra" && !engine && !ownMastra && answers.store === "postgres") env.push(["DATABASE_URL", "Postgres connection string"]);
   if (auth) env.push(["API_TOKEN", "Clients send it as `Authorization: Bearer <token>`"]);
   if (env.length) files[".env.example"] = env.map(([key, comment]) => `# ${comment}\n${key}=\n`).join("\n");
 

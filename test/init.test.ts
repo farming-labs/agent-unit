@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { init, packageManager } from "../src/build/init";
-import { initFiles, packageName } from "../src/build/init-templates";
+import { detectFramework, initFiles, mergeIntoApp, packageName } from "../src/build/init-templates";
 
 const manifest = (files: Record<string, string>) => JSON.parse(files["package.json"]!) as Record<string, any>;
 
@@ -200,3 +200,114 @@ describe("agent-unit init", () => {
     expect(packageManager("")).toBe("npm");
   });
 });
+
+describe("agent-unit init in an existing app", () => {
+  const dirs: string[] = [];
+  const quiet = { info() {}, warn() {} };
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  function app(files: Record<string, string>) {
+    const dir = mkdtempSync(join(tmpdir(), "agent-unit-existing-"));
+    dirs.push(dir);
+    for (const [path, content] of Object.entries(files)) {
+      mkdirSync(join(dir, path, ".."), { recursive: true });
+      writeFileSync(join(dir, path), content);
+    }
+    return dir;
+  }
+  const read = (dir: string, path: string) => readFileSync(join(dir, path), "utf8");
+
+  it("builds the app's own Hono server, adding to package.json and .gitignore without replacing anything", async () => {
+    const server = `import { Hono } from "hono";\nexport default new Hono().get("/", (c) => c.text("shop"));\n`;
+    const root = app({
+      "package.json": JSON.stringify({ name: "@acme/shop", type: "module", scripts: { dev: "tsx watch src/server.ts", build: "tsc", lint: "eslint ." }, dependencies: { hono: "^4.0.0" } }, null, "\t"),
+      "src/server.ts": server,
+      ".gitignore": "node_modules\n.env\n",
+    });
+    const result = await init({ dir: root, hosts: "node,vercel", yes: true, install: false, version: "0.1.16", logger: quiet });
+    expect(result).toMatchObject({ existing: true, answers: { name: "shop", framework: "hono", runner: "server" } });
+    expect(read(root, "src/server.ts")).toBe(server);
+    expect(read(root, "agent-unit.config.ts")).toContain(`server: "./src/server.ts"`);
+    const pkg = JSON.parse(read(root, "package.json"));
+    expect(pkg.dependencies).toEqual({ hono: "^4.0.0", "agent-unit": "^0.1.16" });
+    expect(pkg.scripts).toMatchObject({
+      dev: "tsx watch src/server.ts",
+      build: "tsc",
+      lint: "eslint .",
+      "agent-unit:dev": "agent-unit dev",
+      "agent-unit:build": "agent-unit build --preset node-server",
+      "build:vercel": "agent-unit build --preset vercel",
+    });
+    expect(read(root, "package.json")).toMatch(/^\t"name"/m); // the app's own indentation
+    const ignore = read(root, ".gitignore");
+    expect(ignore.startsWith("node_modules\n.env\n\n# agent-unit\n")).toBe(true);
+    expect(ignore.match(/^node_modules$/gm)).toHaveLength(1);
+    expect(ignore).toContain(".output");
+    // The app's README and TypeScript setup are its own.
+    expect(result.files.sort()).toEqual([".gitignore", "agent-unit.config.ts", "package.json"]);
+    expect(pkg.devDependencies).toBeUndefined();
+    expect(pkg.scripts).not.toHaveProperty("typecheck");
+  });
+
+  it("runs an AI SDK app's own server by default, wherever Hono's starter put it", async () => {
+    const root = app({ "package.json": JSON.stringify({ name: "chat", dependencies: { ai: "^7.0.0", hono: "^4.0.0" } }), "src/index.js": "export default { fetch: () => new Response('hi') };\n" });
+    const result = await init({ dir: root, hosts: "node", yes: true, install: false, version: "0.1.16", logger: quiet });
+    expect(result.answers).toMatchObject({ framework: "ai-sdk", runner: "server" });
+    expect(read(root, "agent-unit.config.ts")).toContain(`server: "./src/index.js"`);
+    // Built as it is: no model key, route or package of agent-unit's own.
+    expect(result.answers.provider).toBeUndefined();
+    expect(result.files.sort()).toEqual([".gitignore", "agent-unit.config.ts", "package.json"]);
+    expect(Object.keys(JSON.parse(read(root, "package.json")).dependencies)).toEqual(["ai", "hono", "agent-unit"]);
+    await expect(init({ dir: app({ "package.json": "{}", "src/server.ts": "" }), framework: "hono", extras: "auth", hosts: "node", yes: true, install: false, version: "0.1.16", logger: quiet })).rejects.toThrow(
+      "--extras auth does not apply to your own server (src/server.ts): protect its routes there.",
+    );
+    // Asked for the engine, it writes an agent beside the app's server.
+    const engine = app({ "package.json": JSON.stringify({ name: "chat", dependencies: { ai: "^7.0.0" } }), "src/index.ts": "" });
+    expect((await init({ dir: engine, runner: "engine", hosts: "node", yes: true, install: false, version: "0.1.16", logger: quiet })).files).toContain("agents/assistant.ts");
+  });
+
+  it("leaves an existing Mastra instance its storage and model keys", async () => {
+    const root = app({
+      "package.json": JSON.stringify({ name: "desk", dependencies: { "@mastra/core": "^1.70.0", "@mastra/libsql": "^1.20.0" } }),
+      "src/mastra/index.ts": "export const mastra = {};\n",
+    });
+    const result = await init({ dir: root, hosts: "node,cloudflare", yes: true, install: false, version: "0.1.16", logger: quiet });
+    expect(result.answers).toMatchObject({ framework: "mastra", runner: "server", store: undefined, provider: undefined });
+    expect(result.files.sort()).toEqual([".gitignore", "agent-unit.config.ts", "package.json"]);
+    const pkg = JSON.parse(read(root, "package.json"));
+    expect(Object.keys(pkg.dependencies).sort()).toEqual(["@mastra/core", "@mastra/hono", "@mastra/libsql", "agent-unit", "hono"]);
+    expect(pkg.imports).toBeUndefined();
+    expect(read(root, "agent-unit.config.ts")).not.toContain("d1_databases");
+    expect(read(root, "src/mastra/index.ts")).toBe("export const mastra = {};\n");
+  });
+
+  it("refuses an app that already has an agent-unit config, and points a non-empty directory without a package.json at a new one", async () => {
+    const options = { yes: true, install: false, version: "0.1.16", logger: quiet };
+    await expect(init({ ...options, dir: app({ "package.json": "{}", "agent-unit.config.mjs": "export default {};" }) })).rejects.toThrow("already has agent-unit.config.mjs.");
+    await expect(init({ ...options, dir: app({ "notes.txt": "" }) })).rejects.toThrow("is not empty. Choose a new directory, or run init in an app with a package.json");
+  });
+
+  it("adds only missing variables to .env.example, and reports files it kept", () => {
+    const plan = initFiles({ name: "x", framework: "ai-sdk", hosts: ["vercel"], extras: ["auth"] }, "0.1.16").files;
+    const existing: Record<string, string> = {
+      "package.json": JSON.stringify({ name: "x", dependencies: { ai: "^7.0.0" } }),
+      ".env.example": "# mine\nOPENAI_API_KEY=\n",
+      "agents/assistant.ts": "// mine\n",
+    };
+    const merge = mergeIntoApp(plan, (path) => existing[path]);
+    expect(merge.files[".env.example"]).toBe(`# mine\nOPENAI_API_KEY=\n\n${plan[".env.example"]!.split("\n\n").slice(1).join("\n\n")}`);
+    expect(merge.files[".env.example"]!.match(/^OPENAI_API_KEY=/gm)).toHaveLength(1);
+    expect(JSON.parse(merge.files["package.json"]!).dependencies.ai).toBe("^7.0.0");
+    expect(merge.kept).toEqual(["agents/assistant.ts"]);
+    expect(merge.created).toEqual(["agent-unit.config.ts", ".gitignore"]);
+  });
+
+  it("takes the framework an app already uses as the default", () => {
+    expect(detectFramework({ dependencies: { "@mastra/core": "1", ai: "7" } })).toBe("mastra");
+    expect(detectFramework({ devDependencies: { "@langchain/langgraph": "1" } })).toBe("langgraph");
+    expect(detectFramework({ dependencies: { ai: "7", hono: "4" } })).toBe("ai-sdk");
+    expect(detectFramework({ dependencies: { express: "5" } })).toBeUndefined();
+  });
+});
+
