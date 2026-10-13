@@ -174,3 +174,40 @@ describe("agent-unit dev with a framework's agent", () => {
   });
 });
 
+describe("agent-unit dev with the storage drivers a build takes", () => {
+  const engineApp = (storage: string, files: Record<string, string> = {}) => {
+    const root = app({ "agent-unit.config.mjs": `export default { storage: ${storage} };`, ...files });
+    mkdirSync(join(root, "agents"));
+    // What defineAgent returns, without importing agent-unit from a temp directory.
+    writeFileSync(join(root, "agents/greeter.mjs"), `export default { [Symbol.for("agent-unit.agent")]: true, run: () => "hi" };`);
+    return root;
+  };
+  const run = async (root: string) => {
+    const dev = await startDev({ root, port: 0, watch: false, logger: quiet });
+    try {
+      const response = await fetch(`${dev.url}agents/greeter/runs`, { method: "POST", headers: { "content-type": "application/json", accept: "text/event-stream" }, body: "{}" });
+      return (await response.text()).includes('"type":"RUN_FINISHED"');
+    } finally {
+      await dev.close();
+    }
+  };
+
+  it("takes unstorage's own aliases and a driver module of the app's", async () => {
+    expect(await run(engineApp(`{ driver: "fsLite", base: ".data" }`))).toBe(true);
+    const driver = `const items = new Map();
+globalThis.__customDriverWrites = 0;
+export default () => ({
+  name: "custom",
+  hasItem: (key) => items.has(key),
+  getItem: (key) => items.get(key) ?? null,
+  setItem: (key, value) => { globalThis.__customDriverWrites++; items.set(key, value); },
+  removeItem: (key) => { items.delete(key); },
+  getKeys: (base) => [...items.keys()].filter((key) => key.startsWith(base ?? "")),
+  clear: () => items.clear(),
+});
+`;
+    expect(await run(engineApp(`{ driver: "./custom-driver.mjs" }`, { "custom-driver.mjs": driver }))).toBe(true);
+    expect((globalThis as { __customDriverWrites?: number }).__customDriverWrites).toBeGreaterThan(0);
+  });
+});
+

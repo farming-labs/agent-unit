@@ -78,10 +78,31 @@ describe("per-preset settings", () => {
 describe("per-preset settings in the agent-unit/nitro module", () => {
   async function setup(root: string, preset: string, dev = false, storage: Record<string, unknown> = {}) {
     const options = { preset, dev, rootDir: root, buildDir: join(root, ".nitro"), storage, handlers: [], experimental: {}, tasks: {}, scheduledTasks: {} };
-    await agentUnit().setup!({ options, logger: { warn() {} } } as never);
+    const warnings: string[] = [];
+    await agentUnit().setup!({ options, logger: { warn: (message: string) => warnings.push(message) } } as never);
     const runtime = readFileSync(join(root, ".nitro/agent-unit", preset, "runtime.mjs"), "utf8");
-    return { options: options as typeof options & { scheduledTasks: Record<string, unknown> }, runtime };
+    return { options: options as typeof options & { scheduledTasks: Record<string, unknown>; tasks: Record<string, unknown> }, runtime, warnings };
   }
+
+  it("keeps runs on disk under nitro dev when the config sets no storage, without a warning", async () => {
+    const { runtime, warnings } = await setup(app(`{}`), "nitro-dev", true);
+    expect(runtime).toContain(`"driver":"fs-lite"`);
+    expect(warnings).toEqual([]);
+  });
+
+  it("runs the app's tasks beside the sweep, refuses the Durable Objects runtime, and points Workers and Nitro settings at nitro.config", async () => {
+    const root = app(`{ tasks: { digest: { schedule: "0 8 * * *", handler: "./digest.mjs" } }, cloudflare: { wrangler: {} } }`, {
+      "agents/greeter.mjs": `export default { run: () => "hi" };`,
+      "digest.mjs": "export default async () => {};",
+    });
+    const { options, warnings } = await setup(root, "node-server");
+    expect(Object.keys(options.tasks).sort()).toEqual(["agent-unit:sweep", "digest"]);
+    expect(options.scheduledTasks).toMatchObject({ "0 8 * * *": ["digest"], "* * * * *": ["agent-unit:sweep"] });
+    expect(warnings).toEqual(["agent-unit: `cloudflare` in agent-unit.config.ts do not apply with the agent-unit/nitro module: set them in your nitro.config."]);
+    await expect(setup(app(`{ presets: { "cloudflare-module": { runtime: "durable-objects" } } }`), "cloudflare-module")).rejects.toThrow(
+      `runtime "durable-objects" is built by \`agent-unit build\`, not by the agent-unit/nitro module`,
+    );
+  });
 
   it("uses the entry for the app's Nitro preset, and the top-level settings in dev", async () => {
     const root = app(`{ storage: { driver: "fs-lite", base: ".data" }, presets: { vercel: { storage: { driver: "memory" }, sweep: "*/5 * * * *" } } }`);

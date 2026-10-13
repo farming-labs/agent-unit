@@ -1,5 +1,6 @@
-import { resolve } from "node:path";
-import { createStorage, type Driver } from "unstorage";
+import { join, resolve } from "node:path";
+import { createJiti } from "jiti";
+import { builtinDrivers, createStorage, type Driver } from "unstorage";
 import { redisCoordination, type RedisLike } from "@agent-unit/runtime/redis";
 import { RunStore } from "@agent-unit/runtime/runtime";
 import { createAgentUnit } from "@agent-unit/runtime/server";
@@ -9,10 +10,16 @@ import type { DevApp } from "./dev";
 import { DEFAULT_STORAGE, withSafeDefaults } from "./engine";
 import type { LoadedProject } from "./load";
 
+/** The storage driver the build would mount: one of unstorage's by name or alias, or a module of the app's. */
 async function loadDriver(root: string, config: StorageConfig): Promise<Driver> {
   const { driver, ...options } = withSafeDefaults(config);
-  if (!/^[a-z0-9-]+$/.test(driver)) throw new Error(`Invalid storage driver name "${driver}".`);
-  const module = (await import(`unstorage/drivers/${driver}`)) as { default: (options: unknown) => Driver };
+  const builtin = (builtinDrivers as Record<string, string>)[driver];
+  const module = (
+    builtin
+      ? await import(builtin)
+      : await createJiti(join(root, "package.json"), { moduleCache: false, fsCache: false }).import(/^[./]/.test(driver) ? resolve(root, driver) : driver)
+  ) as { default: (options: unknown) => Driver };
+  if (typeof module.default !== "function") throw new Error(`agent-unit: the storage driver "${driver}" must export default a driver factory.`);
   // Relative fs paths resolve against the app root, matching the built server's working directory.
   if (typeof options.base === "string" && /^(fs|fs-lite)$/.test(driver)) options.base = resolve(root, options.base);
   return module.default(options);
