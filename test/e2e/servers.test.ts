@@ -40,7 +40,8 @@ for (const runtime of RUNTIMES) {
     const start = () =>
       startServer(runtime.command, runtime.args(out), {
         cwd: root,
-        env: { AGENT_UNIT_SECRET: SECRET, API_TOKEN: TOKEN, GREETING: "hey" },
+        // The config evaluates where the server runs, so the data directory goes in here too.
+        env: { AGENT_UNIT_SECRET: SECRET, API_TOKEN: TOKEN, GREETING: "hey", AGENT_UNIT_DATA: data },
       });
     const client = () => createAgentClient({ baseUrl: server.url, headers: { authorization: `Bearer ${TOKEN}` } });
     const restart = async () => {

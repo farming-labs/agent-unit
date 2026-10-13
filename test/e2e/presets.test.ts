@@ -57,15 +57,14 @@ describe("per-preset settings", () => {
     }
   });
 
-  it("uses the storage and budget set for Vercel", async () => {
+  it("uses the storage, budget and authorize set for Vercel", async () => {
     const dir = out();
     const result = await buildFixture(root, "vercel", dir);
     expect(result).toMatchObject({ runtime: "default", storage: { driver: "memory" }, budgetMs: 30_000 });
     const module = (await import(pathToFileURL(join(dir, vercel.entry)).href)) as Record<string, any>;
-    const client = createAgentClient({
-      baseUrl: "https://app.example.com",
-      fetch: (input, init) => vercel.invoke(module, new Request(input, init), () => {}),
-    });
+    const fetch = (input: RequestInfo | URL, init?: RequestInit) => vercel.invoke(module, new Request(input, init), () => {});
+    expect((await fetch("https://app.example.com/agents")).status).toBe(401);
+    const client = createAgentClient({ baseUrl: "https://app.example.com", headers: { "x-team": "presets" }, fetch });
     expect(await finished(client)).toMatchObject({ type: "RUN_FINISHED", result: "hello presets" });
   });
 });

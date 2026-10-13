@@ -249,8 +249,11 @@ Each setting there replaces the top-level value whole. The settings that can dif
 `maxBodyBytes`, `tasks`, `cloudflare` and `nitro`. The `agent-unit/nitro` module applies the entry
 for the app's Nitro preset too. `agent-unit dev` and `nitro dev` use the top-level settings.
 
-`storage` options are written into the build output. Leave secrets out of them when the driver
-reads its own environment variables when it runs, as Upstash's does.
+The build keeps the config as code and evaluates it where the server runs, so `url:
+process.env.REDIS_URL` reads the server's environment and no secret is written into the build. The
+storage driver is the one exception: the build includes the driver the config chooses at build
+time, and the server stops at startup with a message if the config chooses another one where it
+runs. Give the build and the server the same environment, or choose storage per host with `presets`.
 
 ### Your own server
 
@@ -570,6 +573,9 @@ export default defineConfig({
   // presets: { vercel: { … } },                     // settings per host (see "One config for every host")
 });
 ```
+
+The config is evaluated where the server runs, so values it reads from `process.env` (a storage URL,
+a token) come from the server's environment and are never written into the build.
 
 ## Talk to your agents
 

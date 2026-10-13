@@ -27,7 +27,8 @@ interface Host {
   preset: string;
   available: boolean;
   env?: Record<string, string>;
-  launch(out: string, root: string): Promise<Deployment>;
+  /** Starts the build with `env`, the environment it was built with: its config evaluates there too. */
+  launch(out: string, root: string, env: Record<string, string>): Promise<Deployment>;
 }
 
 /** A long-lived server process, killed and started again for a restart. */
@@ -36,8 +37,8 @@ function processHost(preset: string, command: string, args: (out: string) => str
     name: preset,
     preset,
     available,
-    async launch(out, root) {
-      const start = () => startServer(command, args(out), { cwd: root });
+    async launch(out, root, env) {
+      const start = () => startServer(command, args(out), { cwd: root, env });
       let server: RunningServer = await start();
       return {
         client: () => createAgentClient({ baseUrl: server.url }),
@@ -57,7 +58,8 @@ function functionHost(host: FunctionHost): Host {
     name: host.preset,
     preset: host.preset,
     available: true,
-    async launch(out) {
+    async launch(out, _root, env) {
+      Object.assign(process.env, env);
       let cold = 0;
       const load = async () => (await import(`${pathToFileURL(join(out, host.entry)).href}?cold=${cold++}`)) as Record<string, any>;
       let module = await load();
@@ -86,11 +88,11 @@ const durableObjects: Host = {
   preset: "cloudflare-module",
   available: Boolean(workerd),
   env: { AGENT_UNIT_RUNTIME: "durable-objects" },
-  async launch(out) {
+  async launch(out, _root, env) {
     const disk = join(out, "do-disk");
     mkdirSync(disk, { recursive: true });
     const port = await freePort();
-    const { config } = writeDurableConfig(out, disk, port);
+    const { config } = writeDurableConfig(out, disk, port, env);
     const start = () => startServer(workerd!, ["serve", config], { cwd: out, port });
     let server = await start();
     return {
@@ -125,9 +127,10 @@ for (const host of HOSTS) {
       const root = prepareFixture("frameworks");
       out = tempDir(`frameworks-${host.preset}-out`);
       data = tempDir(`frameworks-${host.preset}-data`);
-      const result = await buildFixture(root, host.preset, out, { AGENT_UNIT_DATA: data, ...host.env });
+      const env = { AGENT_UNIT_DATA: data, ...host.env };
+      const result = await buildFixture(root, host.preset, out, env);
       expect(result.adapters.sort()).toEqual(["@langchain/langgraph", "@mastra/core", "@openai/agents", "ai"]);
-      deployment = await host.launch(out, root);
+      deployment = await host.launch(out, root, env);
     });
 
     afterAll(async () => {

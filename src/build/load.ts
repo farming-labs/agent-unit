@@ -91,8 +91,13 @@ function checkPresets(config: AgentUnitConfig, configFile: string | undefined) {
  * are the same preset.
  */
 export function configForPreset(config: AgentUnitConfig, preset: string): AgentUnitConfig {
-  const entry = Object.entries(config.presets ?? {}).find(([name]) => presetKey(name) === presetKey(preset))?.[1];
-  return entry ? { ...config, ...entry } : config;
+  const key = presetEntryKey(config, preset);
+  return key === undefined ? config : { ...config, ...config.presets![key] };
+}
+
+/** The key in `presets` that holds `preset`'s settings, as the config spells it. */
+export function presetEntryKey(config: AgentUnitConfig, preset: string): string | undefined {
+  return Object.keys(config.presets ?? {}).find((name) => presetKey(name) === presetKey(preset));
 }
 
 /** The installed agent-unit package root, whether running from `dist/` or from source. */
