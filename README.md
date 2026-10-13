@@ -1,34 +1,33 @@
 # agent-unit
 
-Durable runs for any agent framework, on any host.
+Build any agent server for any host.
 
-Write your agent with the AI SDK, Mastra, the OpenAI Agents SDK, LangGraph or plain TypeScript.
-agent-unit makes it durable without a rewrite, so it can pause for a human, sleep for a day, survive
-a crash and resume where it stopped, and deploys it to Node, Bun, Deno, Cloudflare, Vercel, Netlify or
-AWS Lambda. Every agent gets the same HTTP API, a resumable event stream, an MCP endpoint and an A2A
-agent card.
+agent-unit is to agents what [Nitro](https://nitro.build) is to web servers, and it is built on
+Nitro. Give it the server you already have, or the agents you want served, and
+`agent-unit build --preset <host>` turns it into a deployable build for Node, Bun, Deno, Cloudflare
+Workers, Vercel, Netlify or AWS Lambda. It handles what each host does differently, so your code
+does not have to.
 
 ```
-agents/refund.ts ──► agent-unit build --preset vercel ──► .vercel/output
-       │                                                    ├─ POST /agents/refund/runs
-  AI SDK · Mastra · OpenAI Agents · LangGraph · plain TS    ├─ GET  /runs/:id/events   (SSE, resumable)
-                                                            ├─ POST /runs/:id/resume   (answer a pause)
-                                                            ├─ POST /mcp               (every agent is a tool)
-                                                            └─ GET  /.well-known/agent.json
+your Hono or Fetch server ─┐
+Mastra's own server ───────┼──► agent-unit build --preset <host> ──► Node · Bun · Deno · Workers
+agents/ on agent-unit's    │                                         Vercel · Netlify · AWS Lambda
+  durable run engine ──────┘
 ```
 
-It is to agents what [Nitro](https://nitro.build) is to servers, and it is built on Nitro: one build
-and one runtime contract, with presets for every host.
-
-- **Durable without a rewrite.** Model calls and tool calls are journaled automatically. When a run
-  continues after a pause, a restart or a crash, completed work replays from the journal instead of
-  running again, so the provider is not billed twice and a refund is not charged twice.
-- **Pauses that cost nothing.** `run.interrupt()` parks a run until someone answers, and
-  `run.sleep("2d")` until a time passes. A parked run uses no compute, on any host.
-- **One contract for every framework.** The same run API, AG-UI events, manifest, MCP and A2A
-  surface, whichever framework an agent uses, so a UI or an approvals inbox works with all of them.
-- **No deployers to maintain.** Framework authors write one small adapter; agent-unit and Nitro
-  handle hosts, storage and scheduling.
+- **Your server, any host.** A Hono app, a `{ fetch }` handler or Mastra's own server builds for
+  every host unchanged. Your framework keeps its routes, memory and storage.
+- **One config for every host.** `presets` sets each host's settings in one
+  `agent-unit.config.ts`: runs on disk on Node, a Durable Object per run on Workers, Redis on
+  Vercel. Secrets are read where the server runs, never written into the build.
+- **The gaps between hosts, handled.** `agent-unit/env` reads configuration and bindings the same
+  way everywhere, `waitUntil` keeps work running after a response, `tasks` run on each host's own
+  scheduler, and Workers get the Node modules agent SDKs import.
+- **Durable runs when you want them.** agent-unit's optional engine serves agents from the AI SDK,
+  Mastra, the OpenAI Agents SDK, LangGraph or plain TypeScript with runs that pause for a person,
+  sleep for days and resume after a crash or a redeploy without repeating a model call or a side
+  effect. Every agent gets the same HTTP API, a resumable event stream, an MCP endpoint and an A2A
+  agent card.
 
 ## Start a new app
 
@@ -39,9 +38,10 @@ npm create agent-unit@latest my-agent    # or: pnpm create agent-unit, bun creat
 It asks for the framework (Mastra, the AI SDK, LangGraph, the OpenAI Agents SDK, agent-unit's own
 `defineAgent`, or a plain Hono server), whether agent-unit's engine or the framework's own server
 runs it (LangGraph and the OpenAI Agents SDK always run on the engine), the hosts to deploy to,
-the model provider and extras (a scheduled task, bearer-token auth, background work with
-`waitUntil`, a test that runs offline), and writes an app with one working agent, `build` and
-`deploy` scripts per host, and a README.
+Mastra's storage, the model provider and extras (a scheduled task, bearer-token auth, background
+work with `waitUntil`, a test that runs offline), and writes an app with one working agent, a
+`build` script per host (with `start` for Node, Bun and Deno and `deploy` for Cloudflare and
+Vercel), and a README with each host's steps.
 
 - **On the engine** (the default for the AI SDK), the agent asks a person before it refunds an
   order, and the run resumes where it stopped. One `agent-unit.config.ts` sets each host's run
@@ -62,8 +62,9 @@ npx agent-unit init my-agent --framework ai-sdk --runner engine --hosts node,clo
 Run it in an app you already have (a directory with a `package.json`) to add agent-unit to it. The
 framework the app uses is the default, and nothing of yours is replaced:
 
-- **Your own server.** If `src/server.ts` or `src/index.ts` (any of `.ts`, `.mts`, `.js`, `.mjs`)
-  exists, the config points at it and agent-unit builds it as it is.
+- **Your own server.** For a Hono server, or an AI SDK app on its own server, an existing
+  `src/server.ts` or `src/index.ts` (any of `.ts`, `.mts`, `.js`, `.mjs`) is what gets built, as it
+  is; `init` warns when it has no default export or starts a server of its own.
 - **Your Mastra instance.** It keeps its own storage and model keys.
 - **`package.json`.** It gains only missing dependencies and scripts. A script name you already use
   gets agent-unit's under `agent-unit:<name>`, so `npm run dev` stays yours.
@@ -71,7 +72,257 @@ framework the app uses is the default, and nothing of yours is replaced:
 - **Other files.** Each is written only where none exists. Your README and TypeScript setup are left
   alone.
 
-## Quick start
+## Build your server for any host
+
+Already have a server, from your agent framework or written by hand? Point `server` at it and
+agent-unit builds it for every host in [Deploy anywhere](#deploy-anywhere), with none of its own
+engine, routes or storage added. Your framework keeps its own runs, memory and storage.
+
+```ts
+// agent-unit.config.ts
+import { defineConfig } from "agent-unit";
+
+export default defineConfig({
+  server: "./src/server.ts",
+  cloudflare: { wrangler: { d1_databases: [{ binding: "DB", database_name: "app", database_id: "…" }] } },
+});
+```
+
+```ts
+// src/server.ts
+import { Hono } from "hono";
+import { env } from "agent-unit/env";
+
+const app = new Hono();
+app.get("/", (c) => c.text(`hello from ${env.APP_NAME}`));
+
+export default app;
+```
+
+The default export handles web requests: a Hono app, `export default { fetch }`, or a function
+`(request, env, ctx) => Response`. On Workers it receives the Worker's `env` and `ctx`; elsewhere `ctx`
+has `waitUntil` where the host keeps work alive after the response. `agent-unit/env` reads
+configuration the same way on every host. `agent-unit dev` serves it with reload on change and
+reads `.env` (variables already set win). The engine settings (`agents`, `agentsDir`, `storage`,
+`runtime`, `budget`, `sweep`, `retention`, `basePath`, `authorize`, `origin`, `maxBodyBytes`,
+`adapters`) do not apply and are rejected with `server`, at the top level and in `presets`.
+
+### Background work and scheduled tasks
+
+`waitUntil` from `agent-unit/env` keeps work running after the response (an email, a webhook, a
+cache write). It uses the host's own `waitUntil` on Node, Bun, Deno, Workers and Vercel; on Netlify
+and AWS Lambda, which may freeze after a response, the response waits for the work instead. Hono's
+`c.executionCtx.waitUntil` does the same.
+
+```ts
+import { waitUntil } from "agent-unit/env";
+
+app.post("/orders", async (c) => {
+  const order = await createOrder(await c.req.json());
+  waitUntil(sendReceipt(order));
+  return c.json(order, 201);
+});
+```
+
+`tasks` runs work on a schedule with the host's own scheduler: in-process cron on Node, Bun and
+Deno, Cron Triggers on Workers, Vercel Cron Jobs on Vercel. Other presets build with a warning, and
+the task runs only when you trigger it there.
+
+```ts
+export default defineConfig({
+  server: "./src/server.ts",
+  tasks: { "send-digest": { schedule: "0 8 * * *", handler: "./src/tasks/digest.ts" } },
+});
+```
+
+```ts
+// src/tasks/digest.ts
+export default async ({ name, scheduledTime }: { name: string; scheduledTime: number }) => {
+  await sendDigest(new Date(scheduledTime));
+};
+```
+
+`scheduledTime` is when the task starts running (the hosts' schedulers pass no scheduled time).
+`npx agent-unit task send-digest` runs it once from source.
+
+### Mastra
+
+A Mastra app needs no server file and no config. agent-unit finds your Mastra instance
+(`src/mastra/index.ts`, `export const mastra`) and serves it with Mastra's own Hono adapter, so
+every Mastra route, its auth, memory and workflows work as they do under `mastra dev`, on the
+storage your instance configures.
+
+```sh
+npm install agent-unit @mastra/hono hono
+npx agent-unit build --preset vercel
+```
+
+It follows your instance's `server` settings the way `mastra build` does: `apiPrefix`, `cors`,
+`timeout`, `bodySizeLimit`, `apiRoutes`, `middleware`, and a `/health` route. A `deployer` left over
+from `mastra build` is ignored. To point at another file or export, set the preset yourself:
+
+```ts
+// agent-unit.config.ts
+import { defineConfig } from "agent-unit";
+import { mastra } from "agent-unit/presets/mastra";
+
+export default defineConfig({ server: mastra({ entry: "./src/ai/mastra.ts", export: "app" }) });
+```
+
+Storage stays Mastra's. To use a different store per host, let the build pick it with a
+`package.json` import condition: Cloudflare builds resolve `workerd`, everything else `default`.
+
+```json
+{ "imports": { "#storage": { "workerd": "./src/storage.d1.ts", "default": "./src/storage.libsql.ts" } } }
+```
+
+```ts
+// src/storage.d1.ts: Mastra's D1 store on the Worker's DB binding (declare it in your
+// wrangler file or in `cloudflare.wrangler`; a binding declared in both is kept once)
+import { D1Store } from "@mastra/cloudflare-d1";
+import { env } from "agent-unit/env";
+
+export const storage = new D1Store({ id: "app", binding: env.DB });
+```
+
+On Workers, the Mastra preset leaves out the TypeScript compiler, which Mastra's server imports
+only to check project files on disk: it was 1.4 MB gzipped of a 4.7 MB Worker. To bundle it
+anyway, set `nitro: { alias: { typescript: "typescript" } }`.
+
+Mastra's D1 store cannot de-duplicate two simultaneous resumes of the same workflow run (Mastra
+logs a warning saying so); stores with atomic updates, such as LibSQL and Postgres, can. Other
+frameworks can publish a preset the same way: `server` takes any object with a `name` and an
+`entry({ root, genDir, preset })` that returns the path of a server module.
+
+### LangGraph, the OpenAI Agents SDK and others
+
+Frameworks without a server of their own run in yours. Give the framework its own durable storage
+and point `server` at the file:
+
+```ts
+// src/server.ts: LangGraph, paused and resumed from its own checkpointer
+import { Hono } from "hono";
+import { Command } from "@langchain/langgraph";
+import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
+import { env } from "agent-unit/env";
+import { workflow } from "./graph";
+
+const checkpointer = PostgresSaver.fromConnString(env.DATABASE_URL);
+await checkpointer.setup(); // creates LangGraph's tables the first time
+const graph = workflow.compile({ checkpointer });
+const app = new Hono();
+app.post("/threads/:id/runs", async (c) =>
+  c.json(await graph.invoke(await c.req.json(), { configurable: { thread_id: c.req.param("id") } })));
+app.post("/threads/:id/resume", async (c) =>
+  c.json(await graph.invoke(new Command({ resume: await c.req.json() }), { configurable: { thread_id: c.req.param("id") } })));
+
+export default app;
+```
+
+```ts
+// src/server.ts: the OpenAI Agents SDK, approvals kept as a serialized RunState
+import { Hono } from "hono";
+import { RunState, run } from "@openai/agents";
+import { support } from "./agent";
+import { pending } from "./store"; // any key-value store you choose
+
+const app = new Hono();
+app.post("/runs", async (c) => {
+  const result = await run(support, (await c.req.json()).input);
+  if (!result.interruptions?.length) return c.json({ output: result.finalOutput });
+  const id = crypto.randomUUID();
+  await pending.set(id, result.state.toString());
+  return c.json({ id, approvals: result.interruptions.map((item) => item.rawItem) }, 202);
+});
+app.post("/runs/:id/approve", async (c) => {
+  const state = await RunState.fromString(support, await pending.get(c.req.param("id")));
+  for (const item of state.getInterruptions()) state.approve(item);
+  return c.json({ output: (await run(support, state)).finalOutput });
+});
+
+export default app;
+```
+
+Prefer agent-unit to handle durability for you? Leave `server` out and use
+[its engine](#durable-runs-with-agent-units-engine).
+
+## Deploy anywhere
+
+```sh
+npx agent-unit build --preset <preset>
+```
+
+| Host | Preset | Storage | Long runs | Sleep and recovery |
+| --- | --- | --- | --- | --- |
+| Node | `node-server` (default) | Filesystem by default | Unlimited | In-process timers + sweep every minute |
+| Bun | `bun` | Filesystem by default | Unlimited | In-process timers + sweep |
+| Deno | `deno-server` | Filesystem by default | Unlimited | In-process timers + sweep |
+| Cloudflare Workers | `cloudflare-module` with `runtime: "durable-objects"` | One Durable Object per run (no storage to configure) | Yields every 10 min and continues from an alarm | Each run's own alarm |
+| Cloudflare Workers (KV) | `cloudflare-module` | Set `storage` (for example `cloudflare-kv-binding`) | Yields every 25s and continues | Cron Trigger runs the sweep |
+| Vercel | `vercel` | Set `storage` (Redis, Upstash, Vercel KV, …) | Yields every 240s and continues | Vercel Cron runs the sweep (see below for the Hobby plan) |
+| Netlify | `netlify` | Set `storage` (`netlify-blobs`, Redis, …) | Yields every 20s; finishes in the request | Generated scheduled function (needs `AGENT_UNIT_SECRET`) |
+| AWS Lambda | `aws-lambda` | Set `storage` (Redis, Upstash, a database via db0, …) | Yields every 25s; finishes in the request | Point EventBridge at `POST /__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` |
+
+The storage, long-run and sweep columns are for agent-unit's engine; your own server keeps whatever
+storage it already uses.
+
+Cloudflare builds turn on Workers' stub modules for `child_process`, `readline`, `worker_threads`
+and `tty`, and replace the Node `ws` package with the built-in WebSocket: Mastra and the OpenAI
+Agents SDK import these when they load, and one missing module stops the whole Worker from starting.
+Your own `compatibility_flags` and `alias` settings are kept.
+
+Any other [Nitro preset](https://nitro.build/deploy) works too. Serverless hosts need shared
+storage, because their filesystem does not survive between invocations; without one the build warns
+and keeps runs in memory, which an invocation does not keep. Set `AGENT_UNIT_SECRET` in production: it protects the internal continue and sweep
+endpoints, which serverless hosts use to continue long runs. A long run continues in a fresh
+invocation at the deployment's own URL, read from `AGENT_UNIT_URL` (or `VERCEL_URL`, Netlify's `URL`,
+or the `origin` option) and never from an incoming request; without one it continues in-process.
+
+On Vercel's Hobby plan, cron jobs run at most once a day, and a deploy with a more frequent one
+fails. The engine's sweep (which wakes sleeping runs and recovers stalled ones) runs every minute by
+default, so on Hobby set `presets: { vercel: { sweep: "0 0 * * *" } }`, or `sweep: false`.
+
+### One config for every host
+
+Hosts need different settings: runs on disk on Node, a Durable Object per run on Workers, Redis on
+Vercel. `presets` sets them per preset, over the top-level settings, so one app builds for all of
+them with no environment variables to switch:
+
+```ts
+export default defineConfig({
+  retention: "30d",
+  presets: {
+    "cloudflare-module": { runtime: "durable-objects" },
+    // Reads UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN when it runs.
+    vercel: { storage: { driver: "upstash" } },
+  },
+});
+```
+
+Each setting there replaces the top-level value whole. The settings that can differ per preset are
+`storage`, `runtime`, `budget`, `retention`, `sweep`, `basePath`, `authorize`, `origin`,
+`maxBodyBytes`, `tasks`, `cloudflare` and `nitro`. `agent-unit dev` uses the top-level settings.
+The `agent-unit/nitro` module applies the entry for the app's Nitro preset too, except `runtime`,
+`cloudflare` and `nitro` (see [Mount it in an existing app](#mount-it-in-an-existing-app)).
+
+The build keeps the config as code and evaluates it where the server runs, so `url:
+process.env.REDIS_URL` reads the server's environment and no secret is written into the build. The
+storage driver is the one exception: the build includes the driver the config chooses at build
+time, and the server stops at startup with a message if the config chooses another one where it
+runs. Give the build and the server the same environment, or choose storage per host with `presets`.
+Builds do not read `.env` (`agent-unit dev` and `agent-unit task` do), so set what the config reads
+at build in the build's environment.
+
+## Durable runs with agent-unit's engine
+
+Leave `server` out, and agent-unit serves the agents in `agents/` on its own run engine
+(`@agent-unit/runtime`, installed with agent-unit). Model calls and tool calls are journaled, so a
+run that continues after a pause, a restart or a crash replays finished work instead of running it
+again: the provider is not billed twice and a refund is not charged twice. `run.interrupt()` parks a
+run until someone answers and `run.sleep("2d")` until a time passes, using no compute meanwhile, on
+any host.
+
+### Quick start
 
 ```sh
 npm install agent-unit
@@ -112,7 +363,7 @@ curl -X POST localhost:3000/runs/run_…/resume \
 Every file in `agents/` is an agent named after the file (`agents/support/index.ts` serves as
 `support`). Export a framework agent or a `defineAgent` agent as the default export.
 
-## Bring your framework
+### Bring your framework
 
 agent-unit recognises agents from these frameworks when your `package.json` depends on them:
 
@@ -167,7 +418,7 @@ export default new ToolLoopAgent({
 When the run resumes, the model's first response comes from the journal, the tool call continues
 with the answer, and only new work reaches the provider.
 
-### Run primitives
+#### Run primitives
 
 Inside any run, `useRun()` (or the `run` argument of `defineAgent`) gives you:
 
@@ -198,235 +449,6 @@ await run.step("charge", ({ idempotencyKey }) =>
 
 Inside a tool the framework calls (AI SDK, Mastra, OpenAI Agents), `useRun().idempotencyKey()`
 returns the tool call's key. In a LangGraph node, wrap the side effect in `useRun().step(…)`.
-
-## Deploy anywhere
-
-```sh
-npx agent-unit build --preset <preset>
-```
-
-| Host | Preset | Storage | Long runs | Sleep and recovery |
-| --- | --- | --- | --- | --- |
-| Node | `node-server` (default) | Filesystem by default | Unlimited | In-process timers + sweep every minute |
-| Bun | `bun` | Filesystem by default | Unlimited | In-process timers + sweep |
-| Deno | `deno-server` | Filesystem by default | Unlimited | In-process timers + sweep |
-| Cloudflare Workers | `cloudflare-module` with `runtime: "durable-objects"` | One Durable Object per run (no storage to configure) | Yields every 10 min and continues from an alarm | Each run's own alarm |
-| Cloudflare Workers (KV) | `cloudflare-module` | Set `storage` (for example `cloudflare-kv-binding`) | Yields every 25s and continues | Cron Trigger runs the sweep |
-| Vercel | `vercel` | Set `storage` (Redis, Upstash, Vercel KV, …) | Yields every 240s and continues | Vercel Cron runs the sweep |
-| Netlify | `netlify` | Set `storage` (`netlify-blobs`, Redis, …) | Yields every 20s; finishes in the request | Generated scheduled function |
-| AWS Lambda | `aws-lambda` | Set `storage` (Redis, Upstash, a database via db0, …) | Yields every 25s; finishes in the request | Point EventBridge at `POST /__agent-unit/sweep` |
-
-Cloudflare builds turn on Workers' stub modules for `child_process`, `readline`, `worker_threads`
-and `tty`, and replace the Node `ws` package with the built-in WebSocket: Mastra and the OpenAI
-Agents SDK import these when they load, and one missing module stops the whole Worker from starting.
-Your own `compatibility_flags` and `alias` settings are kept.
-
-Any other [Nitro preset](https://nitro.build/deploy) works too. Serverless hosts need shared
-storage, because their filesystem does not survive between invocations; the build warns when one is
-missing. Set `AGENT_UNIT_SECRET` in production: it protects the internal continue and sweep
-endpoints, which serverless hosts use to continue long runs. A long run continues in a fresh
-invocation at the deployment's own URL, read from `AGENT_UNIT_URL` (or `VERCEL_URL`, Netlify's `URL`,
-or the `origin` option) and never from an incoming request; without one it continues in-process.
-
-### One config for every host
-
-Hosts need different settings: runs on disk on Node, a Durable Object per run on Workers, Redis on
-Vercel. `presets` sets them per preset, over the top-level settings, so one app builds for all of
-them with no environment variables to switch:
-
-```ts
-export default defineConfig({
-  retention: "30d",
-  presets: {
-    "cloudflare-module": { runtime: "durable-objects" },
-    // Reads UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN when it runs.
-    vercel: { storage: { driver: "upstash" } },
-  },
-});
-```
-
-Each setting there replaces the top-level value whole. The settings that can differ per preset are
-`storage`, `runtime`, `budget`, `retention`, `sweep`, `basePath`, `authorize`, `origin`,
-`maxBodyBytes`, `tasks`, `cloudflare` and `nitro`. The `agent-unit/nitro` module applies the entry
-for the app's Nitro preset too. `agent-unit dev` and `nitro dev` use the top-level settings.
-
-The build keeps the config as code and evaluates it where the server runs, so `url:
-process.env.REDIS_URL` reads the server's environment and no secret is written into the build. The
-storage driver is the one exception: the build includes the driver the config chooses at build
-time, and the server stops at startup with a message if the config chooses another one where it
-runs. Give the build and the server the same environment, or choose storage per host with `presets`.
-
-### Your own server
-
-Already have a server, from your agent framework or written by hand? Point `server` at it and
-agent-unit builds it for every preset above, with none of its own engine, routes or storage added.
-Your framework keeps its own runs, memory and storage.
-
-```ts
-// agent-unit.config.ts
-import { defineConfig } from "agent-unit";
-
-export default defineConfig({
-  server: "./src/server.ts",
-  cloudflare: { wrangler: { d1_databases: [{ binding: "DB", database_name: "app", database_id: "…" }] } },
-});
-```
-
-```ts
-// src/server.ts
-import { Hono } from "hono";
-import { env } from "agent-unit/env";
-
-const app = new Hono();
-app.get("/", (c) => c.text(`hello from ${env.APP_NAME}`));
-
-export default app;
-```
-
-The default export handles web requests: a Hono app, `export default { fetch }`, or a function
-`(request, env, ctx) => Response`. On Workers it receives the Worker's `env` and `ctx`; elsewhere `ctx`
-has `waitUntil` where the host keeps work alive after the response. `agent-unit/env` reads
-configuration the same way on every host. `agent-unit dev` serves it with reload on change and
-reads `.env` (variables already set win). The engine settings (`agents`, `storage`, `runtime`,
-`budget`, `sweep`, `retention`, `basePath`, `authorize`, `origin`, `maxBodyBytes`, `adapters`) do
-not apply and are rejected with `server`.
-
-#### Background work and scheduled tasks
-
-`waitUntil` from `agent-unit/env` keeps work running after the response (an email, a webhook, a
-cache write). It uses the host's own `waitUntil` on Node, Bun, Deno, Workers and Vercel; on Netlify
-and AWS Lambda, which may freeze after a response, the response waits for the work instead. Hono's
-`c.executionCtx.waitUntil` does the same.
-
-```ts
-import { waitUntil } from "agent-unit/env";
-
-app.post("/orders", async (c) => {
-  const order = await createOrder(await c.req.json());
-  waitUntil(sendReceipt(order));
-  return c.json(order, 201);
-});
-```
-
-`tasks` runs work on a schedule with the host's own scheduler: in-process cron on Node, Bun and
-Deno, Cron Triggers on Workers, Vercel Cron Jobs on Vercel. Other presets build with a warning, and
-the task runs only when you trigger it there.
-
-```ts
-export default defineConfig({
-  server: "./src/server.ts",
-  tasks: { "send-digest": { schedule: "0 8 * * *", handler: "./src/tasks/digest.ts" } },
-});
-```
-
-```ts
-// src/tasks/digest.ts
-export default async ({ name, scheduledTime }: { name: string; scheduledTime: number }) => {
-  await sendDigest(new Date(scheduledTime));
-};
-```
-
-`npx agent-unit task send-digest` runs it once from source.
-
-#### Mastra
-
-A Mastra app needs no server file and no config. agent-unit finds your Mastra instance
-(`src/mastra/index.ts`, `export const mastra`) and serves it with Mastra's own Hono adapter, so
-every Mastra route, its auth, memory and workflows work as they do under `mastra dev`, on the
-storage your instance configures.
-
-```sh
-npm install agent-unit @mastra/hono hono
-npx agent-unit build --preset vercel
-```
-
-It follows your instance's `server` settings the way `mastra build` does: `apiPrefix`, `cors`,
-`timeout`, `bodySizeLimit`, `apiRoutes`, `middleware`, and a `/health` route. A `deployer` left over
-from `mastra build` is ignored. To point at another file or export, set the preset yourself:
-
-```ts
-// agent-unit.config.ts
-import { defineConfig } from "agent-unit";
-import { mastra } from "agent-unit/presets/mastra";
-
-export default defineConfig({ server: mastra({ entry: "./src/ai/mastra.ts", export: "app" }) });
-```
-
-Storage stays Mastra's. To use a different store per host, let the build pick it with a
-`package.json` import condition: Cloudflare builds resolve `workerd`, everything else `default`.
-
-```json
-{ "imports": { "#storage": { "workerd": "./src/storage.d1.ts", "default": "./src/storage.libsql.ts" } } }
-```
-
-```ts
-// src/storage.d1.ts: Mastra's D1 store on the Worker's DB binding (declare it in your
-// wrangler file or in `cloudflare.wrangler`; a binding declared in both is kept once)
-import { D1Store } from "@mastra/cloudflare-d1";
-import { env } from "agent-unit/env";
-
-export const storage = new D1Store({ id: "app", binding: env.DB });
-```
-
-On Workers, the Mastra preset leaves out the TypeScript compiler, which Mastra's server imports
-only to check project files on disk: it was 1.4 MB gzipped of a 4.7 MB Worker. To bundle it
-anyway, set `nitro: { alias: { typescript: "typescript" } }`.
-
-Mastra's D1 store cannot de-duplicate two simultaneous resumes of the same workflow run (Mastra
-logs a warning saying so); stores with atomic updates, such as LibSQL and Postgres, can. Other
-frameworks can publish a preset the same way: `server` takes any object with a `name` and an
-`entry({ root, genDir, preset })` that returns the path of a server module.
-
-#### LangGraph, the OpenAI Agents SDK and others
-
-Frameworks without a server of their own run in yours. Give the framework its own durable storage
-and point `server` at the file:
-
-```ts
-// src/server.ts: LangGraph, paused and resumed from its own checkpointer
-import { Hono } from "hono";
-import { Command } from "@langchain/langgraph";
-import { PostgresSaver } from "@langchain/langgraph-checkpoint-postgres";
-import { env } from "agent-unit/env";
-import { workflow } from "./graph";
-
-const checkpointer = PostgresSaver.fromConnString(env.DATABASE_URL);
-await checkpointer.setup(); // creates LangGraph's tables the first time
-const graph = workflow.compile({ checkpointer });
-const app = new Hono();
-app.post("/threads/:id/runs", async (c) =>
-  c.json(await graph.invoke(await c.req.json(), { configurable: { thread_id: c.req.param("id") } })));
-app.post("/threads/:id/resume", async (c) =>
-  c.json(await graph.invoke(new Command({ resume: await c.req.json() }), { configurable: { thread_id: c.req.param("id") } })));
-
-export default app;
-```
-
-```ts
-// src/server.ts: the OpenAI Agents SDK, approvals kept as a serialized RunState
-import { Hono } from "hono";
-import { RunState, run } from "@openai/agents";
-import { support } from "./agent";
-import { pending } from "./store"; // any key-value store you choose
-
-const app = new Hono();
-app.post("/runs", async (c) => {
-  const result = await run(support, (await c.req.json()).input);
-  if (!result.interruptions?.length) return c.json({ output: result.finalOutput });
-  const id = crypto.randomUUID();
-  await pending.set(id, result.state.toString());
-  return c.json({ id, approvals: result.interruptions.map((item) => item.rawItem) }, 202);
-});
-app.post("/runs/:id/approve", async (c) => {
-  const state = await RunState.fromString(support, await pending.get(c.req.param("id")));
-  for (const item of state.getInterruptions()) state.approve(item);
-  return c.json({ output: (await run(support, state)).finalOutput });
-});
-
-export default app;
-```
-
-Prefer agent-unit to handle durability for you? Leave `server` out and use its engine.
 
 ### Cloudflare Durable Objects
 
@@ -494,112 +516,27 @@ In a Worker you write yourself:
 
 ```ts
 import { createDurableAgentUnit } from "agent-unit/cloudflare";
+import { aiSdkAdapter } from "agent-unit/adapters/ai-sdk";
 import support from "./agents/support";
 
-const unit = createDurableAgentUnit({ agents: { support } });
+// A framework's agent needs its adapter here; agent-unit build finds them on its own.
+const unit = createDurableAgentUnit({ agents: { support }, adapters: [aiSdkAdapter] });
 
 export const { AgentUnitRun, AgentUnitIndex } = unit;
 export default { fetch: unit.fetch };
 // wrangler.json: copy unit.wrangler (durable_objects bindings + migrations)
 ```
 
-### Inside an existing app
+### Talk to your agents
 
-Already on Nitro (or something built on it)? Mount your agents with the module:
-
-```ts
-// nitro.config.ts
-import { defineConfig } from "nitro";
-import { agentUnit } from "agent-unit/nitro";
-
-export default defineConfig({
-  modules: [agentUnit({ basePath: "/api/agents" })],
-});
-```
-
-In a [Farm](https://farmjs.dev) app, mount it with one catch-all API route, which works in
-`farm dev` and every production target (see [`examples/farm-app`](./examples/farm-app)):
-
-```ts
-// src/app/api/ai/[...path]/route.ts
-import { after } from "@farm.js/core/after";
-import { agents } from "../../../../agents/server"; // createAgentUnit({ …, basePath: "/api/ai" })
-
-const handle = (request: Request) =>
-  agents.handler(request, { waitUntil: (work) => after(async () => void (await work)) });
-
-export const GET = handle;
-export const POST = handle;
-```
-
-Anywhere else that speaks Fetch (Hono, Next.js route handlers, Bun.serve, Deno.serve, a Worker):
-
-```ts
-import { createAgentUnit } from "agent-unit/server";
-import { createStorage } from "unstorage";
-import redis from "unstorage/drivers/redis";
-import support from "./agents/support";
-
-const unit = createAgentUnit({
-  agents: { support },
-  storage: createStorage({ driver: redis({ url: process.env.REDIS_URL }) }),
-  basePath: "/api/agents",
-});
-
-export const fetch = (request: Request, ctx?: { waitUntil(p: Promise<unknown>): void }) =>
-  unit.handler(request, { waitUntil: ctx?.waitUntil.bind(ctx) });
-```
-
-Pass the host's `waitUntil` where it has one. Without it, start and resume requests finish the work
-before they answer, which is the safe behaviour on hosts that freeze after a response.
-
-## Examples
-
-| Example | What it shows |
-| --- | --- |
-| [`examples/universal`](./examples/universal) | The universal build: one `agents/` folder built for Node, Bun, Deno, Cloudflare, Vercel, Netlify and AWS Lambda, then every build run through the same pause, restart and resume flow (`npm run try`). |
-| [`examples/cloudflare-ai-sdk`](./examples/cloudflare-ai-sdk) | An AI SDK `ToolLoopAgent` (OpenAI and Claude) on Cloudflare Workers with the Durable Objects runtime: a refund pauses for approval, and `npm run verify` checks it against real models across a runtime restart. |
-| [`examples/farm-app`](./examples/farm-app) | Agents inside a Farm app at `/api/ai`, with an approvals inbox and live event stream at `/agents`, tested on the production server across a restart (`npm run smoke`). |
-
-## Configuration
-
-`agent-unit.config.ts` is optional:
-
-```ts
-import { defineConfig } from "agent-unit";
-
-export default defineConfig({
-  name: "support",                                   // manifest, MCP and A2A name
-  storage: { driver: "redis", url: process.env.REDIS_URL },  // any unstorage driver
-  preset: "vercel",                                  // or --preset
-  runtime: "default",                                // or "durable-objects" on Cloudflare
-  budget: "60s",                                     // yield and continue after this long
-  sweep: "*/5 * * * *",                              // sweep schedule, or false
-  basePath: "/api/agents",
-  authorize: (request) => request.headers.get("authorization") === `Bearer ${process.env.API_TOKEN}`,
-  retention: "30d",                                  // delete finished runs 30 days after they finish
-  maxBodyBytes: 1_000_000,                           // largest accepted request body (default 1 MB)
-  // server: "./src/server.ts",                      // your own server instead (see "Your own server")
-  // agents: { support },                            // instead of the agents/ directory
-  // adapters: [myAdapter],                          // extra framework adapters
-  // nitro: { … },                                   // passed through to Nitro
-  // presets: { vercel: { … } },                     // settings per host (see "One config for every host")
-});
-```
-
-The config is evaluated where the server runs, so values it reads from `process.env` (a storage URL,
-a token) come from the server's environment and are never written into the build.
-
-## Talk to your agents
-
-### HTTP and events
+#### HTTP and events
 
 The full contract is in [`spec/`](./spec). Events follow [AG-UI](https://docs.ag-ui.com) (`RUN_STARTED`,
 `TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, …) plus `RUN_INTERRUPTED`, `RUN_SLEEPING` and
 `RUN_CANCELLED`. Every event has a `seq`; it is the SSE event id, so `EventSource` reconnects with
 `Last-Event-ID` and picks up exactly where it left off.
 
-### Typed client
+#### Typed client
 
 ```ts
 import { createAgentClient } from "agent-unit/client";
@@ -617,13 +554,13 @@ await agents.delete(runId);                   // remove a finished run and its h
 
 The client reconnects dropped streams from the last event it saw.
 
-### MCP and A2A
+#### MCP and A2A
 
 `POST /mcp` speaks MCP over streamable HTTP: every agent is a tool, so Claude, Cursor or any MCP
 client can call your agents. A run that pauses returns its run id and the pending interrupt.
 `GET /.well-known/agent.json` is an A2A agent card with one skill per agent.
 
-## Testing
+### Testing
 
 ```ts
 import { createTestUnit } from "agent-unit/testing";
@@ -648,10 +585,67 @@ import { MockLanguageModelV4 } from "ai/test";
 const unit = createTestUnit({ assistant: createAssistant(new MockLanguageModelV4({ doStream })) }, { adapters: [aiSdkAdapter] });
 ```
 
-`agent-unit init --extras test` writes such a test for AI SDK and Mastra agents, with the scripted
-model in it.
+`agent-unit init --extras test` writes such a test for every engine agent: `defineAgent`'s as it is,
+and AI SDK, Mastra, LangGraph and OpenAI Agents SDK agents on a scripted model.
 
-## Customize
+### Mount it in an existing app
+
+Already on Nitro (or something built on it)? Mount your agents with the module. It serves the
+agents in `agents/` with the settings in `agent-unit.config.ts` (and its `presets` entry for the
+app's Nitro preset), runs the sweep and the config's `tasks`, and keeps runs in an `agent-unit`
+storage mount the app already has. The Durable Objects runtime needs `agent-unit build`, and Workers
+or Nitro settings go in your `nitro.config`:
+
+```ts
+// nitro.config.ts
+import { defineConfig } from "nitro";
+import { agentUnit } from "agent-unit/nitro";
+
+export default defineConfig({
+  modules: [agentUnit({ basePath: "/api/agents" })],
+});
+```
+
+In a [Farm](https://farmjs.dev) app, mount it with one catch-all API route, which works in
+`farm dev` and every production target (see [`examples/farm-app`](./examples/farm-app)):
+
+```ts
+// src/app/api/ai/[...path]/route.ts
+import { after } from "@farm.js/core/after";
+import { agents } from "../../../../agents/server"; // createAgentUnit({ …, basePath: "/api/ai" })
+
+const handle = (request: Request) =>
+  agents.handler(request, { waitUntil: (work) => after(async () => void (await work)) });
+
+export const GET = handle;
+export const POST = handle;
+export const DELETE = handle;
+```
+
+Anywhere else that speaks Fetch (Hono, Next.js route handlers, Bun.serve, Deno.serve, a Worker):
+
+```ts
+import { createAgentUnit } from "agent-unit/server";
+import { aiSdkAdapter } from "agent-unit/adapters/ai-sdk";
+import { createStorage } from "unstorage";
+import redis from "unstorage/drivers/redis";
+import support from "./agents/support";
+
+const unit = createAgentUnit({
+  agents: { support },
+  adapters: [aiSdkAdapter], // a framework's agent needs its adapter; agent-unit build adds them itself
+  storage: createStorage({ driver: redis({ url: process.env.REDIS_URL }) }),
+  basePath: "/api/agents",
+});
+
+export const fetch = (request: Request, ctx?: { waitUntil(p: Promise<unknown>): void }) =>
+  unit.handler(request, { waitUntil: ctx?.waitUntil.bind(ctx) });
+```
+
+Pass the host's `waitUntil` where it has one. Without it, start and resume requests finish the work
+before they answer, which is the safe behaviour on hosts that freeze after a response.
+
+### Customize
 
 agent-unit is layered. Pick the layer that matches what you are changing:
 
@@ -671,6 +665,7 @@ import { createAgentUnit } from "agent-unit/server";
 
 const unit = createAgentUnit({
   agents: { support },
+  adapters: [aiSdkAdapter],      // from agent-unit/adapters/ai-sdk: the frameworks your agents use
   storage,                       // any unstorage instance
   basePath: "/api/agents",
   // Second argument: what the request does, with the run's agent and thread taken from storage.
@@ -706,7 +701,7 @@ const { run, done } = await engine.start("support", { prompt: "refund o_1" });
 object that implements `RunService` from `agent-unit/server`. The Durable Objects runtime is one
 such implementation: it routes each call to the run's object instead of running it in-process.
 
-## Adapters for other frameworks
+### Adapters for other frameworks
 
 AI SDK, Mastra, OpenAI Agents and LangGraph are supported out of the box. Any other framework can
 publish its own adapter package and maintain it on its own schedule: no change to agent-unit, no
@@ -727,7 +722,7 @@ export default defineConfig({ adapters: [crewAdapter()] });
 Adapters in the config are tried before the built-in ones, so a framework's own adapter replaces
 agent-unit's.
 
-### Write and publish an adapter
+#### Write and publish an adapter
 
 An adapter teaches agent-unit one framework. Most are a few dozen lines:
 
@@ -775,7 +770,7 @@ test("agent-unit adapter", () =>
 
 See [spec/adapters.md](./spec/adapters.md) for adapters of frameworks that keep their own state.
 
-## Several servers, one store
+### Several servers, one store
 
 Run as many instances as you like over one store. With Redis it is exact out of the box:
 
@@ -801,7 +796,7 @@ node-redis behind a small wrapper). For another store, implement `AtomicWrites.c
 a run record only if its `version` is still the one read) and `LeaseBackend` with that store's own
 conditional write, such as a database `UPDATE … WHERE version = ?`.
 
-## Limits
+### Limits
 
 - Leases make one execution run a run at a time, renewed while it works, and every change to a run
   record is a versioned save: it lands only if nobody else saved the run since it was read, so two
@@ -809,7 +804,7 @@ conditional write, such as a database `UPDATE … WHERE version = ?`.
   both are atomic, wired in automatically by `agent-unit build` and `agent-unit dev` when `storage`
   uses the `redis` driver. On other shared stores the save is check-then-write, which is exact
   within a process and best effort across processes racing within milliseconds; pass atomic
-  `leases` and `atomic` writes to `RunStore` for those (see below), or use the Durable Objects
+  `leases` and `atomic` writes to `RunStore` for those (see [Several servers, one store](#several-servers-one-store)), or use the Durable Objects
   runtime, where each run's object is its only executor and saves go through the index atomically.
 - A Mastra agent with memory reads the run's thread (and `input.resourceId`, or the thread, as its
   resource) and stores each finished turn once. With working or observational memory turned on,
@@ -821,6 +816,56 @@ conditional write, such as a database `UPDATE … WHERE version = ?`.
 - Streamed text and tool-argument deltas that arrive within 50ms of each other are merged into one
   event, so a long answer costs a few writes instead of one per token, and live clients see text up
   to 50ms later. `deltaBatchMs: 0` on `createAgentUnit` keeps every delta its own event.
+
+## Examples
+
+| Example | What it shows |
+| --- | --- |
+| [`examples/universal`](./examples/universal) | The universal build: one `agents/` folder built for Node, Bun, Deno, Cloudflare, Vercel, Netlify and AWS Lambda, then every build run through the same pause, restart and resume flow (`npm run try`). |
+| [`examples/cloudflare-ai-sdk`](./examples/cloudflare-ai-sdk) | An AI SDK `ToolLoopAgent` (OpenAI and Claude) on Cloudflare Workers with the Durable Objects runtime: a refund pauses for approval, and `npm run verify` checks it against real models across a runtime restart. |
+| [`examples/farm-app`](./examples/farm-app) | Agents inside a Farm app at `/api/ai`, with an approvals inbox and live event stream at `/agents`, tested on the production server across a restart (`npm run smoke`). |
+
+## Configuration
+
+`agent-unit.config.ts` is optional:
+
+```ts
+import { defineConfig } from "agent-unit";
+
+export default defineConfig({
+  name: "support",                                   // manifest, MCP and A2A name
+  storage: { driver: "redis", url: process.env.REDIS_URL },  // any unstorage driver
+  preset: "vercel",                                  // or --preset
+  runtime: "default",                                // or "durable-objects" on Cloudflare
+  budget: "60s",                                     // yield and continue after this long
+  sweep: "*/5 * * * *",                              // sweep schedule, or false
+  basePath: "/api/agents",
+  authorize: (request) => request.headers.get("authorization") === `Bearer ${process.env.API_TOKEN}`,
+  retention: "30d",                                  // delete finished runs 30 days after they finish
+  maxBodyBytes: 1_000_000,                           // largest accepted request body (default 1 MB)
+  // server: "./src/server.ts",                      // your own server instead (see "Your own server")
+  // agents: { support },                            // instead of the agents/ directory
+  // adapters: [myAdapter],                          // extra framework adapters
+  // nitro: { … },                                   // passed through to Nitro
+  // presets: { vercel: { … } },                     // settings per host (see "One config for every host")
+});
+```
+
+The config is evaluated where the server runs, so values it reads from `process.env` (a storage URL,
+a token) come from the server's environment and are never written into the build.
+
+### CLI
+
+| Command | |
+| --- | --- |
+| `agent-unit init [dir]` | Start a new app, or add agent-unit to the one in `dir` (see [Start a new app](#start-a-new-app)) |
+| `agent-unit dev` | Serve your server or your agents from source, reloading on change; reads `.env` (`--port`, `--host`) |
+| `agent-unit build` | Build for a host (`--preset`, `--out` for the output directory, `--minify`); writes `agent-unit.json` beside an engine build, listing its agents |
+| `agent-unit task <name>` | Run one of your `tasks` now, from source |
+| `agent-unit manifest` | Print the agents, frameworks and tools agent-unit finds |
+| `agent-unit add <package>` | Install an adapter package and add it to `agent-unit.config.ts` |
+
+Without `--preset`, `build` uses the config's `preset`, then `NITRO_PRESET`, then `node-server`.
 
 ## License
 

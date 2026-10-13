@@ -121,7 +121,7 @@ not affected by the app's `authorize` hook.
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/__agent-unit/continue/:id` | Continue a run that yielded at its time budget |
-| `POST` | `/__agent-unit/sweep` | Wake due sleepers and recover stalled runs; returns `{ woken, recovered }` |
+| `POST` | `/__agent-unit/sweep` | Wake due sleepers, recover stalled runs and delete finished runs past `retention`; returns `{ woken, recovered, deleted }` |
 
 The build schedules the sweep with the platform's own scheduler where Nitro supports one (Node, Bun,
 Deno, Cloudflare Cron Triggers, Vercel Cron) and generates a scheduled function on Netlify. Elsewhere
