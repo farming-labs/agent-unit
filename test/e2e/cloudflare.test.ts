@@ -32,7 +32,8 @@ function writeWorkerdConfig(out: string, port: number) {
     .map((file) => relative(serverDir, file).replaceAll("\\", "/"))
     .sort((a, b) => (a === wrangler.main ? -1 : b === wrangler.main ? 1 : a.localeCompare(b)))
     .map((name) => `(name = ${JSON.stringify(name)}, esModule = embed ${JSON.stringify(`server/${name}`)})`);
-  const bindings = Object.entries({ AGENT_UNIT_SECRET: SECRET, API_TOKEN: TOKEN, GREETING: "hey" }).map(
+  // AGENT_UNIT_STORAGE as at build: the config evaluates in the Worker too.
+  const bindings = Object.entries({ AGENT_UNIT_SECRET: SECRET, API_TOKEN: TOKEN, GREETING: "hey", AGENT_UNIT_STORAGE: "memory" }).map(
     ([name, value]) => `(name = ${JSON.stringify(name)}, text = ${JSON.stringify(value)})`,
   );
   const config = join(out, "workerd.capnp");

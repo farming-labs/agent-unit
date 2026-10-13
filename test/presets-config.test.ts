@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -76,18 +76,29 @@ describe("per-preset settings", () => {
 });
 
 describe("per-preset settings in the agent-unit/nitro module", () => {
-  async function setup(root: string, preset: string, dev = false) {
-    const options = { preset, dev, rootDir: root, buildDir: join(root, ".nitro"), storage: {}, handlers: [], experimental: {}, tasks: {}, scheduledTasks: {} };
+  async function setup(root: string, preset: string, dev = false, storage: Record<string, unknown> = {}) {
+    const options = { preset, dev, rootDir: root, buildDir: join(root, ".nitro"), storage, handlers: [], experimental: {}, tasks: {}, scheduledTasks: {} };
     await agentUnit().setup!({ options, logger: { warn() {} } } as never);
-    return options as typeof options & { storage: Record<string, unknown>; scheduledTasks: Record<string, unknown> };
+    const runtime = readFileSync(join(root, ".nitro/agent-unit/runtime.mjs"), "utf8");
+    return { options: options as typeof options & { scheduledTasks: Record<string, unknown> }, runtime };
   }
 
   it("uses the entry for the app's Nitro preset, and the top-level settings in dev", async () => {
     const root = app(`{ storage: { driver: "fs-lite", base: ".data" }, presets: { vercel: { storage: { driver: "memory" }, sweep: "*/5 * * * *" } } }`);
     const vercel = await setup(root, "vercel");
-    expect(vercel.storage["agent-unit"]).toEqual({ driver: "memory" });
-    expect(vercel.scheduledTasks).toEqual({ "*/5 * * * *": ["agent-unit:sweep"] });
-    expect((await setup(root, "node-server")).storage["agent-unit"]).toMatchObject({ driver: "fs-lite" });
-    expect((await setup(root, "nitro-dev", true)).storage["agent-unit"]).toMatchObject({ driver: "fs-lite" });
+    // The runtime mounts the storage the config chooses where it runs, with that preset's entry over it.
+    expect(vercel.runtime).toMatch(/import storageDriver from ".*unstorage\/dist\/drivers\/memory\.mjs";/);
+    expect(vercel.runtime).toContain(`const settings = { ...config, ...config.presets?.["vercel"] };`);
+    expect(vercel.options.storage).toEqual({});
+    expect(vercel.options.scheduledTasks).toEqual({ "*/5 * * * *": ["agent-unit:sweep"] });
+    expect((await setup(root, "node-server")).runtime).toMatch(/drivers\/fs-lite\.mjs";[\s\S]*const settings = config;/);
+    expect((await setup(root, "nitro-dev", true)).runtime).toMatch(/drivers\/fs-lite\.mjs";/);
+  });
+
+  it("leaves run storage to the app when it mounts its own", async () => {
+    const root = app(`{ storage: { driver: "fs-lite", base: ".data" } }`);
+    const { runtime, options } = await setup(root, "node-server", false, { "agent-unit": { driver: "redis" } });
+    expect(runtime).not.toContain("storageDriver");
+    expect(options.storage).toEqual({ "agent-unit": { driver: "redis" } });
   });
 });

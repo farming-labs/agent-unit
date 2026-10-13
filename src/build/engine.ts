@@ -1,10 +1,12 @@
-import { mkdirSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { existsSync, mkdirSync, writeFileSync } from "node:fs";
+import { createRequire } from "node:module";
+import { dirname, join, resolve } from "node:path";
 import { parseDuration } from "@agent-unit/runtime/runtime";
+import { builtinDriverDependencies, builtinDrivers } from "unstorage";
 import type { StorageConfig } from "../config";
 import { buildManifest } from "./agents";
 import { detectAdapters } from "./adapters";
-import { distEntry, toImport, type LoadedProject } from "./load";
+import { distEntry, presetEntryKey, toImport, type LoadedProject } from "./load";
 
 // agent-unit's own engine as the server: the agents/ folder, the /runs API, run storage, the sweep and
 // the Durable Objects runtime. Loaded only when the app does not bring its own `server`.
@@ -51,11 +53,64 @@ export function resolveStorage(project: LoadedProject, preset: string, warn: (me
   return { driver: "memory" };
 }
 
+/** Whether `name` is installed where the app resolves packages. */
+function installed(root: string, name: string): boolean {
+  for (let dir = root; ; dir = dirname(dir)) {
+    if (existsSync(join(dir, "node_modules", name, "package.json"))) return true;
+    if (dir === dirname(dir)) return false;
+  }
+}
+
+/**
+ * The code that mounts run storage when the server starts. Only the driver is chosen at build; its
+ * options come from agent-unit.config.ts as it evaluates where the server runs, so a URL or token the
+ * config reads from the environment is read there and never written into the build (Nitro's own
+ * storage mounts serialize their options into the output).
+ */
+function storageMount(project: LoadedProject, dir: string, storage: StorageConfig): { imports: string[]; code: string } {
+  const name = storage.driver;
+  const builtin = (builtinDrivers as Record<string, string>)[name];
+  // agent-unit's own unstorage, which an app on a strict package manager may not resolve itself.
+  const module = builtin ? toImport(dir, createRequire(import.meta.url).resolve(builtin)) : /^[./]/.test(name) ? toImport(dir, resolve(project.root, name)) : JSON.stringify(name);
+  const libs = Object.entries((builtinDriverDependencies as Record<string, Record<string, { name: string; import?: string; optional?: boolean }>>)[name] ?? {})
+    .filter(([option, dep]) => (option === "lib" || option.endsWith("Lib")) && (storage as Record<string, unknown>)[option] === undefined && !dep.optional)
+    .map(([option, dep]) => {
+      if (!installed(project.root, dep.name)) throw new Error(`agent-unit: the "${name}" storage driver needs ${dep.name}. Install it in your app: npm install ${dep.name}`);
+      return `${option}: () => import(${JSON.stringify(dep.import ?? dep.name)}), `;
+    });
+  // With no storage in the config, the build's default for this host (disk or memory) applies.
+  const fallback = project.config.storage ? "undefined" : JSON.stringify(storage);
+  const defaults = /^(fs|fs-lite)$/.test(name) ? "atomic: true, " : "";
+  return {
+    imports: [`import storageDriver from ${module};`],
+    code: `// Run storage, from the config as it evaluates here: a URL or token it reads from the environment
+// is read where the server runs, never written into the build.
+const storageConfig = settings.storage ?? ${fallback};
+if (storageConfig?.driver !== ${JSON.stringify(name)}) {
+  throw new Error(\`agent-unit: this build keeps runs in ${JSON.stringify(name)} storage, but agent-unit.config.ts chooses "\${storageConfig?.driver}" where it runs. Give the build and the server the same environment, or set storage per host with presets.\`);
+}
+const { driver: _driver, ...storageOptions } = storageConfig;
+// Mounted once: a dev server that loads this module again keeps the mount it has.
+if (useStorage().getMount("agent-unit:").base !== "agent-unit:") {
+  useStorage().mount("agent-unit", storageDriver({ ${defaults}${libs.join("")}...storageOptions }));
+}
+`,
+  };
+}
+
 /** Writes the Nitro server entry, the shared runtime module and the sweep task into `dir`. */
 export function generateEntry(
   project: LoadedProject,
   dir: string,
-  options: { budgetMs?: number; basePath?: string; runtime?: "default" | "durable-objects" },
+  options: {
+    budgetMs?: number;
+    basePath?: string;
+    runtime?: "default" | "durable-objects";
+    /** The preset being built, whose entry in `presets` applies over the top-level settings. */
+    preset?: string;
+    /** Run storage to mount at startup; left out when the app mounts `agent-unit` storage itself. */
+    storage?: StorageConfig;
+  },
 ) {
   mkdirSync(dir, { recursive: true });
   const adapters = detectAdapters(project.root);
@@ -74,6 +129,11 @@ export function generateEntry(
     ...adapters.map((adapter) => `import { ${adapter.exportName} } from ${JSON.stringify(distEntry(adapter.entry))};`),
   ];
   imports.push(project.configFile ? `import config from ${toImport(dir, project.configFile)};` : `const config = {};`);
+  const mount = !durable && options.storage ? storageMount(project, dir, options.storage) : undefined;
+  if (mount) imports.push(...mount.imports);
+  // The config evaluates where the server runs; the built preset's entry applies over it, as at build.
+  const presetEntry = options.preset === undefined ? undefined : presetEntryKey(project.config, options.preset);
+  const settingsLine = `const settings = ${presetEntry === undefined ? "config" : `{ ...config, ...config.presets?.[${JSON.stringify(presetEntry)}] }`};`;
   const agentEntries = Object.entries(project.agentFiles).map(([name, file], index) => {
     imports.push(`import * as agent$${index} from ${toImport(dir, file)};`);
     return `  ${JSON.stringify(name)}: agent$${index},`;
@@ -83,13 +143,15 @@ export function generateEntry(
 ${agentEntries.join("\n")}
   }`;
   const adapterList = `[...(config.adapters ?? []), ${adapters.map((adapter) => adapter.exportName).join(", ")}]`;
-  const basePath = options.basePath === undefined ? "config.basePath" : JSON.stringify(options.basePath);
+  const basePath = options.basePath === undefined ? "settings.basePath" : JSON.stringify(options.basePath);
 
   if (durable) {
     writeFileSync(
       join(dir, "runtime.mjs"),
       `// Generated by agent-unit. Do not edit.
 ${imports.join("\n")}
+
+${settingsLine}
 
 // Every run gets its own Durable Object; see agent-unit/cloudflare.
 export const unit = createDurableAgentUnit({
@@ -98,9 +160,9 @@ export const unit = createDurableAgentUnit({
   adapters: ${adapterList},
   budget: ${options.budgetMs ?? "false"},
   basePath: ${basePath},
-  authorize: config.authorize,
-  retention: config.retention,
-  maxBodyBytes: config.maxBodyBytes,
+  authorize: settings.authorize,
+  retention: settings.retention,
+  maxBodyBytes: settings.maxBodyBytes,
 });
 `,
     );
@@ -135,6 +197,8 @@ export default defineHandler((event) =>
     `// Generated by agent-unit. Do not edit.
 ${imports.join("\n")}
 
+${settingsLine}
+${mount?.code ?? ""}
 // On Redis, runs and leases change atomically, so two instances never overwrite each other.
 const storageView = useStorage("agent-unit");
 const mounted = useStorage().getMount("agent-unit:")?.driver;
@@ -154,10 +218,10 @@ export const unit = createAgentUnit({
   storage,
   budget: ${options.budgetMs ?? "false"},
   basePath: ${basePath},
-  authorize: config.authorize,
-  origin: config.origin,
-  retention: config.retention,
-  maxBodyBytes: config.maxBodyBytes,
+  authorize: settings.authorize,
+  origin: settings.origin,
+  retention: settings.retention,
+  maxBodyBytes: settings.maxBodyBytes,
   env,
 });
 `,
@@ -249,7 +313,7 @@ export function prepareEngine(project: LoadedProject, preset: string, genDir: st
   // A Durable Object alarm may run for 15 minutes, so durable runs yield far less often than Workers requests.
   const budgetMs = durable && project.config.budget === undefined ? parseDuration("10m") : resolveBudget(project, preset);
   const storage: StorageConfig = durable ? { driver: "durable-objects" } : resolveStorage(project, preset, warn);
-  const { adapters } = generateEntry(project, genDir, { budgetMs, runtime });
+  const { adapters } = generateEntry(project, genDir, { budgetMs, runtime, preset, storage: durable ? undefined : storage });
 
   const tasks: Record<string, unknown> = {};
   const scheduledTasks: Record<string, string> = {};
@@ -269,7 +333,7 @@ export function prepareEngine(project: LoadedProject, preset: string, genDir: st
     adapters,
     agents: project.config.agents ? Object.keys(project.config.agents) : Object.keys(project.agentFiles),
     nitro: {
-      ...(durable ? {} : { storage: { "agent-unit": storage } }),
+      // Run storage is mounted by the generated runtime, not through Nitro's storage options.
       experimental: { tasks: sweep },
       tasks,
       scheduledTasks,

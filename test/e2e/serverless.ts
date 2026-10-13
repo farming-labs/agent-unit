@@ -47,7 +47,8 @@ export function serverlessSuite(host: ServerlessHost) {
     out = tempDir(`${host.preset}-out`);
     data = tempDir(`${host.preset}-data`);
     await buildFixture(root, host.preset, out, { AGENT_UNIT_DATA: data });
-    Object.assign(process.env, { AGENT_UNIT_SECRET: SECRET, API_TOKEN: TOKEN, GREETING: "hey", CRON_SECRET: SECRET });
+    // The config evaluates where the function runs, so the data directory is set there too.
+    Object.assign(process.env, { AGENT_UNIT_SECRET: SECRET, API_TOKEN: TOKEN, GREETING: "hey", CRON_SECRET: SECRET, AGENT_UNIT_DATA: data });
     module = await import(pathToFileURL(join(out, host.entry)).href);
   });
 

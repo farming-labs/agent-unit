@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { Redis } from "ioredis";
 import { createStorage } from "unstorage";
@@ -176,10 +177,14 @@ describe.skipIf(!available)("Redis coordination", () => {
     beforeAll(async () => {
       root = prepareFixture("basic");
       out = tempDir("redis-out");
-      // The storage config is evaluated at build time, so the URL and prefix go in here.
+      // The build chooses the driver; the servers read the URL and prefix where they run, below.
       env = { AGENT_UNIT_STORAGE: "redis", REDIS_URL: url, AGENT_UNIT_DATA: base() };
       const result = await buildFixture(root, "node-server", out, env);
       expect(result.storage).toMatchObject({ driver: "redis" });
+      // A storage URL can hold a password, so it is never written into the build.
+      const files = (dir: string): string[] =>
+        readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? files(join(dir, entry.name)) : [join(dir, entry.name)]));
+      for (const file of files(out)) expect(readFileSync(file, "utf8"), file).not.toContain(url);
     });
 
     afterAll(async () => {

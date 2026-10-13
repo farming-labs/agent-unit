@@ -7,6 +7,7 @@ export default defineConfig({
   retention: "30d",
   presets: {
     "cloudflare-module": { runtime: "durable-objects" },
-    vercel: { storage: { driver: "memory" }, budget: "30s" },
+    // Read where the server runs, like every setting: only Vercel asks for this header.
+    vercel: { storage: { driver: "memory" }, budget: "30s", authorize: (request) => request.headers.get("x-team") === "presets" },
   },
 });
