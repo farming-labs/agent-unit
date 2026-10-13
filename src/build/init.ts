@@ -196,7 +196,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, content);
   }
-  const what = runner === "engine" && framework !== "agent-unit" ? `${FRAMEWORKS[framework].label} on agent-unit's engine` : FRAMEWORKS[framework].label;
+  const named = framework === "agent-unit" ? "defineAgent" : framework === "hono" ? "Hono server" : FRAMEWORKS[framework].label;
+  const what = runner === "engine" && framework !== "agent-unit" ? `${named} on agent-unit's engine` : named;
   const forHosts = normalizedHosts.map((host) => HOSTS[host].label).join(", ");
   if (merge) {
     logger.info(`Added agent-unit to ${shown === "." ? "this app" : shown} (${what} for ${forHosts}${ownServer && runner === "server" ? `, building ${ownServer}` : ""}).`);
@@ -205,6 +206,16 @@ export async function init(options: InitOptions): Promise<InitResult> {
     if (merge.kept.length) logger.info(`  kept yours: ${merge.kept.join(", ")}`);
     const renamed = Object.entries(merge.renamed);
     if (renamed.length) logger.info(`  your ${renamed.map(([from]) => from).join(", ")} script(s) stay; agent-unit's are ${renamed.map(([, to]) => to).join(", ")}`);
+    // agent-unit builds the server module's default export; one that starts its own server would run twice.
+    if (ownServer && runner === "server" && framework !== "mastra") {
+      const source = readFileSync(join(root, ownServer), "utf8");
+      if (!/export\s+default\b|export\s*\{[^}]*\bas\s+default\b/.test(source)) {
+        logger.warn(`  ${ownServer} has no default export. agent-unit builds a module's default export: export default your app (a Hono app, or { fetch }).`);
+      }
+      if (/\bserve\s*\(/.test(source)) {
+        logger.warn(`  ${ownServer} calls serve(...). agent-unit serves the app on every host, so remove that call, or keep it in a file of its own for local use.`);
+      }
+    }
   } else {
     logger.info(`Created ${shown} (${what} for ${forHosts}).`);
   }

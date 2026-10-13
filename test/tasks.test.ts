@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -57,6 +57,24 @@ export default ({ name }: { name: string }) => {
     const { tasks, scheduledTasks } = prepareTasks(app, join(app.root, ".agent-unit"), "node-server", () => {});
     expect(Object.keys(tasks)).toEqual(["a", "b", "c"]);
     expect(scheduledTasks).toEqual({ "0 * * * *": ["a", "b"], "0 3 * * *": ["c"] });
+  });
+});
+
+describe("task names that read the same once made file-safe", () => {
+  it("get a generated file each, so each runs its own handler", () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-unit-task-names-"));
+    try {
+      writeFileSync(join(dir, "a.mjs"), "export default () => 'a';");
+      writeFileSync(join(dir, "b.mjs"), "export default () => 'b';");
+      const project = { root: dir, config: { tasks: { "report:daily": { schedule: "0 8 * * *", handler: "./a.mjs" }, report_daily: { schedule: "0 9 * * *", handler: "./b.mjs" } } } };
+      const { tasks } = prepareTasks(project as never, join(dir, ".agent-unit"), "node-server", () => {});
+      const files = Object.values(tasks).map((task) => (task as { handler: string }).handler);
+      expect(new Set(files).size).toBe(2);
+      expect(readFileSync(files[0]!, "utf8")).toContain(`a.mjs"`);
+      expect(readFileSync(files[1]!, "utf8")).toContain(`b.mjs"`);
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
   });
 });
 

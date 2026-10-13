@@ -169,6 +169,26 @@ describe("the files agent-unit init writes", () => {
     expect(initFiles({ name: "m", framework: "mastra", hosts: ["node"], extras: ["background", "test"] }, "0.1.16").files).not.toHaveProperty("test/server.test.ts");
   });
 
+  it("puts each host's steps where a newcomer needs them", () => {
+    const mastra = initFiles({ name: "desk", framework: "mastra", runner: "server", hosts: ["node", "cloudflare"], store: "libsql" }, "0.1.16");
+    const readme = mastra.files["README.md"]!;
+    expect(readme.indexOf("npx wrangler d1 create desk")).toBeLessThan(readme.indexOf("npm run deploy:cloudflare"));
+    expect(readme).toContain("node --env-file=.env .output/server/index.mjs");
+    expect(mastra.files[".gitignore"]).toContain("*.db-wal");
+
+    const engine = initFiles({ name: "e", framework: "agent-unit", hosts: ["vercel", "netlify", "lambda"] }, "0.1.16");
+    expect(engine.files["agent-unit.config.ts"]).toContain(`On Vercel's Hobby plan cron jobs run at most daily: add sweep: "0 0 * * *"`);
+    expect(engine.files["README.md"]).toContain("Vercel's Hobby plan runs cron jobs at most once a day");
+    expect(engine.files["README.md"]).toContain("`dist` as the publish directory");
+    expect(engine.files["README.md"]).toContain("the handler `index.handler`");
+    expect(engine.files["README.md"]).toContain("Anyone who can reach the server can start and read runs.");
+    expect(engine.files[".gitignore"]).toMatch(/^dist$/m);
+
+    const auth = initFiles({ name: "a", framework: "agent-unit", hosts: ["node"], extras: ["auth"] }, "0.1.16").files["README.md"]!;
+    expect(auth).toContain("export API_TOKEN=<the same value>");
+    expect(auth).not.toContain("Anyone who can reach the server");
+  });
+
   it("turns a directory name into a package name", () => {
     expect(packageName("My Agent!")).toBe("my-agent");
     expect(packageName("..")).toBe("my-agent");
@@ -342,6 +362,17 @@ describe("agent-unit init in an existing app", () => {
     const pkg = JSON.parse(read(root, "package.json"));
     expect(pkg.devDependencies).toEqual({ vitest: expect.any(String) });
     expect(pkg.scripts).toMatchObject({ test: "jest", "agent-unit:test": "vitest run" });
+  });
+
+  it("warns when the app's server file has no default export or starts its own server", async () => {
+    const warnings: string[] = [];
+    const root = app({
+      "package.json": JSON.stringify({ name: "shop", dependencies: { hono: "^4.0.0" } }),
+      "src/index.ts": `import { serve } from "@hono/node-server";\nconst app = { fetch: () => new Response("hi") };\nserve(app);\n`,
+    });
+    await init({ dir: root, hosts: "node", yes: true, install: false, version: "0.1.16", logger: { info() {}, warn: (message) => warnings.push(message) } });
+    expect(warnings.join("\n")).toContain("src/index.ts has no default export");
+    expect(warnings.join("\n")).toContain("src/index.ts calls serve(...)");
   });
 
   it("takes the framework an app already uses as the default", () => {

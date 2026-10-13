@@ -354,6 +354,7 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string, app: Exi
       config.push(
         `    // No disk lasts between invocations here, so runs go to Upstash. Its driver reads`,
         `    // UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN when it runs.`,
+        ...(serverless.includes("vercel") ? [`    // On Vercel's Hobby plan cron jobs run at most daily: add sweep: "0 0 * * *" to vercel's entry there.`] : []),
         ...serverless.map((host) => `    ${objectKey(HOSTS[host].preset)}: { storage: { driver: "upstash" } },`),
       );
     }
@@ -402,7 +403,9 @@ export default async ({ scheduledTime }: { name: string; scheduledTime: number }
   if (background) env.push(["FEEDBACK_WEBHOOK_URL", "Optional: where POST /feedback forwards feedback after answering; unset, it is logged"]);
   if (env.length) files[".env.example"] = env.map(([key, comment]) => `# ${comment}\n${key}=\n`).join("\n");
 
-  files[".gitignore"] = ["node_modules", ".output", ".agent-unit", ".data", ".nitro", ".vercel", ".netlify", ".wrangler", "*.db", ".env", ".env.*", "!.env.example", ".dev.vars", ""].join("\n");
+  // Netlify's build puts static files in dist/; LibSQL keeps -shm and -wal files beside its database.
+  const ignored = ["node_modules", ".output", ".agent-unit", ".data", ".nitro", ".vercel", ".netlify", ".wrangler", ...(hosts.includes("netlify") ? ["dist"] : []), "*.db", "*.db-shm", "*.db-wal"];
+  files[".gitignore"] = [...ignored, ".env", ".env.*", "!.env.example", ".dev.vars", ""].join("\n");
   files["tsconfig.json"] = `${JSON.stringify(
     {
       compilerOptions: {
@@ -965,6 +968,7 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
   if (engine) {
     const input = framework === "agent-unit" ? `{"input":{"orderId":"o_42"}}` : `{"input":{"prompt":"Please refund order o_42"}}`;
     const auth = answers.extras.includes("auth") ? ` -H "authorization: Bearer $API_TOKEN"` : "";
+    if (auth) lines.push("Set `API_TOKEN` in `.env` to any long random string, and the same value in this shell: `export API_TOKEN=<the same value>`.", "");
     lines.push(
       "Try it: start a run, which pauses for approval, then approve it with the `runId` the first call printed. Both stream the run's events.",
       "",
@@ -975,35 +979,59 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
       "",
       "Each file in `agents/` is an agent named after the file. `GET /agents` lists them.",
       "",
+      ...(auth
+        ? []
+        : ["Anyone who can reach the server can start and read runs. Before you deploy, set `authorize` in `agent-unit.config.ts` (see agent-unit's README).", ""]),
     );
   }
   if (framework === "mastra" && !engine) lines.push("Try it: `curl -X POST localhost:3000/api/agents/assistant/generate -H 'content-type: application/json' -d '{\"messages\":\"What time is it?\"}'`", "");
   if (answers.extras.includes("background") && !engine) {
     lines.push("`POST /feedback` answers at once and forwards the feedback after, with `waitUntil`: `curl -X POST localhost:3000/feedback -H 'content-type: application/json' -d '{\"rating\":5}'`", "");
   }
-  if (framework === "ai-sdk" && !engine) lines.push("Try it: `curl -X POST localhost:3000/chat -H 'content-type: application/json' -d '{\"prompt\":\"What time is it?\"}'`", "");
+  if (!engine && framework !== "mastra" && answers.extras.includes("auth")) {
+    lines.push("Set `API_TOKEN` in `.env` to any long random string, and the same value in this shell: `export API_TOKEN=<the same value>`.", "");
+  }
+  const serverAuth = !engine && answers.extras.includes("auth") ? ` -H "authorization: Bearer $API_TOKEN"` : "";
+  if (framework === "ai-sdk" && !engine) lines.push(`Try it: \`curl -X POST localhost:3000/chat${serverAuth} -H 'content-type: application/json' -d '{"prompt":"What time is it?"}'\``, "");
   lines.push("## Build and deploy", "");
   for (const host of hosts) {
     const { label, preset } = HOSTS[host];
     const { start, deploy } = HOSTS[host] as { start?: string; deploy?: string };
     const suffix = several ? `:${host}` : "";
     const build = several ? `npm run build${suffix}` : "npm run build";
-    lines.push(`**${label}** (\`${preset}\`)`, "", "```sh");
+    // What to do once before the first deploy, then the commands, then what to know after.
+    const before: string[] = [];
+    const after: string[] = [];
+    if (host === "cloudflare" && framework === "mastra" && !engine) {
+      before.push(`Before the first deploy, create the D1 database with \`npx wrangler d1 create ${answers.name}\` and put the id it prints in \`agent-unit.config.ts\`.`);
+    }
+    if (host === "vercel") before.push("Run `npx vercel link` once, and set the environment variables in the Vercel project.");
+    if (host === "vercel" && engine) {
+      before.push(
+        "Vercel's Hobby plan runs cron jobs at most once a day, and a deploy with a more frequent one fails. On Hobby, add `sweep: \"0 0 * * *\"` to `vercel` in `agent-unit.config.ts`: runs that sleep or stall then continue once a day.",
+      );
+    }
+    if (host === "cloudflare" && engine) after.push("Each run gets its own Durable Object; the build writes their bindings into `wrangler.json`.");
+    if (engine && (SERVERLESS as string[]).includes(host)) after.push("Runs are kept in [Upstash](https://upstash.com) Redis here: set `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` and `AGENT_UNIT_SECRET`.");
+    if (host === "cloudflare" && env.length) after.push("Set secrets with `npx wrangler secret put <NAME>`, one for each variable in `.env.example`.");
+    if (host === "netlify") after.push(`Connect the repository in Netlify with \`${build}\` as the build command and \`dist\` as the publish directory.`);
+    if (host === "lambda") after.push("Deploy `.output/server` as a Node.js 20 or later function with the handler `index.handler` (SAM, CDK, Terraform or the console), behind a function URL or API Gateway.");
+    lines.push(`**${label}** (\`${preset}\`)`, "");
+    for (const line of before) lines.push(line, "");
+    lines.push("```sh");
     if (deploy) lines.push(`npm run deploy${suffix}   # builds, then ${deploy}`);
     else lines.push(build);
     if (start) lines.push(`npm run start${suffix}`);
     lines.push("```", "");
-    if (host === "cloudflare" && engine) lines.push("Each run gets its own Durable Object; the build writes their bindings into `wrangler.json`.", "");
-    if (engine && (SERVERLESS as string[]).includes(host)) lines.push("Runs are kept in [Upstash](https://upstash.com) Redis here: set `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` and `AGENT_UNIT_SECRET`.", "");
-    if (host === "cloudflare" && framework === "mastra" && !engine) {
-      lines.push(`Create the D1 database once with \`npx wrangler d1 create ${answers.name}\` and put its id in \`agent-unit.config.ts\`.`, "");
-    }
-    if (host === "cloudflare" && env.length) lines.push(`Set secrets with \`npx wrangler secret put <NAME>\`.`, "");
-    if (host === "vercel") lines.push("Run `npx vercel link` once first. Set environment variables in the Vercel project.", "");
-    if (host === "netlify") lines.push(`Connect the repository in Netlify with \`${build}\` as the build command.`, "");
-    if (host === "lambda") lines.push("Deploy `.output/server` with your usual tool (SAM, CDK, Terraform) as a Node.js function behind a function URL or API Gateway.", "");
+    for (const line of after) lines.push(line, "");
   }
-  if (answers.extras.includes("test")) lines.push("## Test", "", "```sh", "npm test               # runs offline, with no server or model", "```", "");
+  if (env.length && hosts.some((host) => "start" in HOSTS[host])) {
+    lines.push("A built server reads its environment, not `.env`. To try a Node build with your `.env`: `node --env-file=.env .output/server/index.mjs` (Bun reads `.env` on its own).", "");
+  }
+  if (answers.extras.includes("test")) {
+    const offline = engine && framework !== "agent-unit" ? "runs offline on a scripted model: no server, no API key" : "runs offline, with no server";
+    lines.push("## Test", "", "```sh", `npm test               # ${offline}`, "```", "");
+  }
   if (env.length) lines.push("## Environment", "", ...env.map((key) => `- \`${key}\``), "");
   return `${lines.join("\n")}`;
 }
