@@ -136,9 +136,10 @@ describe("agent-unit init: the extras", () => {
     expect(vitest(root)).toMatch(/Tests\s+2 passed/);
   });
 
-  for (const framework of ["ai-sdk", "mastra"] as const) {
+  for (const framework of ["ai-sdk", "mastra", "langgraph", "openai-agents"] as const) {
     it(`a ${framework} agent's test pauses and resumes it on a scripted model`, async () => {
-      const root = await generate(`extras-${framework}-engine`, { framework, runner: "engine", hosts: "node", provider: "openai", extras: "test" });
+      const runner = framework === "ai-sdk" || framework === "mastra" ? { runner: "engine" } : {};
+      const root = await generate(`extras-${framework}-engine`, { framework, ...runner, hosts: "node", provider: "openai", extras: "test" });
       typecheck(root);
       expect(vitest(root)).toMatch(/Tests\s+1 passed/);
     });

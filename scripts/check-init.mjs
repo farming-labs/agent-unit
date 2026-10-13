@@ -26,8 +26,8 @@ const APPS = [
   { name: "mastra-engine", args: ["--framework", "mastra", "--runner", "engine", "--hosts", "node,vercel", "--extras", "auth,test"], smoke: ["/agents", '"assistant"'] },
   { name: "ai-sdk-engine", args: ["--framework", "ai-sdk", "--runner", "engine", "--hosts", "node,cloudflare,vercel,netlify,lambda", "--extras", "task,auth,test"], smoke: ["/agents", '"refund"'] },
   { name: "ai-sdk-server", args: ["--framework", "ai-sdk", "--runner", "server", "--hosts", "node,cloudflare", "--provider", "google", "--extras", "auth,background,test"], smoke: ["/", '"ok":true'] },
-  { name: "langgraph", args: ["--framework", "langgraph", "--hosts", "node,cloudflare", "--provider", "anthropic"], smoke: ["/agents", '"refund"'] },
-  { name: "openai-agents", args: ["--framework", "openai-agents", "--hosts", "node,lambda"], smoke: ["/agents", '"refund"'] },
+  { name: "langgraph", args: ["--framework", "langgraph", "--hosts", "node,cloudflare", "--provider", "anthropic", "--extras", "test"], smoke: ["/agents", '"refund"'] },
+  { name: "openai-agents", args: ["--framework", "openai-agents", "--hosts", "node,lambda", "--extras", "test"], smoke: ["/agents", '"refund"'] },
   { name: "define-agent", args: ["--framework", "agent-unit", "--hosts", "node,cloudflare,vercel", "--extras", "task,test"], smoke: ["/agents", '"refund"'] },
   { name: "hono", args: ["--framework", "hono", "--hosts", "node,bun,deno"], smoke: ["/hello", '"hello":"world"'] },
 ];

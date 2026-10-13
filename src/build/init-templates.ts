@@ -95,9 +95,9 @@ export function extrasFor(framework: InitFramework, runner: InitRunner): InitExt
   if (framework === "mastra" && runner === "server") return ["task"];
   // A server agent-unit writes (Hono, or an AI SDK agent on Hono) has routes to add work to and test.
   if (runner === "server") return ["task", "auth", "background", "test"];
-  // defineAgent's agent runs offline as it is; AI SDK and Mastra agents take a scripted AI SDK model in
-  // the test. LangGraph and OpenAI Agents models have no scripted stand-in here yet.
-  return framework === "agent-unit" || framework === "ai-sdk" || framework === "mastra" ? ["task", "auth", "test"] : ["task", "auth"];
+  // Every engine agent has an offline test: defineAgent's runs as it is, and the others take a scripted
+  // model in place of the provider's.
+  return ["task", "auth", "test"];
 }
 
 // Ranges start at the versions agent-unit's own tests run against.
@@ -606,10 +606,96 @@ describe("assistant", () => {
 `;
 };
 
+const LANGGRAPH_TEST = `import { AIMessage, type BaseMessage } from "@langchain/core/messages";
+import { RunnableLambda } from "@langchain/core/runnables";
+import { langGraphAdapter } from "agent-unit/adapters/langgraph";
+import { createTestUnit } from "agent-unit/testing";
+import { describe, expect, it } from "vitest";
+import { createAssistant } from "../agents/assistant";
+
+// The graph runs in memory on a scripted model, with no server and no API key: \`npm test\`.
+
+/** Asks for the refund tool until the conversation holds its result, then answers. */
+const model = RunnableLambda.from(async (messages: BaseMessage[]) =>
+  messages.some((message) => message.getType() === "tool")
+    ? new AIMessage("Refunded o_42.")
+    : new AIMessage({ content: "", tool_calls: [{ id: "call_1", name: "refund", args: { orderId: "o_42" } }] }),
+);
+
+describe("assistant", () => {
+  it("asks a person before it refunds, then finishes", async () => {
+    // Builds find the framework's adapter on their own; a test unit is given it.
+    const unit = createTestUnit({ assistant: createAssistant(model) }, { adapters: [langGraphAdapter] });
+    const parked = await unit.run("assistant", { prompt: "Please refund order o_42" });
+    // The graph pauses in its tools node, where the refund tool called interrupt().
+    expect(parked).toMatchObject({ status: "interrupted", interrupt: { name: "tools", payload: { orderId: "o_42" } } });
+    const done = await unit.resume(parked.id, { approved: true });
+    expect(done.status).toBe("completed");
+    const messages = (done.output as { messages: { type: string; content: unknown }[] }).messages;
+    expect(messages.find((message) => message.type === "tool")?.content).toBe("refunded o_42");
+    expect(messages.at(-1)).toMatchObject({ type: "ai", content: "Refunded o_42." });
+  });
+});
+`;
+
+const OPENAI_AGENTS_TEST = `import { Usage, type Model, type ModelRequest } from "@openai/agents";
+import { openAIAgentsAdapter } from "agent-unit/adapters/openai-agents";
+import { createTestUnit } from "agent-unit/testing";
+import { describe, expect, it } from "vitest";
+import { createAssistant } from "../agents/assistant";
+
+// The agent runs in memory on a scripted model, with no server and no API key: \`npm test\`.
+
+const usage = { requests: 1, inputTokens: 10, outputTokens: 5, totalTokens: 15 };
+
+/** Asks for the refund tool until the conversation holds its result, then answers. */
+function output(request: ModelRequest) {
+  const answered = Array.isArray(request.input) && request.input.some((item) => (item as { type?: string }).type === "function_call_result");
+  return answered
+    ? [{ type: "message", id: "msg_1", role: "assistant", status: "completed", content: [{ type: "output_text", text: "Refunded o_42." }] }]
+    : [{ type: "function_call", callId: "call_1", name: "refund", arguments: JSON.stringify({ orderId: "o_42" }), status: "completed" }];
+}
+
+const model = {
+  async getResponse(request: ModelRequest) {
+    return { usage: new Usage(usage), output: output(request), responseId: "resp_1" };
+  },
+  async *getStreamedResponse(request: ModelRequest) {
+    const items = output(request);
+    yield { type: "response_started" };
+    if (items[0]!.type === "message") yield { type: "output_text_delta", delta: "Refunded o_42.", itemId: "msg_1" };
+    yield { type: "response_done", response: { id: "resp_1", usage, output: items } };
+  },
+} as unknown as Model;
+
+describe("assistant", () => {
+  it("asks a person before it refunds, then finishes", async () => {
+    // Builds find the framework's adapter on their own; a test unit is given it.
+    const unit = createTestUnit({ assistant: createAssistant(model) }, { adapters: [openAIAgentsAdapter] });
+    const parked = await unit.run("assistant", { prompt: "Please refund order o_42" });
+    // The refund tool needs approval, so the run waits for a person.
+    expect(parked).toMatchObject({ status: "interrupted", interrupt: { name: "tool-approval", payload: { tool: "refund", arguments: { orderId: "o_42" } } } });
+    const done = await unit.resume(parked.id, { approved: true });
+    expect(done).toMatchObject({ status: "completed", output: "Refunded o_42." });
+  });
+});
+`;
+
 const INSTRUCTIONS = "You help customers with their orders. Keep answers short. Refund only with the refund tool.";
 
-function langgraphAgent(provider: (typeof PROVIDERS)[InitProvider]): string {
-  return `import { tool } from "@langchain/core/tools";
+function langgraphAgent(provider: (typeof PROVIDERS)[InitProvider], factory: boolean): string {
+  const graph = `new StateGraph(MessagesAnnotation)
+  .addNode("agent", async ({ messages }) => ({
+    messages: [await model.invoke([new SystemMessage("${INSTRUCTIONS}"), ...messages])],
+  }))
+  .addNode("tools", new ToolNode([refund]))
+  .addEdge(START, "agent")
+  .addConditionalEdges("agent", toolsCondition, ["tools", END])
+  .addEdge("tools", "agent")
+  .compile()`;
+  const chat = `new ${provider.chat}({ model: "${provider.model}", apiKey: env.${provider.key} }).bindTools([refund])`;
+  return `${factory ? `import { SystemMessage, type BaseMessage } from "@langchain/core/messages";\nimport type { Runnable } from "@langchain/core/runnables";` : `import { SystemMessage } from "@langchain/core/messages";`}
+import { tool } from "@langchain/core/tools";
 import { END, interrupt, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph";
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 import { ${provider.chat} } from "${provider.langchain}";
@@ -629,34 +715,26 @@ const refund = tool(
   { name: "refund", description: "Refunds an order once a person approves it", schema: z.object({ orderId: z.string() }) },
 );
 
-const model = new ${provider.chat}({ model: "${provider.model}", apiKey: env.${provider.key} }).bindTools([refund]);
+${
+  factory
+    ? `/** The graph on any chat model with the refund tool bound: the test gives it a scripted one. */
+export function createAssistant(model: Runnable<BaseMessage[], BaseMessage>) {
+  return ${graph.replaceAll("\n", "\n  ")};
+}
 
-export default new StateGraph(MessagesAnnotation)
-  .addNode("agent", async ({ messages }) => ({
-    messages: [await model.invoke([{ role: "system", content: "${INSTRUCTIONS}" }, ...messages])],
-  }))
-  .addNode("tools", new ToolNode([refund]))
-  .addEdge(START, "agent")
-  .addConditionalEdges("agent", toolsCondition, ["tools", END])
-  .addEdge("tools", "agent")
-  .compile();
+export default createAssistant(${chat});`
+    : `const model = ${chat};
+
+export default ${graph};`
+}
 `;
 }
 
-function openaiAgent(): string {
-  return `import { Agent, setDefaultOpenAIKey, tool } from "@openai/agents";
-import { env } from "agent-unit/env";
-import { z } from "zod";
-
-// An OpenAI Agents SDK agent on agent-unit's engine: model and tool calls are journaled, and a tool
-// that needs approval pauses the run until a person answers, even across restarts and instances.
-// POST /agents/assistant/runs {"input":{"prompt":"Please refund order o_42"}}
-setDefaultOpenAIKey(env.OPENAI_API_KEY ?? "");
-
-export default new Agent({
+function openaiAgent(factory: boolean): string {
+  const agent = `new Agent({
   name: "Assistant",
   instructions: "${INSTRUCTIONS}",
-  model: "gpt-5-mini",
+  ${factory ? "model" : `model: "gpt-5-mini"`},
   tools: [
     tool({
       name: "refund",
@@ -666,7 +744,26 @@ export default new Agent({
       execute: async ({ orderId }) => \`refunded \${orderId}\`,
     }),
   ],
-});
+})`;
+  return `import { Agent, ${factory ? "type Model, " : ""}setDefaultOpenAIKey, tool } from "@openai/agents";
+import { env } from "agent-unit/env";
+import { z } from "zod";
+
+// An OpenAI Agents SDK agent on agent-unit's engine: model and tool calls are journaled, and a tool
+// that needs approval pauses the run until a person answers, even across restarts and instances.
+// POST /agents/assistant/runs {"input":{"prompt":"Please refund order o_42"}}
+setDefaultOpenAIKey(env.OPENAI_API_KEY ?? "");
+
+${
+  factory
+    ? `/** The agent on any model: the test gives it a scripted one. */
+export function createAssistant(model: Model | string) {
+  return ${agent.replaceAll("\n", "\n  ")};
+}
+
+export default createAssistant("gpt-5-mini");`
+    : `export default ${agent};`
+}
 `;
 }
 
@@ -695,8 +792,13 @@ export default defineAgent({
 `,
     };
   }
-  if (answers.framework === "langgraph") return { "agents/assistant.ts": langgraphAgent(provider) };
-  if (answers.framework === "openai-agents") return { "agents/assistant.ts": openaiAgent() };
+  const test = answers.extras.includes("test");
+  if (answers.framework === "langgraph") {
+    return { "agents/assistant.ts": langgraphAgent(provider, test), ...(test ? { "test/assistant.test.ts": LANGGRAPH_TEST } : {}) };
+  }
+  if (answers.framework === "openai-agents") {
+    return { "agents/assistant.ts": openaiAgent(test), ...(test ? { "test/assistant.test.ts": OPENAI_AGENTS_TEST } : {}) };
+  }
   const mastra = answers.framework === "mastra";
   // With a test, the agent takes its model as an argument, so the test can give it a scripted one.
   const factory = answers.extras.includes("test");
