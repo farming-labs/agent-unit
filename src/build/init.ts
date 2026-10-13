@@ -3,19 +3,24 @@ import { existsSync, mkdirSync, readdirSync, writeFileSync } from "node:fs";
 import { basename, dirname, join, relative, resolve } from "node:path";
 import {
   asksProvider,
+  asksRunner,
   asksStore,
+  defaultRunner,
   EXTRAS,
   extrasFor,
   FRAMEWORKS,
   HOSTS,
   initFiles,
   PROVIDERS,
+  RUNNERS,
+  runnerFor,
   STORES,
   type InitAnswers,
   type InitExtra,
   type InitFramework,
   type InitHost,
   type InitProvider,
+  type InitRunner,
   type InitStore,
 } from "./init-templates";
 
@@ -26,6 +31,8 @@ export interface InitOptions {
   /** Where to create the app. Asked for when missing. */
   dir?: string;
   framework?: string;
+  /** Who runs a Mastra or AI SDK agent: `engine` (agent-unit's) or `server` (the framework's own). */
+  runner?: string;
   /** Comma-separated or a list: node, bun, deno, cloudflare, vercel, netlify, lambda. */
   hosts?: string | string[];
   store?: string;
@@ -93,6 +100,17 @@ export async function init(options: InitOptions): Promise<InitResult> {
   const framework: InitFramework = options.framework
     ? pick(FRAMEWORKS, options.framework, "framework")
     : await ask({ message: "Agent framework", type: "select", options: choicesOf(FRAMEWORKS), initial: "mastra" }, "mastra", "--framework");
+  let runner: InitRunner = runnerFor(framework);
+  if (asksRunner(framework)) {
+    const fallback = defaultRunner(framework);
+    const own = framework === "mastra" ? "Mastra's own server, routes and storage" : "a Hono server you write, streaming the agent's answer";
+    const runners: Choices<InitRunner> = { engine: RUNNERS.engine, server: { label: "Its own server", hint: own } };
+    runner = options.runner
+      ? pick(RUNNERS, options.runner, "runner")
+      : await ask({ message: "Run it on", type: "select", options: choicesOf(runners), initial: fallback }, fallback, "--runner");
+  } else if (options.runner && pick(RUNNERS, options.runner, "runner") !== runner) {
+    throw new Error(`--runner only applies to Mastra and AI SDK apps.`);
+  }
   const hostFlag = list(options.hosts);
   const hosts: InitHost[] = hostFlag
     ? hostFlag.map((host) => pick(HOSTS, host, "hosts"))
@@ -101,7 +119,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (!normalizedHosts.length) throw new Error("Choose at least one host.");
   const offStoreHosts = normalizedHosts.filter((host) => host !== "cloudflare");
   let store: InitStore | undefined;
-  if (asksStore(framework)) {
+  if (asksStore(framework, runner)) {
     if (options.store) store = pick(STORES, options.store, "store");
     else if (offStoreHosts.length) {
       const where = normalizedHosts.includes("cloudflare") ? " (Workers use D1)" : "";
@@ -114,12 +132,12 @@ export async function init(options: InitOptions): Promise<InitResult> {
       ? pick(PROVIDERS, options.provider, "provider")
       : await ask({ message: "Model provider", type: "select", options: choicesOf(PROVIDERS), initial: "openai" }, "openai", "--provider");
   }
-  const allowed = extrasFor(framework);
+  const allowed = extrasFor(framework, runner);
   const extraFlag = list(options.extras);
   const extras: InitExtra[] = extraFlag
     ? extraFlag.filter((extra) => extra !== "none").map((extra) => {
         const value = pick(EXTRAS, extra, "extras");
-        if (!allowed.includes(value)) throw new Error(`--extras ${value} does not apply to ${FRAMEWORKS[framework].label} apps.`);
+        if (!allowed.includes(value)) throw new Error(`--extras ${value} does not apply to ${FRAMEWORKS[framework].label} apps${asksRunner(framework) ? ` on ${runner === "engine" ? "agent-unit's engine" : "their own server"}` : ""}.`);
         return value;
       })
     : (
@@ -135,7 +153,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
         )
       ).map((extra) => (typeof extra === "object" ? extra.value : extra));
 
-  const answers: InitAnswers = { name: basename(root), framework, hosts: normalizedHosts, store, provider, extras };
+  const answers: InitAnswers = { name: basename(root), framework, runner, hosts: normalizedHosts, store, provider, extras };
   const plan = initFiles(answers, options.version);
 
   for (const [path, content] of Object.entries(plan.files)) {
@@ -143,7 +161,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
     mkdirSync(dirname(file), { recursive: true });
     writeFileSync(file, content);
   }
-  logger.info(`Created ${relative(process.cwd(), root) || "."} (${FRAMEWORKS[framework].label} for ${normalizedHosts.map((host) => HOSTS[host].label).join(", ")}).`);
+  const what = runner === "engine" && framework !== "agent-unit" ? `${FRAMEWORKS[framework].label} on agent-unit's engine` : FRAMEWORKS[framework].label;
+  logger.info(`Created ${relative(process.cwd(), root) || "."} (${what} for ${normalizedHosts.map((host) => HOSTS[host].label).join(", ")}).`);
 
   const manager = packageManager();
   const install = options.install ?? (await ask({ message: `Install dependencies with ${manager}?`, type: "confirm", initial: true }, true, "--install or --no-install"));

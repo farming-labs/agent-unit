@@ -45,7 +45,7 @@ describe("the files agent-unit init writes", () => {
   });
 
   it("puts an AI SDK agent on a Hono server, with auth and a task when asked", () => {
-    const { files, env } = initFiles({ name: "chat", framework: "ai-sdk", hosts: ["cloudflare", "netlify"], provider: "google", extras: ["auth", "task"] }, "0.1.16");
+    const { files, env } = initFiles({ name: "chat", framework: "ai-sdk", runner: "server", hosts: ["cloudflare", "netlify"], provider: "google", extras: ["auth", "task"] }, "0.1.16");
     const pkg = manifest(files);
     expect(pkg.dependencies).toMatchObject({ ai: expect.any(String), hono: expect.any(String), "@ai-sdk/google": expect.any(String) });
     expect(pkg.dependencies).not.toHaveProperty("@ai-sdk/openai");
@@ -74,6 +74,48 @@ describe("the files agent-unit init writes", () => {
     expect(files["src/tasks/daily-summary.ts"]).toBeDefined();
   });
 
+  it("runs an AI SDK agent on the engine by default, with each host's run storage set per preset", () => {
+    const { files, env } = initFiles({ name: "desk", framework: "ai-sdk", hosts: ["node", "cloudflare", "vercel", "lambda"], provider: "anthropic", extras: ["auth"] }, "0.1.16");
+    const pkg = manifest(files);
+    expect(Object.keys(pkg.dependencies)).toEqual(["agent-unit", "@ai-sdk/anthropic", "@upstash/redis", "ai", "zod"]);
+    expect(pkg.imports).toBeUndefined();
+    const config = files["agent-unit.config.ts"]!;
+    expect(config).not.toContain("server:");
+    expect(config).toContain(`"cloudflare-module": { runtime: "durable-objects" },`);
+    expect(config).toContain(`    vercel: { storage: { driver: "upstash" } },\n    "aws-lambda": { storage: { driver: "upstash" } },`);
+    // No secret in the config: storage options are written into the build output.
+    expect(config).not.toMatch(/UPSTASH_REDIS_REST_(URL|TOKEN)[^\n]*[,}]/);
+    expect(config).toContain(`authorize: (request) => !!env.API_TOKEN`);
+    expect(files["agents/assistant.ts"]).toContain(`new ToolLoopAgent({`);
+    expect(files["agents/assistant.ts"]).toContain(`model: provider("claude-sonnet-4-5")`);
+    expect(files["agents/assistant.ts"]).toContain(`useRun().interrupt<{ approved: boolean }>("approve-refund"`);
+    expect(files["src/server.ts"]).toBeUndefined();
+    expect(env).toEqual(["ANTHROPIC_API_KEY", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "AGENT_UNIT_SECRET", "API_TOKEN"]);
+    expect(files["README.md"]).toContain(`curl -N -X POST localhost:3000/agents/assistant/runs -H "authorization: Bearer $API_TOKEN"`);
+    expect(files["README.md"]).toContain("Each run gets its own Durable Object");
+  });
+
+  it("keeps runs on disk with no presets when every host is a server, and runs Mastra agents on the engine when asked", () => {
+    const { files, env } = initFiles({ name: "m", framework: "mastra", runner: "engine", hosts: ["node", "bun"], extras: ["auth"] }, "0.1.16");
+    const pkg = manifest(files);
+    expect(Object.keys(pkg.dependencies)).toEqual(["agent-unit", "@ai-sdk/openai", "@mastra/core", "ai", "zod"]);
+    expect(pkg.imports).toBeUndefined();
+    expect(files["agent-unit.config.ts"]).not.toContain("presets");
+    expect(files["agents/assistant.ts"]).toContain(`import { Agent } from "@mastra/core/agent";`);
+    expect(Object.keys(files).filter((path) => path.startsWith("src/"))).toEqual([]);
+    expect(env).toEqual(["OPENAI_API_KEY", "API_TOKEN"]);
+  });
+
+  it("writes a defineAgent app with no framework and no model", () => {
+    const { files, env } = initFiles({ name: "plain", framework: "agent-unit", runner: "server", hosts: ["cloudflare"], provider: "google" }, "0.1.16");
+    expect(Object.keys(manifest(files).dependencies)).toEqual(["agent-unit", "zod"]);
+    expect(files["agents/refund.ts"]).toContain(`export default defineAgent({`);
+    expect(files["agent-unit.config.ts"]).toContain(`"cloudflare-module": { runtime: "durable-objects" }`);
+    expect(files[".env.example"]).toBeUndefined();
+    expect(env).toEqual([]);
+    expect(files["README.md"]).toContain(`localhost:3000/agents/refund/runs`);
+  });
+
   it("turns a directory name into a package name", () => {
     expect(packageName("My Agent!")).toBe("my-agent");
     expect(packageName("..")).toBe("my-agent");
@@ -95,8 +137,8 @@ describe("agent-unit init", () => {
 
   it("writes the app from flags alone", async () => {
     const root = join(temp(), "desk");
-    const result = await init({ dir: root, framework: "ai-sdk", hosts: "node,vercel", provider: "openai", extras: "none", install: false, version: "0.1.16", logger: quiet });
-    expect(result.answers).toMatchObject({ name: "desk", framework: "ai-sdk", hosts: ["node", "vercel"], extras: [] });
+    const result = await init({ dir: root, framework: "ai-sdk", runner: "server", hosts: "node,vercel", provider: "openai", extras: "none", install: false, version: "0.1.16", logger: quiet });
+    expect(result.answers).toMatchObject({ name: "desk", framework: "ai-sdk", runner: "server", hosts: ["node", "vercel"], extras: [] });
     expect(result.installed).toBe(false);
     expect(readFileSync(join(root, "src/server.ts"), "utf8")).toContain("createOpenAI");
     expect(JSON.parse(readFileSync(join(root, "package.json"), "utf8")).scripts["deploy:vercel"]).toContain("vercel deploy --prebuilt");
@@ -105,7 +147,10 @@ describe("agent-unit init", () => {
   it("takes the defaults with --yes", async () => {
     const root = join(temp(), "defaults");
     const result = await init({ dir: root, yes: true, install: false, version: "0.1.16", logger: quiet });
-    expect(result.answers).toMatchObject({ framework: "mastra", hosts: ["node"], store: "libsql", provider: "openai", extras: [] });
+    expect(result.answers).toMatchObject({ framework: "mastra", runner: "server", hosts: ["node"], store: "libsql", provider: "openai", extras: [] });
+    const engine = await init({ dir: join(temp(), "engine"), framework: "ai-sdk", yes: true, install: false, version: "0.1.16", logger: quiet });
+    expect(engine.answers).toMatchObject({ framework: "ai-sdk", runner: "engine" });
+    expect(engine.files).toContain("agents/assistant.ts");
   });
 
   it("names the flag for each question it cannot ask without a terminal", async () => {
@@ -117,9 +162,11 @@ describe("agent-unit init", () => {
   it("refuses unknown values, extras that do not apply, and a directory with files in it", async () => {
     const root = temp();
     const options = { install: false, version: "0.1.16", logger: quiet };
-    await expect(init({ ...options, dir: join(root, "a"), framework: "crewai", yes: true })).rejects.toThrow("--framework crewai is not one of: mastra, ai-sdk, hono.");
+    await expect(init({ ...options, dir: join(root, "a"), framework: "crewai", yes: true })).rejects.toThrow("--framework crewai is not one of: mastra, ai-sdk, agent-unit, hono.");
     await expect(init({ ...options, dir: join(root, "b"), hosts: "node,heroku", yes: true })).rejects.toThrow("--hosts heroku is not one of");
-    await expect(init({ ...options, dir: join(root, "c"), framework: "mastra", extras: "auth", yes: true })).rejects.toThrow("--extras auth does not apply to Mastra apps.");
+    await expect(init({ ...options, dir: join(root, "c"), framework: "mastra", extras: "auth", yes: true })).rejects.toThrow("--extras auth does not apply to Mastra apps on their own server.");
+    await expect(init({ ...options, dir: join(root, "d"), framework: "hono", runner: "engine", yes: true })).rejects.toThrow("--runner only applies to Mastra and AI SDK apps.");
+    await expect(init({ ...options, dir: join(root, "e"), framework: "ai-sdk", runner: "lambda", yes: true })).rejects.toThrow("--runner lambda is not one of: engine, server.");
     mkdirSync(join(root, "taken"));
     writeFileSync(join(root, "taken/index.ts"), "");
     await expect(init({ ...options, dir: join(root, "taken"), yes: true })).rejects.toThrow("is not empty");

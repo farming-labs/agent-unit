@@ -36,15 +36,23 @@ and one runtime contract, with presets for every host.
 npx agent-unit init my-agent
 ```
 
-It asks for the framework (Mastra, the AI SDK on a Hono server, or plain Hono), the hosts to deploy
-to, Mastra's storage, the model provider and extras (a scheduled task, bearer-token auth), and writes
-an app with one working agent, `build` and `deploy` scripts per host, and a README. A Mastra app on
-Workers gets Mastra's D1 store there and the store you chose everywhere else. Every answer has a flag,
-for scripts and CI:
+It asks for the framework (Mastra, the AI SDK, agent-unit's own `defineAgent`, or a plain Hono
+server), whether agent-unit's engine or the framework's own server runs it, the hosts to deploy to,
+the model provider and extras (a scheduled task, bearer-token auth), and writes an app with one
+working agent, `build` and `deploy` scripts per host, and a README.
+
+- **On the engine** (the default for the AI SDK), the agent asks a person before it refunds an
+  order, and the run resumes where it stopped. One `agent-unit.config.ts` sets each host's run
+  storage with `presets`: on disk on Node, Bun and Deno, a Durable Object per run on Workers, and
+  Upstash on Vercel, Netlify and AWS Lambda.
+- **On its own server** (the default for Mastra), Mastra keeps its routes and storage: Mastra's D1
+  store on Workers and the store you chose everywhere else.
+
+Every answer has a flag, for scripts and CI:
 
 ```sh
-npx agent-unit init my-agent --framework mastra --hosts node,cloudflare --store libsql \
-  --provider openai --extras task --no-install
+npx agent-unit init my-agent --framework ai-sdk --runner engine --hosts node,cloudflare,vercel \
+  --provider openai --extras auth --no-install
 ```
 
 `--yes` takes the default for anything not given.

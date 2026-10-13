@@ -11,7 +11,8 @@ const init = defineCommand({
   meta: { name: "init", description: "Create a new app: framework, hosts, storage and model provider chosen up front" },
   args: {
     dir: { type: "positional", description: "Directory for the new app", required: false },
-    framework: { type: "string", description: "mastra, ai-sdk or hono" },
+    framework: { type: "string", description: "mastra, ai-sdk, agent-unit (defineAgent) or hono" },
+    runner: { type: "string", description: "Who runs a Mastra or AI SDK agent: engine (agent-unit's) or server (the framework's own)" },
     hosts: { type: "string", description: "Comma-separated: node, bun, deno, cloudflare, vercel, netlify, lambda" },
     store: { type: "string", description: "Mastra's store off Workers: libsql or postgres (Workers use D1)" },
     provider: { type: "string", description: "Model provider: openai, anthropic or google" },
