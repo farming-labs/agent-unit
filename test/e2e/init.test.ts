@@ -125,7 +125,7 @@ describe("agent-unit init: the extras", () => {
 
   /** Runs the app's own `npm test` (vitest, from agent-unit's node_modules). */
   function vitest(root: string) {
-    const result = spawnSync(process.execPath, [join(ROOT, "node_modules/vitest/vitest.mjs"), "run", "--root", root], { encoding: "utf8", env: { ...process.env, CI: "1" } });
+    const result = spawnSync(process.execPath, [join(ROOT, "node_modules/vitest/vitest.mjs"), "run", "--root", root], { encoding: "utf8", env: { ...process.env, CI: "1", OPENAI_API_KEY: "", ANTHROPIC_API_KEY: "" } });
     expect(result.status, result.stdout + result.stderr).toBe(0);
     return result.stdout.replace(/\x1b\[[0-9;]*m/g, "");
   }
@@ -136,9 +136,11 @@ describe("agent-unit init: the extras", () => {
     expect(vitest(root)).toMatch(/Tests\s+2 passed/);
   });
 
-  for (const framework of ["ai-sdk", "mastra"] as const) {
+  for (const framework of ["ai-sdk", "mastra", "langgraph", "openai-agents"] as const) {
     it(`a ${framework} agent's test pauses and resumes it on a scripted model`, async () => {
-      const root = await generate(`extras-${framework}-engine`, { framework, runner: "engine", hosts: "node", provider: "openai", extras: "test" });
+      const runner = framework === "ai-sdk" || framework === "mastra" ? { runner: "engine" } : {};
+      const provider = framework === "langgraph" ? "anthropic" : "openai";
+      const root = await generate(`extras-${framework}-engine`, { framework, ...runner, hosts: "node", provider, extras: "test" });
       typecheck(root);
       expect(vitest(root)).toMatch(/Tests\s+1 passed/);
     });
@@ -350,7 +352,9 @@ describe("agent-unit init: agents on agent-unit's engine, one config for every h
 
   for (const framework of ["ai-sdk", "mastra", "langgraph", "openai-agents"] as const) {
     it(`serves its ${framework} agent on Node and on Workers`, async () => {
-      const app = await generate(`engine-${framework}`, { framework, runner: "engine", hosts: "node,cloudflare,lambda", provider: "openai", extras: "none" });
+      // LangGraph on Anthropic, whose chat model checks its key when created: the app has to start without one.
+      const provider = framework === "langgraph" ? "anthropic" : "openai";
+      const app = await generate(`engine-${framework}`, { framework, runner: "engine", hosts: "node,cloudflare,lambda", provider, extras: "none" });
       typecheck(app);
       const check = async (url: string) => {
         const { agents } = await createAgentClient({ baseUrl: url }).manifest();
@@ -360,7 +364,7 @@ describe("agent-unit init: agents on agent-unit's engine, one config for every h
       };
       const node = out();
       await buildFixture(app, "node-server", node);
-      const server = await startServer(process.execPath, [join(node, "server/index.mjs")], { cwd: node, env: { OPENAI_API_KEY: "sk-test" } });
+      const server = await startServer(process.execPath, [join(node, "server/index.mjs")], { cwd: node, env: { OPENAI_API_KEY: "sk-test", ANTHROPIC_API_KEY: "" } });
       try {
         await check(server.url);
       } finally {
@@ -373,7 +377,7 @@ describe("agent-unit init: agents on agent-unit's engine, one config for every h
       const disk = join(worker, "disk");
       mkdirSync(disk, { recursive: true });
       const port = await freePort();
-      const { config } = writeDurableConfig(worker, disk, port, { OPENAI_API_KEY: "sk-test" });
+      const { config } = writeDurableConfig(worker, disk, port, { OPENAI_API_KEY: "sk-test", ANTHROPIC_API_KEY: "" });
       const served = await startServer(workerd, ["serve", config], { cwd: worker, port });
       try {
         await check(served.url);

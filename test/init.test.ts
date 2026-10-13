@@ -151,8 +151,7 @@ describe("the files agent-unit init writes", () => {
     expect(agent.files["src/server.ts"]).toBeUndefined();
     expect(JSON.parse(agent.files["tsconfig.json"]!).include).toEqual(["src", "test", "agents", "agent-unit.config.ts"]);
 
-    // AI SDK and Mastra agents take a scripted model in their test; LangGraph's has none yet, and
-    // Mastra's own server has no routes of ours.
+    // Agents on a model take a scripted one in their test; Mastra's own server has no routes of ours.
     for (const framework of ["ai-sdk", "mastra"] as const) {
       const files = initFiles({ name: "m", framework, runner: "engine", hosts: ["node"], extras: ["test"] }, "0.1.16").files;
       expect(Object.keys(files).filter((path) => path.startsWith("test/"))).toEqual(["test/assistant.test.ts"]);
@@ -160,7 +159,12 @@ describe("the files agent-unit init writes", () => {
       expect(files["agents/assistant.ts"]).toContain(`export default createAssistant(provider("gpt-5-mini"));`);
     }
     expect(initFiles({ name: "m", framework: "ai-sdk", runner: "engine", hosts: ["node"] }, "0.1.16").files["agents/assistant.ts"]).toContain("export default new ToolLoopAgent({");
-    expect(initFiles({ name: "m", framework: "langgraph", hosts: ["node"], extras: ["test"] }, "0.1.16").files).not.toHaveProperty("test/assistant.test.ts");
+    for (const framework of ["langgraph", "openai-agents"] as const) {
+      const files = initFiles({ name: "m", framework, hosts: ["node"], extras: ["test"] }, "0.1.16").files;
+      expect(Object.keys(files).filter((path) => path.startsWith("test/"))).toEqual(["test/assistant.test.ts"]);
+      expect(files["agents/assistant.ts"]).toContain("export function createAssistant(model: ");
+      expect(initFiles({ name: "m", framework, hosts: ["node"] }, "0.1.16").files["agents/assistant.ts"]).not.toContain("createAssistant");
+    }
     expect(initFiles({ name: "m", framework: "mastra", hosts: ["node"], extras: ["background", "test"] }, "0.1.16").files).not.toHaveProperty("test/server.test.ts");
   });
 
