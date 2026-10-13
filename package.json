@@ -97,7 +97,8 @@
     "test:e2e": "vitest run --config vitest.e2e.config.ts",
     "typecheck": "tsc --noEmit",
     "prepublishOnly": "pnpm build",
-    "check:pack": "node scripts/check-pack.mjs"
+    "check:pack": "node scripts/check-pack.mjs",
+    "check:init": "node scripts/check-init.mjs"
   },
   "dependencies": {
     "@agent-unit/runtime": "workspace:^",
