@@ -52,6 +52,8 @@ export const PROVIDERS = {
 export const EXTRAS = {
   task: { label: "A scheduled task", hint: "runs every day with the host's own scheduler" },
   auth: { label: "Bearer-token auth", hint: "API_TOKEN protects the agent route" },
+  background: { label: "Background work", hint: "a route that answers first and finishes its work after, with waitUntil" },
+  test: { label: "A test", hint: "a vitest test that runs offline: npm test" },
 } as const;
 
 export type InitFramework = keyof typeof FRAMEWORKS;
@@ -89,7 +91,13 @@ export function runnerFor(framework: InitFramework, runner?: InitRunner): InitRu
 export const asksProvider = (framework: InitFramework) => framework === "mastra" || framework === "ai-sdk" || framework === "langgraph";
 const callsModel = (framework: InitFramework) => asksProvider(framework) || framework === "openai-agents";
 export const asksStore = (framework: InitFramework, runner: InitRunner) => framework === "mastra" && runner === "server";
-export const extrasFor = (framework: InitFramework, runner: InitRunner): InitExtra[] => (framework === "mastra" && runner === "server" ? ["task"] : ["task", "auth"]);
+export function extrasFor(framework: InitFramework, runner: InitRunner): InitExtra[] {
+  if (framework === "mastra" && runner === "server") return ["task"];
+  // A server agent-unit writes (Hono, or an AI SDK agent on Hono) has routes to add work to and test.
+  if (runner === "server") return ["task", "auth", "background", "test"];
+  // Of the engine's agents, only defineAgent's run offline; the others call a model.
+  return framework === "agent-unit" ? ["task", "auth", "test"] : ["task", "auth"];
+}
 
 // Ranges start at the versions agent-unit's own tests run against.
 const VERSIONS: Record<string, string> = {
@@ -109,6 +117,7 @@ const VERSIONS: Record<string, string> = {
   "@openai/agents": "^0.19.0",
   "@types/node": "^20.19.0",
   "@upstash/redis": "^1.39.0",
+  vitest: "^3.2.7",
   ai: "^7.0.30",
   hono: "^4.13.13",
   typescript: "^5.9.3",
@@ -264,11 +273,13 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string, app: Exi
   const serverless = hosts.filter((host) => SERVERLESS.includes(host));
   const task = extras.includes("task");
   const auth = extras.includes("auth") && !ownServer;
+  const background = extras.includes("background") && !ownServer;
+  const test = extras.includes("test") && !ownServer;
   const files: Record<string, string> = {};
 
   // Dependencies
   const dependencies = ownMastra || ownServer ? [] : ["zod"];
-  const devDependencies = ["typescript", "@types/node"];
+  const devDependencies = ["typescript", "@types/node", ...(test ? ["vitest"] : [])];
   if (ownMastra) {
     dependencies.push("@mastra/hono", "hono");
   } else if (engine) {
@@ -298,6 +309,7 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string, app: Exi
     if (deploy) scripts[`deploy${suffix}`] = `agent-unit build --preset ${preset} && ${deploy}`;
   }
   if (task) scripts.task = "agent-unit task daily-summary";
+  if (test) scripts.test = "vitest run";
   scripts.typecheck = "tsc --noEmit";
 
   const manifest: Record<string, unknown> = { name: answers.name, private: true, type: "module", scripts };
@@ -353,7 +365,8 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string, app: Exi
   // The app
   if (engine) Object.assign(files, engineAgent(answers));
   else if (framework === "mastra") Object.assign(files, ownMastra ? {} : mastraFiles(answers, workers));
-  else if (!app.server) files["src/server.ts"] = serverFile(framework as "ai-sdk" | "hono", provider, auth);
+  else if (!app.server) files["src/server.ts"] = serverFile(framework as "ai-sdk" | "hono", provider, auth, background);
+  if (test) files[engine ? "test/refund.test.ts" : "test/server.test.ts"] = engine ? AGENT_TEST : serverTest(framework as "ai-sdk" | "hono", auth, background);
   if (task) {
     files["src/tasks/daily-summary.ts"] = `// Runs every day at 08:00 UTC: in-process on Node, Bun and Deno, a Cron Trigger on Workers, a Cron
 // Job on Vercel. \`npm run task\` runs it once now.
@@ -379,6 +392,7 @@ export default async ({ scheduledTime }: { name: string; scheduledTime: number }
   }
   if (framework === "mastra" && !engine && !ownMastra && answers.store === "postgres") env.push(["DATABASE_URL", "Postgres connection string"]);
   if (auth) env.push(["API_TOKEN", "Clients send it as `Authorization: Bearer <token>`"]);
+  if (background) env.push(["FEEDBACK_WEBHOOK_URL", "Optional: where POST /feedback forwards feedback after answering; unset, it is logged"]);
   if (env.length) files[".env.example"] = env.map(([key, comment]) => `# ${comment}\n${key}=\n`).join("\n");
 
   files[".gitignore"] = ["node_modules", ".output", ".agent-unit", ".data", ".nitro", ".vercel", ".netlify", ".wrangler", "*.db", ".env", ".env.*", "!.env.example", ".dev.vars", ""].join("\n");
@@ -393,7 +407,7 @@ export default async ({ scheduledTime }: { name: string; scheduledTime: number }
         noEmit: true,
         types: ["node"],
       },
-      include: ["src", "agent-unit.config.ts"],
+      include: ["src", ...(test ? ["test"] : []), ...(engine ? ["agents"] : []), "agent-unit.config.ts"],
     },
     null,
     2,
@@ -402,7 +416,7 @@ export default async ({ scheduledTime }: { name: string; scheduledTime: number }
   return { files, env: env.map(([key]) => key) };
 }
 
-function serverFile(framework: Exclude<InitFramework, "mastra">, provider: (typeof PROVIDERS)[InitProvider], auth: boolean): string {
+function serverFile(framework: "ai-sdk" | "hono", provider: (typeof PROVIDERS)[InitProvider], auth: boolean, background: boolean): string {
   const route = framework === "ai-sdk" ? "/chat" : "/hello";
   const imports = [`import { Hono } from "hono";`];
   if (auth) imports.push(`import { bearerAuth } from "hono/bearer-auth";`);
@@ -427,8 +441,26 @@ function serverFile(framework: Exclude<InitFramework, "mastra">, provider: (type
       ``,
     );
   }
-  imports.push(`import { env } from "agent-unit/env";`);
+  imports.push(background ? `import { env, waitUntil } from "agent-unit/env";` : `import { env } from "agent-unit/env";`);
   lines.push(`const app = new Hono();`, ``, `app.get("/", (c) => c.json({ ok: true }));`, ``);
+  if (background) {
+    lines.push(
+      `// POST /feedback {"rating":5} answers at once; forwarding the feedback finishes after the response.`,
+      `// waitUntil keeps it running on every host: the host's own on Node, Bun, Deno, Workers and Vercel,`,
+      `// and on Netlify and AWS Lambda, which may freeze after a response, the response waits for it.`,
+      `app.post("/feedback", async (c) => {`,
+      `  waitUntil(forward(await c.req.json()));`,
+      `  return c.json({ received: true }, 202);`,
+      `});`,
+      ``,
+      `async function forward(feedback: unknown) {`,
+      `  if (!env.FEEDBACK_WEBHOOK_URL) return console.log("feedback", feedback);`,
+      `  const response = await fetch(env.FEEDBACK_WEBHOOK_URL, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(feedback) });`,
+      `  if (!response.ok) throw new Error(\`feedback webhook answered \${response.status}\`);`,
+      `}`,
+      ``,
+    );
+  }
   if (auth) {
     lines.push(
       `// Clients send \`Authorization: Bearer <API_TOKEN>\`.`,
@@ -450,6 +482,71 @@ function serverFile(framework: Exclude<InitFramework, "mastra">, provider: (type
   }
   lines.push(``, `export default app;`, ``);
   return `${imports.join("\n")}\n\n${lines.join("\n")}`;
+}
+
+const AGENT_TEST = `import { createTestUnit } from "agent-unit/testing";
+import { describe, expect, it } from "vitest";
+import refund from "../agents/refund";
+
+// The agent runs in memory, with no server: \`npm test\`. A second createTestUnit on the same
+// \`storage\` tests a restart between the pause and the answer.
+describe("refund", () => {
+  it("pauses for approval, then refunds", async () => {
+    const unit = createTestUnit({ refund });
+    const parked = await unit.run("refund", { orderId: "o_42" });
+    expect(parked).toMatchObject({ status: "interrupted", interrupt: { name: "approve-refund", payload: { id: "o_42" } } });
+    const done = await unit.resume(parked.id, { approved: true });
+    expect(done.output).toBe("refunded o_42");
+  });
+
+  it("refunds nothing when the answer is no", async () => {
+    const unit = createTestUnit({ refund });
+    const parked = await unit.run("refund", { orderId: "o_43" });
+    expect((await unit.resume(parked.id, { approved: false })).output).toBe("declined");
+  });
+});
+`;
+
+function serverTest(framework: "ai-sdk" | "hono", auth: boolean, background: boolean): string {
+  const route = framework === "ai-sdk" ? "/chat" : "/hello";
+  const cases = [
+    `  it("answers on /", async () => {
+    expect(await (await app.request("/")).json()).toEqual({ ok: true });
+  });`,
+  ];
+  if (framework === "hono" && !auth) {
+    cases.push(`  it("says hello", async () => {
+    expect(await (await app.request("/hello")).json()).toEqual({ hello: process.env.GREETING ?? "world" });
+  });`);
+  }
+  if (auth) {
+    cases.push(`  it("asks for the token on ${route}", async () => {
+    expect((await app.request("${route}", { method: "${framework === "ai-sdk" ? "POST" : "GET"}" })).status).toBe(401);
+  });`);
+  }
+  if (background) {
+    cases.push(`  it("answers feedback first and forwards it after", async () => {
+    vi.stubEnv("FEEDBACK_WEBHOOK_URL", "https://hooks.example.test/feedback");
+    const forwarded = vi.fn(async (..._args: Parameters<typeof fetch>) => new Response(null, { status: 204 }));
+    vi.stubGlobal("fetch", forwarded);
+    const response = await app.request("/feedback", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ rating: 5 }) });
+    expect(response.status).toBe(202);
+    await vi.waitFor(() => expect(forwarded).toHaveBeenCalledWith("https://hooks.example.test/feedback", expect.objectContaining({ body: '{"rating":5}' })));
+  });`);
+  }
+  return `import { ${background ? "afterEach, " : ""}describe, expect, it${background ? ", vi" : ""} } from "vitest";
+import app from "../src/server";
+
+// The server answers in-process, with no network: \`npm test\`.
+describe("server", () => {
+${background ? `  afterEach(() => {
+    vi.unstubAllEnvs();
+    vi.unstubAllGlobals();
+  });
+
+` : ""}${cases.join("\n\n")}
+});
+`;
 }
 
 const INSTRUCTIONS = "You help customers with their orders. Keep answers short. Refund only with the refund tool.";
@@ -701,6 +798,9 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
     );
   }
   if (framework === "mastra" && !engine) lines.push("Try it: `curl -X POST localhost:3000/api/agents/assistant/generate -H 'content-type: application/json' -d '{\"messages\":\"What time is it?\"}'`", "");
+  if (answers.extras.includes("background") && !engine) {
+    lines.push("`POST /feedback` answers at once and forwards the feedback after, with `waitUntil`: `curl -X POST localhost:3000/feedback -H 'content-type: application/json' -d '{\"rating\":5}'`", "");
+  }
   if (framework === "ai-sdk" && !engine) lines.push("Try it: `curl -X POST localhost:3000/chat -H 'content-type: application/json' -d '{\"prompt\":\"What time is it?\"}'`", "");
   lines.push("## Build and deploy", "");
   for (const host of hosts) {
@@ -723,6 +823,7 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
     if (host === "netlify") lines.push(`Connect the repository in Netlify with \`${build}\` as the build command.`, "");
     if (host === "lambda") lines.push("Deploy `.output/server` with your usual tool (SAM, CDK, Terraform) as a Node.js function behind a function URL or API Gateway.", "");
   }
+  if (answers.extras.includes("test")) lines.push("## Test", "", "```sh", "npm test               # runs offline, with no server or model", "```", "");
   if (env.length) lines.push("## Environment", "", ...env.map((key) => `- \`${key}\``), "");
   return `${lines.join("\n")}`;
 }

@@ -39,7 +39,7 @@ export interface InitOptions {
   hosts?: string | string[];
   store?: string;
   provider?: string;
-  /** Comma-separated or a list: task, auth. `none` for none. */
+  /** Comma-separated or a list: task, auth, background, test. `none` for none. */
   extras?: string | string[];
   /** Install dependencies afterwards. Asked for when missing. */
   install?: boolean;
@@ -160,12 +160,14 @@ export async function init(options: InitOptions): Promise<InitResult> {
       ? pick(PROVIDERS, options.provider, "provider")
       : await ask({ message: "Model provider", type: "select", options: choicesOf(PROVIDERS), initial: "openai" }, "openai", "--provider");
   }
-  const allowed = extrasFor(framework, runner).filter((extra) => !(keepsServer && extra === "auth"));
+  // Auth, background work and the test are written into agent-unit's server, not into one the app has.
+  const serverExtras: InitExtra[] = ["auth", "background", "test"];
+  const allowed = extrasFor(framework, runner).filter((extra) => !(keepsServer && serverExtras.includes(extra)));
   const extraFlag = list(options.extras);
   const extras: InitExtra[] = extraFlag
     ? extraFlag.filter((extra) => extra !== "none").map((extra) => {
         const value = pick(EXTRAS, extra, "extras");
-        if (keepsServer && value === "auth") throw new Error(`--extras auth does not apply to your own server (${ownServer}): protect its routes there.`);
+        if (keepsServer && serverExtras.includes(value)) throw new Error(`--extras ${value} does not apply to your own server (${ownServer}): agent-unit builds it as it is.`);
         if (!allowed.includes(value)) throw new Error(`--extras ${value} does not apply to ${FRAMEWORKS[framework].label} apps${asksRunner(framework) ? ` on ${runner === "engine" ? "agent-unit's engine" : "their own server"}` : ""}.`);
         return value;
       })

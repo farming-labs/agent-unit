@@ -39,8 +39,9 @@ npm create agent-unit@latest my-agent    # or: pnpm create agent-unit, bun creat
 It asks for the framework (Mastra, the AI SDK, LangGraph, the OpenAI Agents SDK, agent-unit's own
 `defineAgent`, or a plain Hono server), whether agent-unit's engine or the framework's own server
 runs it (LangGraph and the OpenAI Agents SDK always run on the engine), the hosts to deploy to,
-the model provider and extras (a scheduled task, bearer-token auth), and writes an app with one
-working agent, `build` and `deploy` scripts per host, and a README.
+the model provider and extras (a scheduled task, bearer-token auth, background work with
+`waitUntil`, a test that runs offline), and writes an app with one working agent, `build` and
+`deploy` scripts per host, and a README.
 
 - **On the engine** (the default for the AI SDK), the agent asks a person before it refunds an
   order, and the run resumes where it stopped. One `agent-unit.config.ts` sets each host's run

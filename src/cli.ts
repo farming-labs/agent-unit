@@ -16,7 +16,7 @@ const init = defineCommand({
     hosts: { type: "string", description: "Comma-separated: node, bun, deno, cloudflare, vercel, netlify, lambda" },
     store: { type: "string", description: "Mastra's store off Workers: libsql or postgres (Workers use D1)" },
     provider: { type: "string", description: "Model provider: openai, anthropic or google" },
-    extras: { type: "string", description: "Comma-separated: task, auth, or none" },
+    extras: { type: "string", description: "Comma-separated: task, auth, background, test, or none" },
     install: { type: "boolean", description: "Install dependencies (--no-install to skip)" },
     yes: { type: "boolean", description: "Take the default for every question not answered by a flag", default: false },
   },

@@ -136,6 +136,26 @@ describe("the files agent-unit init writes", () => {
     expect(files["README.md"]).toContain(`localhost:3000/agents/refund/runs`);
   });
 
+  it("offers background work and a test where agent-unit writes the server or the agent runs offline", () => {
+    const server = initFiles({ name: "s", framework: "hono", hosts: ["node"], extras: ["background", "test", "auth"] }, "0.1.16");
+    expect(server.files["src/server.ts"]).toContain(`import { env, waitUntil } from "agent-unit/env";`);
+    expect(server.files["src/server.ts"]).toContain(`waitUntil(forward(await c.req.json()));`);
+    expect(server.files["test/server.test.ts"]).toContain(`asks for the token on /hello`);
+    expect(manifest(server.files).scripts.test).toBe("vitest run");
+    expect(manifest(server.files).devDependencies).toHaveProperty("vitest");
+    expect(JSON.parse(server.files["tsconfig.json"]!).include).toEqual(["src", "test", "agent-unit.config.ts"]);
+    expect(server.env).toContain("FEEDBACK_WEBHOOK_URL");
+
+    const agent = initFiles({ name: "a", framework: "agent-unit", hosts: ["node"], extras: ["test", "background"] }, "0.1.16");
+    expect(agent.files["test/refund.test.ts"]).toContain(`createTestUnit({ refund })`);
+    expect(agent.files["src/server.ts"]).toBeUndefined();
+    expect(JSON.parse(agent.files["tsconfig.json"]!).include).toEqual(["src", "test", "agents", "agent-unit.config.ts"]);
+
+    // Agents that call a model have no offline test yet; Mastra's own server has no routes of ours.
+    expect(initFiles({ name: "m", framework: "ai-sdk", runner: "engine", hosts: ["node"], extras: ["test"] }, "0.1.16").files).not.toHaveProperty("test/refund.test.ts");
+    expect(initFiles({ name: "m", framework: "mastra", hosts: ["node"], extras: ["background", "test"] }, "0.1.16").files).not.toHaveProperty("test/server.test.ts");
+  });
+
   it("turns a directory name into a package name", () => {
     expect(packageName("My Agent!")).toBe("my-agent");
     expect(packageName("..")).toBe("my-agent");
@@ -260,7 +280,7 @@ describe("agent-unit init in an existing app", () => {
     expect(result.files.sort()).toEqual([".gitignore", "agent-unit.config.ts", "package.json"]);
     expect(Object.keys(JSON.parse(read(root, "package.json")).dependencies)).toEqual(["ai", "hono", "agent-unit"]);
     await expect(init({ dir: app({ "package.json": "{}", "src/server.ts": "" }), framework: "hono", extras: "auth", hosts: "node", yes: true, install: false, version: "0.1.16", logger: quiet })).rejects.toThrow(
-      "--extras auth does not apply to your own server (src/server.ts): protect its routes there.",
+      "--extras auth does not apply to your own server (src/server.ts): agent-unit builds it as it is.",
     );
     // Asked for the engine, it writes an agent beside the app's server.
     const engine = app({ "package.json": JSON.stringify({ name: "chat", dependencies: { ai: "^7.0.0" } }), "src/index.ts": "" });
