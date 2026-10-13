@@ -1,0 +1,93 @@
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { afterEach, describe, expect, it } from "vitest";
+import { configForPreset, loadProject } from "../src/build/load";
+import { resolvePreset } from "../src/build/nitro";
+import { agentUnit } from "../src/nitro";
+
+// `presets`: settings for one Nitro preset over the top-level ones.
+
+const dirs: string[] = [];
+afterEach(() => {
+  for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+function app(config: string, files: Record<string, string> = { "agents/greeter.mjs": `export default { run: () => "hi" };` }) {
+  const dir = mkdtempSync(join(tmpdir(), "agent-unit-presets-"));
+  dirs.push(dir);
+  writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "presets-app", type: "module" }));
+  writeFileSync(join(dir, "agent-unit.config.mjs"), `export default ${config};`);
+  for (const [name, content] of Object.entries(files)) {
+    mkdirSync(join(dir, name, ".."), { recursive: true });
+    writeFileSync(join(dir, name), content);
+  }
+  return dir;
+}
+
+describe("per-preset settings", () => {
+  const config = {
+    storage: { driver: "fs-lite", base: ".data" },
+    retention: "30d",
+    presets: {
+      cloudflare_module: { runtime: "durable-objects" as const },
+      vercel: { storage: { driver: "upstash" } },
+    },
+  };
+
+  it("puts the preset's entry over the top level, each setting replacing the top-level value whole", () => {
+    expect(configForPreset(config, "vercel")).toMatchObject({ storage: { driver: "upstash" }, retention: "30d" });
+    expect(configForPreset(config, "vercel").storage).not.toHaveProperty("base");
+    expect(configForPreset(config, "cloudflare-module")).toMatchObject({ runtime: "durable-objects", storage: { driver: "fs-lite" } });
+    expect(configForPreset(config, "node-server")).toBe(config);
+  });
+
+  it("builds for presets in Nitro's spelling", () => {
+    expect(resolvePreset({ config: {} }, "cloudflare_module")).toBe("cloudflare-module");
+    expect(resolvePreset({ config: { preset: "aws_lambda" } })).toBe("aws-lambda");
+  });
+
+  it("accepts settings that can differ per preset, for agents and for an app's own server", async () => {
+    const engine = await loadProject(app(`{ presets: { "cloudflare-module": { runtime: "durable-objects", sweep: false }, vercel: { storage: { driver: "memory" } } } }`));
+    expect(Object.keys(engine.config.presets!)).toEqual(["cloudflare-module", "vercel"]);
+    const own = await loadProject(
+      app(`{ server: "./server.mjs", presets: { "cloudflare-module": { tasks: { digest: { schedule: "0 8 * * *", handler: "./digest.mjs" } } } } }`, { "server.mjs": "" }),
+    );
+    expect(configForPreset(own.config, "cloudflare-module").tasks).toHaveProperty("digest");
+    expect(configForPreset(own.config, "node-server").tasks).toBeUndefined();
+  });
+
+  it("refuses settings that cannot differ per preset, malformed entries and one preset named twice", async () => {
+    await expect(loadProject(app(`{ presets: { vercel: { agentsDir: "./other" } } }`))).rejects.toThrow(
+      /`agentsDir` in `presets\["vercel"\]` cannot differ per preset\. Settings that can: storage, runtime/,
+    );
+    await expect(loadProject(app(`{ presets: [] }`))).rejects.toThrow(/`presets` maps preset names to settings/);
+    await expect(loadProject(app(`{ presets: { vercel: true } }`))).rejects.toThrow(/`presets\["vercel"\]` must be an object of settings/);
+    await expect(loadProject(app(`{ presets: { cloudflare_module: {}, "cloudflare-module": {} } }`))).rejects.toThrow(
+      /names "cloudflare_module" and "cloudflare-module", which are the same preset/,
+    );
+  });
+
+  it("refuses engine settings for a preset when the app brings its own server", async () => {
+    await expect(loadProject(app(`{ server: "./server.mjs", presets: { vercel: { storage: { driver: "memory" } } } }`, { "server.mjs": "" }))).rejects.toThrow(
+      /`presets\["vercel"\]\.storage` configure agent-unit's engine, which does not run when `server` is set/,
+    );
+  });
+});
+
+describe("per-preset settings in the agent-unit/nitro module", () => {
+  async function setup(root: string, preset: string, dev = false) {
+    const options = { preset, dev, rootDir: root, buildDir: join(root, ".nitro"), storage: {}, handlers: [], experimental: {}, tasks: {}, scheduledTasks: {} };
+    await agentUnit().setup!({ options, logger: { warn() {} } } as never);
+    return options as typeof options & { storage: Record<string, unknown>; scheduledTasks: Record<string, unknown> };
+  }
+
+  it("uses the entry for the app's Nitro preset, and the top-level settings in dev", async () => {
+    const root = app(`{ storage: { driver: "fs-lite", base: ".data" }, presets: { vercel: { storage: { driver: "memory" }, sweep: "*/5 * * * *" } } }`);
+    const vercel = await setup(root, "vercel");
+    expect(vercel.storage["agent-unit"]).toEqual({ driver: "memory" });
+    expect(vercel.scheduledTasks).toEqual({ "*/5 * * * *": ["agent-unit:sweep"] });
+    expect((await setup(root, "node-server")).storage["agent-unit"]).toMatchObject({ driver: "fs-lite" });
+    expect((await setup(root, "nitro-dev", true)).storage["agent-unit"]).toMatchObject({ driver: "fs-lite" });
+  });
+});

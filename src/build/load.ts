@@ -3,7 +3,7 @@ import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEnv } from "node:util";
 import { createJiti } from "jiti";
-import type { AgentUnitConfig } from "../config";
+import { PRESET_SETTINGS, type AgentUnitConfig } from "../config";
 
 const CONFIG_NAMES = ["agent-unit.config.ts", "agent-unit.config.mts", "agent-unit.config.js", "agent-unit.config.mjs"];
 const AGENT_EXTENSIONS = new Set([".ts", ".mts", ".js", ".mjs", ".tsx", ".jsx"]);
@@ -51,6 +51,48 @@ export function loadEnvFile(root: string): string[] {
     loaded.push(key);
   }
   return loaded;
+}
+
+/** Engine settings the config sets, at the top level or for a preset (`presets.vercel.storage`). */
+function engineSettings(config: AgentUnitConfig): string[] {
+  const used: string[] = ENGINE_OPTIONS.filter((key) => config[key] !== undefined);
+  for (const [preset, settings] of Object.entries(config.presets ?? {})) {
+    for (const key of ENGINE_OPTIONS) if ((settings as Record<string, unknown>)[key] !== undefined) used.push(`presets[${JSON.stringify(preset)}].${key}`);
+  }
+  return used;
+}
+
+const presetKey = (preset: string) => preset.replaceAll("_", "-");
+
+/** Checks `presets`: an object per preset, holding only settings that can differ per preset. */
+function checkPresets(config: AgentUnitConfig, configFile: string | undefined) {
+  if (config.presets === undefined) return;
+  if (!config.presets || typeof config.presets !== "object" || Array.isArray(config.presets)) {
+    throw new Error(`${configFile}: \`presets\` maps preset names to settings, e.g. { "cloudflare-module": { runtime: "durable-objects" } }.`);
+  }
+  const seen = new Map<string, string>();
+  for (const [preset, settings] of Object.entries(config.presets)) {
+    if (!settings || typeof settings !== "object" || Array.isArray(settings)) throw new Error(`${configFile}: \`presets[${JSON.stringify(preset)}]\` must be an object of settings.`);
+    const other = seen.get(presetKey(preset));
+    if (other !== undefined) throw new Error(`${configFile}: \`presets\` names ${JSON.stringify(other)} and ${JSON.stringify(preset)}, which are the same preset.`);
+    seen.set(presetKey(preset), preset);
+    const fixed = Object.keys(settings).filter((key) => !(PRESET_SETTINGS as readonly string[]).includes(key));
+    if (fixed.length) {
+      throw new Error(
+        `${configFile}: ${fixed.map((key) => `\`${key}\``).join(", ")} in \`presets[${JSON.stringify(preset)}]\` cannot differ per preset. Settings that can: ${PRESET_SETTINGS.join(", ")}.`,
+      );
+    }
+  }
+}
+
+/**
+ * The config as built for `preset`: the top-level settings with that preset's entry in `presets`
+ * over them, each replacing the top-level value whole. `cloudflare_module` and `cloudflare-module`
+ * are the same preset.
+ */
+export function configForPreset(config: AgentUnitConfig, preset: string): AgentUnitConfig {
+  const entry = Object.entries(config.presets ?? {}).find(([name]) => presetKey(name) === presetKey(preset))?.[1];
+  return entry ? { ...config, ...entry } : config;
 }
 
 /** The installed agent-unit package root, whether running from `dist/` or from source. */
@@ -126,6 +168,7 @@ export async function loadProject(rootDir = process.cwd()): Promise<LoadedProjec
     config = ((loaded as { default?: AgentUnitConfig }).default ?? loaded) as AgentUnitConfig;
     if (!config || typeof config !== "object") throw new Error(`${configFile} must export a config object (export default defineConfig({ ... })).`);
   }
+  checkPresets(config, configFile);
   let name = config.name;
   if (!name && existsSync(join(root, "package.json"))) {
     name = (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { name?: string }).name;
@@ -133,7 +176,7 @@ export async function loadProject(rootDir = process.cwd()): Promise<LoadedProjec
   // A Mastra app (src/mastra/index.ts) with neither agents nor engine settings needs no config at all:
   // it is built as Mastra's own server, as `server: mastra()` would.
   if (config.server === undefined && !config.agents && MASTRA_ENTRIES.some((file) => existsSync(join(root, file)))) {
-    const engineOnly = ENGINE_OPTIONS.filter((key) => config[key] !== undefined);
+    const engineOnly = engineSettings(config);
     if (!engineOnly.length && Object.keys(scanAgents(resolve(root, config.agentsDir ?? "agents"))).length === 0) {
       const { mastra } = await import("../presets/mastra");
       config = { ...config, server: mastra() };
@@ -146,7 +189,7 @@ export async function loadProject(rootDir = process.cwd()): Promise<LoadedProjec
       throw new Error(`${configFile}: \`server\` must be the path of your server file, e.g. "./src/server.ts", or a framework preset such as mastra().`);
     }
     // With its own server the app's framework owns runs, storage and routes; engine settings would be ignored silently.
-    const engineOnly = ENGINE_OPTIONS.filter((key) => config[key] !== undefined);
+    const engineOnly = engineSettings(config);
     if (engineOnly.length) {
       throw new Error(
         `${configFile}: ${engineOnly.map((key) => `\`${key}\``).join(", ")} configure agent-unit's engine, which does not run when \`server\` is set. Remove them, or remove \`server\` to serve your agents with the engine.`,
@@ -158,7 +201,7 @@ export async function loadProject(rootDir = process.cwd()): Promise<LoadedProjec
   if (!config.agents && Object.keys(agentFiles).length === 0) {
     // A Mastra app that also sets engine settings: say which ones keep it from being built as Mastra's server.
     if (MASTRA_ENTRIES.some((file) => existsSync(join(root, file)))) {
-      const engineOnly = ENGINE_OPTIONS.filter((key) => config[key] !== undefined);
+      const engineOnly = engineSettings(config);
       throw new Error(
         `No agents found, but this looks like a Mastra app. agent-unit builds Mastra's own server on its own unless the config sets agent-unit's engine settings (${engineOnly.map((key) => `\`${key}\``).join(", ")}); remove them, or set \`server: mastra()\` to choose explicitly.`,
       );

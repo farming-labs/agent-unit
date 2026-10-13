@@ -1,6 +1,6 @@
 import { join } from "node:path";
 import type { NitroModule } from "nitro/types";
-import { loadProject } from "./build/load";
+import { configForPreset, loadProject } from "./build/load";
 import { generateEntry, resolveBudget, resolveStorage } from "./build/engine";
 
 export interface AgentUnitNitroOptions {
@@ -24,9 +24,10 @@ export function agentUnit(options: AgentUnitNitroOptions = {}): NitroModule {
   return {
     name: "agent-unit",
     async setup(nitro) {
-      const project = await loadProject(options.root ?? nitro.options.rootDir);
-      const basePath = (options.basePath ?? project.config.basePath ?? "/agents").replace(/\/+$/, "");
       const preset = nitro.options.preset;
+      const loaded = await loadProject(options.root ?? nitro.options.rootDir);
+      const project = { ...loaded, config: configForPreset(loaded.config, preset) };
+      const basePath = (options.basePath ?? project.config.basePath ?? "/agents").replace(/\/+$/, "");
       const dir = join(nitro.options.buildDir, "agent-unit");
       generateEntry(project, dir, { budgetMs: resolveBudget(project, preset), basePath });
 

@@ -118,7 +118,39 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
   };
   /** Passed through to Nitro, merged over what agent-unit generates. */
   nitro?: Record<string, unknown>;
+  /**
+   * Settings for one Nitro preset, used instead of the top-level ones when building for it, so one
+   * app can keep runs in Durable Objects on Workers, in Redis on Vercel and on disk on Node. Each
+   * setting replaces the top-level value whole (a `storage` here is the whole storage). Keys are
+   * preset names as `--preset` takes them; `agent-unit dev` uses the top-level settings.
+   *
+   * ```ts
+   * presets: {
+   *   "cloudflare-module": { runtime: "durable-objects" },
+   *   vercel: { storage: { driver: "upstash", url: process.env.UPSTASH_REDIS_REST_URL, token: process.env.UPSTASH_REDIS_REST_TOKEN } },
+   * }
+   * ```
+   */
+  presets?: Record<string, PresetConfig>;
 }
+
+/** Settings that may differ per Nitro preset. */
+export const PRESET_SETTINGS = [
+  "storage",
+  "runtime",
+  "budget",
+  "retention",
+  "sweep",
+  "basePath",
+  "authorize",
+  "origin",
+  "maxBodyBytes",
+  "tasks",
+  "cloudflare",
+  "nitro",
+] as const satisfies readonly (keyof AgentUnitConfig)[];
+
+export type PresetConfig = Pick<AgentUnitConfig, (typeof PRESET_SETTINGS)[number]>;
 
 /** Types an `agent-unit.config.ts`. */
 export function defineConfig(config: AgentUnitConfig): AgentUnitConfig {
