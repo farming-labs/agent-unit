@@ -224,7 +224,7 @@ export default defineConfig({
 
 Each setting there replaces the top-level value whole. The settings that can differ per preset are
 `storage`, `runtime`, `budget`, `retention`, `sweep`, `basePath`, `authorize`, `origin`,
-`maxBodyBytes`, `tasks`, `cloudflare` and `nitro`. `agent-unit dev` uses the top-level settings.
+`maxBodyBytes`, `tasks`, `cloudflare` and `nitro`. The `agent-unit/nitro` module applies the entry for the app's Nitro preset too. `agent-unit dev` and `nitro dev` use the top-level settings.
 
 ### Your own server
 

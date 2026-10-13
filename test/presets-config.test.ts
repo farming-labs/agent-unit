@@ -4,6 +4,7 @@ import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { configForPreset, loadProject } from "../src/build/load";
 import { resolvePreset } from "../src/build/nitro";
+import { agentUnit } from "../src/nitro";
 
 // `presets`: settings for one Nitro preset over the top-level ones.
 
@@ -71,5 +72,22 @@ describe("per-preset settings", () => {
     await expect(loadProject(app(`{ server: "./server.mjs", presets: { vercel: { storage: { driver: "memory" } } } }`, { "server.mjs": "" }))).rejects.toThrow(
       /`presets\["vercel"\]\.storage` configure agent-unit's engine, which does not run when `server` is set/,
     );
+  });
+});
+
+describe("per-preset settings in the agent-unit/nitro module", () => {
+  async function setup(root: string, preset: string, dev = false) {
+    const options = { preset, dev, rootDir: root, buildDir: join(root, ".nitro"), storage: {}, handlers: [], experimental: {}, tasks: {}, scheduledTasks: {} };
+    await agentUnit().setup!({ options, logger: { warn() {} } } as never);
+    return options as typeof options & { storage: Record<string, unknown>; scheduledTasks: Record<string, unknown> };
+  }
+
+  it("uses the entry for the app's Nitro preset, and the top-level settings in dev", async () => {
+    const root = app(`{ storage: { driver: "fs-lite", base: ".data" }, presets: { vercel: { storage: { driver: "memory" }, sweep: "*/5 * * * *" } } }`);
+    const vercel = await setup(root, "vercel");
+    expect(vercel.storage["agent-unit"]).toEqual({ driver: "memory" });
+    expect(vercel.scheduledTasks).toEqual({ "*/5 * * * *": ["agent-unit:sweep"] });
+    expect((await setup(root, "node-server")).storage["agent-unit"]).toMatchObject({ driver: "fs-lite" });
+    expect((await setup(root, "nitro-dev", true)).storage["agent-unit"]).toMatchObject({ driver: "fs-lite" });
   });
 });
