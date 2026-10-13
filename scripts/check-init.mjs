@@ -1,11 +1,13 @@
 // Writes an app with `agent-unit init` for each framework, runner and host it offers, and checks it
 // the way a new user gets it: agent-unit from its packed tarballs, every other dependency from npm at
 // the ranges the templates pin. Each app has to install with npm (no peer conflicts), typecheck,
-// build for every host it chose, and resolve one copy of its framework, so `instanceof` checks hold.
+// build for every host it chose, resolve one copy of its framework (so `instanceof` checks hold), and
+// answer a request from its Node build.
 // The e2e suite checks the same apps against the SDK versions in agent-unit's lockfile; this catches
 // what npm resolves today. Usage: node scripts/check-init.mjs [name ...] (after pnpm build)
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { createServer } from "node:net";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 
@@ -13,18 +15,72 @@ const repo = resolve(import.meta.dirname, "..");
 const shell = process.platform === "win32";
 const run = (command, args, cwd) => execFileSync(command, args, { cwd, encoding: "utf8", shell, stdio: ["ignore", "pipe", "pipe"] });
 
-/** Each combination once, with hosts chosen so every per-host branch of the templates is written. */
+/**
+ * Each combination once, with hosts chosen so every per-host branch of the templates is written, and
+ * the request its Node build must answer: the route the app's README tells a new user to try first,
+ * or the agent list.
+ */
 const APPS = [
-  { name: "mastra", args: ["--framework", "mastra", "--runner", "server", "--hosts", "node,cloudflare", "--store", "libsql", "--extras", "task"] },
-  { name: "mastra-pg", args: ["--framework", "mastra", "--runner", "server", "--hosts", "vercel", "--store", "postgres", "--provider", "anthropic"] },
-  { name: "mastra-engine", args: ["--framework", "mastra", "--runner", "engine", "--hosts", "node,vercel", "--extras", "auth"] },
-  { name: "ai-sdk-engine", args: ["--framework", "ai-sdk", "--runner", "engine", "--hosts", "node,cloudflare,vercel,netlify,lambda", "--extras", "task,auth"] },
-  { name: "ai-sdk-server", args: ["--framework", "ai-sdk", "--runner", "server", "--hosts", "node,cloudflare", "--provider", "google", "--extras", "auth"] },
-  { name: "langgraph", args: ["--framework", "langgraph", "--hosts", "node,cloudflare", "--provider", "anthropic"] },
-  { name: "openai-agents", args: ["--framework", "openai-agents", "--hosts", "node,lambda"] },
-  { name: "define-agent", args: ["--framework", "agent-unit", "--hosts", "node,cloudflare,vercel", "--extras", "task"] },
-  { name: "hono", args: ["--framework", "hono", "--hosts", "node,bun,deno"] },
+  { name: "mastra", args: ["--framework", "mastra", "--runner", "server", "--hosts", "node,cloudflare", "--store", "libsql", "--extras", "task"], smoke: ["/api/agents", '"assistant"'] },
+  { name: "mastra-pg", args: ["--framework", "mastra", "--runner", "server", "--hosts", "vercel", "--store", "postgres", "--provider", "anthropic"], smoke: ["/health", ""] },
+  { name: "mastra-engine", args: ["--framework", "mastra", "--runner", "engine", "--hosts", "node,vercel", "--extras", "auth"], smoke: ["/agents", '"assistant"'] },
+  { name: "ai-sdk-engine", args: ["--framework", "ai-sdk", "--runner", "engine", "--hosts", "node,cloudflare,vercel,netlify,lambda", "--extras", "task,auth"], smoke: ["/agents", '"refund"'] },
+  { name: "ai-sdk-server", args: ["--framework", "ai-sdk", "--runner", "server", "--hosts", "node,cloudflare", "--provider", "google", "--extras", "auth"], smoke: ["/", '"ok":true'] },
+  { name: "langgraph", args: ["--framework", "langgraph", "--hosts", "node,cloudflare", "--provider", "anthropic"], smoke: ["/agents", '"refund"'] },
+  { name: "openai-agents", args: ["--framework", "openai-agents", "--hosts", "node,lambda"], smoke: ["/agents", '"refund"'] },
+  { name: "define-agent", args: ["--framework", "agent-unit", "--hosts", "node,cloudflare,vercel", "--extras", "task"], smoke: ["/agents", '"refund"'] },
+  { name: "hono", args: ["--framework", "hono", "--hosts", "node,bun,deno"], smoke: ["/hello", '"hello":"world"'] },
 ];
+
+/** What a new user fills in from .env.example: placeholders, since no request reaches a model. */
+const ENV = {
+  OPENAI_API_KEY: "sk-check-init",
+  ANTHROPIC_API_KEY: "sk-check-init",
+  GOOGLE_GENERATIVE_AI_API_KEY: "check-init",
+  API_TOKEN: "check-init",
+  DATABASE_URL: "postgres://127.0.0.1:1/check-init",
+};
+
+const freePort = () =>
+  new Promise((resolve, reject) => {
+    const server = createServer().once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+
+/** Starts the app's Node build and checks the first answer to `path` contains `expected`. */
+async function smoke(root, [path, expected]) {
+  const port = await freePort();
+  const child = spawn(process.execPath, [join(root, ".output/server/index.mjs")], {
+    cwd: root,
+    env: { ...process.env, ...ENV, PORT: String(port), NITRO_PORT: String(port), HOST: "127.0.0.1" },
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  let output = "";
+  child.stdout.on("data", (chunk) => (output += chunk));
+  child.stderr.on("data", (chunk) => (output += chunk));
+  let exited = false;
+  child.once("exit", () => (exited = true));
+  const tail = () => output.trim().split("\n").slice(-20).join("\n");
+  try {
+    for (const deadline = Date.now() + 30_000; ; ) {
+      if (exited) throw new Error(`its Node build exited before answering:\n${tail()}`);
+      if (Date.now() > deadline) throw new Error(`its Node build did not answer ${path} within 30s:\n${tail()}`);
+      // Polls until the server accepts the connection; the first answer is the one checked.
+      const response = await fetch(`http://127.0.0.1:${port}${path}`, { headers: { authorization: `Bearer ${ENV.API_TOKEN}` } }).catch(() => undefined);
+      if (response) {
+        const body = await response.text();
+        if (!response.ok || !body.includes(expected)) throw new Error(`GET ${path} on its Node build answered ${response.status}: ${body.slice(0, 300)}`);
+        return `GET ${path} ${response.status}`;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 100));
+    }
+  } finally {
+    child.kill("SIGKILL");
+  }
+}
 
 /** Packages that must resolve to one copy: a second one breaks the framework's own `instanceof` checks. */
 const SINGLE = ["agent-unit", "@agent-unit/runtime", "@mastra/core", "@langchain/core", "@langchain/langgraph", "@openai/agents-core", "ai", "zod"];
@@ -81,8 +137,11 @@ try {
       for (const build of builds.length > 1 ? builds.filter((script) => script !== "build") : builds) step(`npm run ${build}`, "npm", ["run", build]);
       const duplicated = SINGLE.map((name) => [name, [...versions(root, name)]]).filter(([, found]) => found.length > 1);
       if (duplicated.length) throw new Error(`more than one copy of ${duplicated.map(([name, found]) => `${name} (${found.join(", ")})`).join(", ")}`);
+      // The Node build last, so its .output is the one served (Workers, Bun and Deno builds use the same directory).
+      step("node build", "npx", ["--no-install", "agent-unit", "build", "--preset", "node-server"]);
+      const answered = await smoke(root, app.smoke);
       const resolved = ["@mastra/core", "@langchain/core", "@openai/agents", "ai", "hono"].flatMap((name) => [...versions(root, name)].map((version) => `${name}@${version}`));
-      console.log(`check-init: ${app.name} installs, typechecks and builds for ${builds.length > 1 ? builds.length - 1 : 1} host(s)${resolved.length ? ` (${resolved.join(", ")})` : ""}`);
+      console.log(`check-init: ${app.name} installs, typechecks, builds for ${builds.length > 1 ? builds.length - 1 : 1} host(s) and answers ${answered}${resolved.length ? ` (${resolved.join(", ")})` : ""}`);
     } catch (error) {
       failures.push(app.name);
       console.error(`check-init: ${app.name}: ${error.message}`);
