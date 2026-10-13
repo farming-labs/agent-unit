@@ -1,6 +1,6 @@
 {
   "name": "create-agent-unit",
-  "version": "0.1.15",
+  "version": "0.2.0",
   "description": "Start a new agent-unit app: npm create agent-unit",
   "license": "MIT",
   "author": "Farming Labs",
