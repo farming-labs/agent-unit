@@ -25,10 +25,10 @@ const APPS = [
   { name: "mastra-pg", args: ["--framework", "mastra", "--runner", "server", "--hosts", "vercel", "--store", "postgres", "--provider", "anthropic"], smoke: ["/health", ""] },
   { name: "mastra-engine", args: ["--framework", "mastra", "--runner", "engine", "--hosts", "node,vercel", "--extras", "auth"], smoke: ["/agents", '"assistant"'] },
   { name: "ai-sdk-engine", args: ["--framework", "ai-sdk", "--runner", "engine", "--hosts", "node,cloudflare,vercel,netlify,lambda", "--extras", "task,auth"], smoke: ["/agents", '"refund"'] },
-  { name: "ai-sdk-server", args: ["--framework", "ai-sdk", "--runner", "server", "--hosts", "node,cloudflare", "--provider", "google", "--extras", "auth"], smoke: ["/", '"ok":true'] },
+  { name: "ai-sdk-server", args: ["--framework", "ai-sdk", "--runner", "server", "--hosts", "node,cloudflare", "--provider", "google", "--extras", "auth,background,test"], smoke: ["/", '"ok":true'] },
   { name: "langgraph", args: ["--framework", "langgraph", "--hosts", "node,cloudflare", "--provider", "anthropic"], smoke: ["/agents", '"refund"'] },
   { name: "openai-agents", args: ["--framework", "openai-agents", "--hosts", "node,lambda"], smoke: ["/agents", '"refund"'] },
-  { name: "define-agent", args: ["--framework", "agent-unit", "--hosts", "node,cloudflare,vercel", "--extras", "task"], smoke: ["/agents", '"refund"'] },
+  { name: "define-agent", args: ["--framework", "agent-unit", "--hosts", "node,cloudflare,vercel", "--extras", "task,test"], smoke: ["/agents", '"refund"'] },
   { name: "hono", args: ["--framework", "hono", "--hosts", "node,bun,deno"], smoke: ["/hello", '"hello":"world"'] },
 ];
 
@@ -133,6 +133,8 @@ try {
 
       step("npm install", "npm", ["install", "--no-audit", "--no-fund", "--loglevel=error"]);
       step("typecheck", "npm", ["run", "typecheck"]);
+      // The app's own test, on the vitest npm resolves.
+      if (manifest.scripts.test) step("npm test", "npm", ["test"]);
       const builds = Object.keys(manifest.scripts).filter((script) => /^build(:|$)/.test(script));
       for (const build of builds.length > 1 ? builds.filter((script) => script !== "build") : builds) step(`npm run ${build}`, "npm", ["run", build]);
       const duplicated = SINGLE.map((name) => [name, [...versions(root, name)]]).filter(([, found]) => found.length > 1);

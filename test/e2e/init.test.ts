@@ -119,6 +119,67 @@ describe("agent-unit init: an AI SDK agent on Hono for Node and Vercel", () => {
   });
 });
 
+describe("agent-unit init: the extras", () => {
+  const outs: string[] = [];
+  afterAll(() => cleanup(...outs));
+
+  /** Runs the app's own `npm test` (vitest, from agent-unit's node_modules). */
+  function vitest(root: string) {
+    const result = spawnSync(process.execPath, [join(ROOT, "node_modules/vitest/vitest.mjs"), "run", "--root", root], { encoding: "utf8", env: { ...process.env, CI: "1" } });
+    expect(result.status, result.stdout + result.stderr).toBe(0);
+    return result.stdout.replace(/\x1b\[[0-9;]*m/g, "");
+  }
+
+  it("a defineAgent app's test runs offline", async () => {
+    const root = await generate("extras-agent", { framework: "agent-unit", hosts: "node", extras: "test" });
+    typecheck(root);
+    expect(vitest(root)).toMatch(/Tests\s+2 passed/);
+  });
+
+  it("an AI SDK server's test covers its routes with auth and background work", async () => {
+    const root = await generate("extras-ai-sdk", { framework: "ai-sdk", runner: "server", hosts: "node", provider: "openai", extras: "auth,background,test" });
+    typecheck(root);
+    expect(vitest(root)).toMatch(/Tests\s+3 passed/);
+  });
+
+  it("a Hono server forwards feedback after it answers, from its Node build", async () => {
+    const root = await generate("extras-hono", { framework: "hono", hosts: "node", extras: "background,test" });
+    typecheck(root);
+    expect(vitest(root)).toMatch(/Tests\s+3 passed/);
+
+    // The webhook answers only once the test lets it: the 202 has to come first.
+    let release!: () => void;
+    const held = new Promise<void>((resolve) => (release = resolve));
+    const received: unknown[] = [];
+    const webhook = createServer(async (request, response) => {
+      let body = "";
+      for await (const chunk of request) body += chunk;
+      received.push(JSON.parse(body));
+      await held;
+      response.writeHead(204).end();
+    });
+    await new Promise<void>((resolve) => webhook.listen(0, "127.0.0.1", resolve));
+    const out = tempDir("init-out");
+    outs.push(out);
+    await buildFixture(root, "node-server", out);
+    const server = await startServer(process.execPath, [join(out, "server/index.mjs")], {
+      cwd: root,
+      env: { FEEDBACK_WEBHOOK_URL: `http://127.0.0.1:${(webhook.address() as AddressInfo).port}/hook` },
+      readyPath: "/",
+    });
+    try {
+      const response = await fetch(`${server.url}/feedback`, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ rating: 5 }) });
+      expect(response.status).toBe(202);
+      for (let i = 0; i < 100 && !received.length; i++) await new Promise((resolve) => setTimeout(resolve, 50));
+      expect(received).toEqual([{ rating: 5 }]);
+    } finally {
+      release();
+      await server.stop();
+      await new Promise((resolve) => webhook.close(resolve));
+    }
+  });
+});
+
 describe("agent-unit init: the other choices", () => {
   const outs: string[] = [];
   afterAll(() => cleanup(...outs));
