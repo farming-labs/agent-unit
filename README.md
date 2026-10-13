@@ -482,6 +482,14 @@ They are merged into what agent-unit generates, never in its place: the names `A
 reserved, and the build says so if you reuse one. (`nitro.cloudflare` is the same setting and still
 works.)
 
+agent-unit's migration comes before yours. Wrangler applies only the migrations listed after the
+last one a Worker has applied, so a Worker that applied migrations of its own before taking this
+runtime lists a bare `{ tag: "agent-unit-v1" }` after them, and agent-unit's migration goes there:
+
+```ts
+cloudflare: { wrangler: { migrations: [{ tag: "v1", new_sqlite_classes: ["Notes"] }, { tag: "agent-unit-v1" }] } },
+```
+
 In a Worker you write yourself:
 
 ```ts

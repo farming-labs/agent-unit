@@ -67,6 +67,27 @@ export const WebSocketServer = unavailable("WebSocketServer");
 export const createWebSocketStream = unavailable("createWebSocketStream");
 `;
 
+/**
+ * agent-unit's Durable Objects migration among the app's. Wrangler applies the migrations listed after
+ * the last one a Worker has applied, so the order has to match the Worker's history: agent-unit's goes
+ * first unless the app places it, with a bare `{ tag: "agent-unit-v1" }` in its own list (a Worker
+ * that applied migrations of its own before taking agent-unit's runtime lists it after them).
+ */
+export function orderMigrations(ours: { tag: string }[], app: { tag: string }[]): { tag: string }[] {
+  const reserved = new Set(ours.map((migration) => migration.tag).concat("agent-unit-v1"));
+  const placed = app.filter((migration) => reserved.has(migration.tag));
+  for (const migration of placed) {
+    if (Object.keys(migration).length !== 1) {
+      throw new Error(
+        `agent-unit: the migration tag "${migration.tag}" is reserved by agent-unit. Use another tag, or list a bare { tag: "${migration.tag}" } to place agent-unit's migration there.`,
+      );
+    }
+  }
+  if (!placed.length) return [...ours, ...app];
+  if (!ours.length) throw new Error(`agent-unit: { tag: "agent-unit-v1" } places agent-unit's Durable Objects migration, which only the "durable-objects" runtime has.`);
+  return app.flatMap((migration) => (reserved.has(migration.tag) ? ours : [migration]));
+}
+
 function cloudflareConfig(root: string, genDir: string, durable: boolean, user: CloudflareOptions = {}): CloudflareOptions {
   const wrangler: Record<string, unknown> = { compatibility_date: "2025-09-15" };
   // Framework SDKs import Node modules at load that Workers only provide (as stubs) from compatibility
@@ -105,11 +126,8 @@ function cloudflareConfig(root: string, genDir: string, durable: boolean, user: 
       throw new Error(`agent-unit: the Durable Object binding "${binding.name}" (${binding.class_name}) is reserved by agent-unit; use another name.`);
     }
   }
-  if (appMigrations.some((migration) => migrations.some((reserved) => reserved.tag === migration.tag))) {
-    throw new Error(`agent-unit: the migration tag "agent-unit-v1" is reserved by agent-unit; use another tag.`);
-  }
   const allObjects = [...objects, ...appObjects];
-  const allMigrations = [...migrations, ...appMigrations];
+  const allMigrations = orderMigrations(migrations, appMigrations);
   return {
     ...user,
     ...(exports ? { exports } : {}),
@@ -125,6 +143,35 @@ function cloudflareConfig(root: string, genDir: string, durable: boolean, user: 
 
 /** Files Nitro picks up on its own as the Worker's extra exports, when `cloudflare.exports` is not set. */
 const NITRO_EXPORTS = ["exports.cloudflare.ts", "exports.cloudflare.mts", "exports.cloudflare.js", "exports.cloudflare.mjs"];
+
+/**
+ * The app's own Nitro options over agent-unit's. Most replace agent-unit's value, but these are merged,
+ * so an app's setting never silently drops agent-unit's: `alias`, `experimental` (tasks stay on while
+ * agent-unit schedules any), and `tasks` and `scheduledTasks` (the run sweep and the app's tasks run
+ * beside the app's own Nitro tasks).
+ */
+export function withUserNitro(
+  ours: { experimental: { tasks: boolean }; tasks: Record<string, unknown>; scheduledTasks: Record<string, string[]>; alias: Record<string, string> },
+  user: Record<string, unknown>,
+): Record<string, unknown> {
+  const theirs = user as {
+    alias?: Record<string, string>;
+    experimental?: Record<string, unknown>;
+    tasks?: Record<string, unknown>;
+    scheduledTasks?: Record<string, string | string[]>;
+  };
+  const scheduledTasks: Record<string, string[]> = Object.fromEntries(Object.entries(ours.scheduledTasks).map(([cron, names]) => [cron, [...names]]));
+  for (const [cron, names] of Object.entries(theirs.scheduledTasks ?? {})) {
+    scheduledTasks[cron] = [...new Set([...(scheduledTasks[cron] ?? []), ...[names].flat()])];
+  }
+  return {
+    ...user,
+    alias: { ...ours.alias, ...theirs.alias },
+    experimental: { ...theirs.experimental, tasks: ours.experimental.tasks || Boolean(theirs.experimental?.tasks) },
+    tasks: { ...ours.tasks, ...theirs.tasks },
+    scheduledTasks,
+  };
+}
 
 export interface BuildOptions {
   root?: string;
@@ -202,13 +249,9 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     ...(options.outDir ? { output: { dir: resolve(project.root, options.outDir) } } : {}),
     serverEntry: { handler: entry, format: "web" },
     ...engine?.nitro,
-    experimental: { tasks: Object.keys(tasks).length > 0 },
-    tasks,
-    scheduledTasks,
     ...(cloudflare ? { cloudflare: cloudflareConfig(project.root, genDir, durable, userCloudflare) } : {}),
     logLevel: 1,
-    ...userNitro,
-    alias: { ...alias, ...(userNitro as { alias?: Record<string, string> }).alias },
+    ...withUserNitro({ experimental: { tasks: Object.keys(tasks).length > 0 }, tasks, scheduledTasks, alias }, userNitro),
   } as never);
   const outDir = nitro.options.output.dir;
   // Some presets (Netlify, Stormkit) put static files beside the project, in \`<root>/dist\`. With an

@@ -153,3 +153,24 @@ export default {
     expect(() => mastra({ entry: "./agents.ts" }).entry(context(withInstance))).toThrow(/Install @mastra\/hono and hono: npm install @mastra\/hono hono/);
   });
 });
+
+describe("agent-unit dev with a framework's agent", () => {
+  it("runs an AI SDK agent exported as the default, as the build does", async () => {
+    const dev = await startDev({ root: join(import.meta.dirname, "fixtures/dev-ai-sdk"), port: 0, watch: false, logger: quiet });
+    try {
+      const response = await fetch(`${dev.url}agents/assistant/runs`, {
+        method: "POST",
+        headers: { "content-type": "application/json", accept: "text/event-stream" },
+        body: JSON.stringify({ input: { prompt: "hi" } }),
+      });
+      const events = (await response.text())
+        .split("\n")
+        .filter((line) => line.startsWith("data: "))
+        .map((line) => JSON.parse(line.slice(6)) as { type: string; result?: unknown; message?: string });
+      expect(events.at(-1)).toMatchObject({ type: "RUN_FINISHED", result: "hello from dev" });
+    } finally {
+      await dev.close();
+    }
+  });
+});
+

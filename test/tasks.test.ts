@@ -59,3 +59,32 @@ export default ({ name }: { name: string }) => {
     expect(scheduledTasks).toEqual({ "0 * * * *": ["a", "b"], "0 3 * * *": ["c"] });
   });
 });
+
+describe("the app's own nitro options beside agent-unit's", () => {
+  it("keeps the run sweep and the app's tasks when the app sets nitro.experimental, tasks or scheduledTasks", async () => {
+    const { withUserNitro } = await import("../src/build/nitro");
+    const ours = {
+      experimental: { tasks: true },
+      tasks: { "agent-unit:sweep": { handler: "sweep.mjs" }, digest: { handler: "digest.mjs" } },
+      scheduledTasks: { "* * * * *": ["agent-unit:sweep"], "0 8 * * *": ["digest"] },
+      alias: { ws: "ws.mjs" },
+    };
+    const merged = withUserNitro(ours, {
+      experimental: { asyncContext: true },
+      tasks: { cleanup: { handler: "cleanup.mjs" } },
+      scheduledTasks: { "0 8 * * *": "cleanup", "0 3 * * *": ["cleanup"] },
+      alias: { typescript: "typescript" },
+      minify: true,
+    });
+    expect(merged).toEqual({
+      minify: true,
+      experimental: { asyncContext: true, tasks: true },
+      tasks: { "agent-unit:sweep": { handler: "sweep.mjs" }, digest: { handler: "digest.mjs" }, cleanup: { handler: "cleanup.mjs" } },
+      scheduledTasks: { "* * * * *": ["agent-unit:sweep"], "0 8 * * *": ["digest", "cleanup"], "0 3 * * *": ["cleanup"] },
+      alias: { ws: "ws.mjs", typescript: "typescript" },
+    });
+    // An app that turns tasks on itself keeps them on with nothing of agent-unit's scheduled.
+    expect(withUserNitro({ ...ours, experimental: { tasks: false } }, { experimental: { tasks: true } }).experimental).toEqual({ tasks: true });
+  });
+});
+

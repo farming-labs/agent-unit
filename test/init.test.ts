@@ -28,7 +28,8 @@ describe("the files agent-unit init writes", () => {
     expect(files["agent-unit.config.ts"]).toContain(`d1_databases: [{ binding: "DB", database_name: "refund-desk"`);
     expect(files["src/mastra/index.ts"]).toContain(`model: { id: "anthropic/claude-sonnet-4-5", apiKey: env.ANTHROPIC_API_KEY }`);
     expect(files["src/storage.d1.ts"]).toContain("binding: env.DB");
-    expect(files["src/storage.libsql.ts"]).toContain("env.MASTRA_DB_URL");
+    // `cp .env.example .env` leaves MASTRA_DB_URL empty: that has to fall back to the local file too.
+    expect(files["src/storage.libsql.ts"]).toContain(`url: env.MASTRA_DB_URL || "file:./mastra.db"`);
     expect(env).toEqual(["ANTHROPIC_API_KEY", "MASTRA_DB_URL", "MASTRA_DB_AUTH_TOKEN"]);
     expect(files["README.md"]).toContain("npx wrangler d1 create refund-desk");
   });
@@ -333,6 +334,14 @@ describe("agent-unit init in an existing app", () => {
     expect(JSON.parse(merge.files["package.json"]!).dependencies.ai).toBe("^7.0.0");
     expect(merge.kept).toEqual(["agents/assistant.ts"]);
     expect(merge.created).toEqual(["agent-unit.config.ts", ".gitignore"]);
+  });
+
+  it("adds the dev tools an extra needs, but not a TypeScript setup", async () => {
+    const root = app({ "package.json": JSON.stringify({ name: "@acme/my-app", scripts: { test: "jest" } }) });
+    await init({ dir: root, framework: "ai-sdk", runner: "engine", hosts: "node", extras: "test", yes: true, install: false, version: "0.1.16", logger: quiet });
+    const pkg = JSON.parse(read(root, "package.json"));
+    expect(pkg.devDependencies).toEqual({ vitest: expect.any(String) });
+    expect(pkg.scripts).toMatchObject({ test: "jest", "agent-unit:test": "vitest run" });
   });
 
   it("takes the framework an app already uses as the default", () => {

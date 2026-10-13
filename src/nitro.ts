@@ -28,7 +28,9 @@ export function agentUnit(options: AgentUnitNitroOptions = {}): NitroModule {
       const loaded = await loadProject(options.root ?? nitro.options.rootDir);
       const project = { ...loaded, config: configForPreset(loaded.config, preset) };
       const basePath = (options.basePath ?? project.config.basePath ?? "/agents").replace(/\/+$/, "");
-      const dir = join(nitro.options.buildDir, "agent-unit");
+      // A directory per preset: Nitro's prerenderer runs this setup again as its own `nitro-prerender`
+      // instance in the same build directory, before the production bundle is written.
+      const dir = join(nitro.options.buildDir, "agent-unit", preset);
       // The app's own `agent-unit` mount wins, so runs can live in storage the app already configures.
       const storage = nitro.options.storage["agent-unit"] ? undefined : resolveStorage(project, preset, (message) => nitro.logger.warn(message));
       generateEntry(project, dir, { budgetMs: resolveBudget(project, preset), basePath, preset, storage });

@@ -79,7 +79,7 @@ describe("per-preset settings in the agent-unit/nitro module", () => {
   async function setup(root: string, preset: string, dev = false, storage: Record<string, unknown> = {}) {
     const options = { preset, dev, rootDir: root, buildDir: join(root, ".nitro"), storage, handlers: [], experimental: {}, tasks: {}, scheduledTasks: {} };
     await agentUnit().setup!({ options, logger: { warn() {} } } as never);
-    const runtime = readFileSync(join(root, ".nitro/agent-unit/runtime.mjs"), "utf8");
+    const runtime = readFileSync(join(root, ".nitro/agent-unit", preset, "runtime.mjs"), "utf8");
     return { options: options as typeof options & { scheduledTasks: Record<string, unknown> }, runtime };
   }
 
@@ -100,5 +100,14 @@ describe("per-preset settings in the agent-unit/nitro module", () => {
     const { runtime, options } = await setup(root, "node-server", false, { "agent-unit": { driver: "redis" } });
     expect(runtime).not.toContain("storageDriver");
     expect(options.storage).toEqual({ "agent-unit": { driver: "redis" } });
+  });
+
+  it("keeps the production runtime when Nitro's prerenderer sets the module up again", async () => {
+    // No storage in the config: the production preset's default (disk on Node) is the one to keep.
+    const root = app(`{}`);
+    const { runtime } = await setup(root, "node-server");
+    expect(runtime).toContain(`"driver":"fs-lite"`);
+    await setup(root, "nitro-prerender");
+    expect(readFileSync(join(root, ".nitro/agent-unit/node-server/runtime.mjs"), "utf8")).toBe(runtime);
   });
 });

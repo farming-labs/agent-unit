@@ -221,6 +221,10 @@ function mergeManifest(current: string, planned: string, renamed: Record<string,
   const plan = JSON.parse(planned) as Manifest & { scripts: Record<string, string>; imports?: Record<string, unknown> };
   const has = (name: string) => [app.dependencies, app.devDependencies, app.peerDependencies].some((deps) => deps?.[name] !== undefined);
   for (const [name, range] of Object.entries(plan.dependencies ?? {})) if (!has(name)) app.dependencies = { ...app.dependencies, [name]: range };
+  // Dev tools the extras need (vitest for the test), but not a TypeScript setup: that one is the app's.
+  for (const [name, range] of Object.entries(plan.devDependencies ?? {})) {
+    if (!has(name) && name !== "typescript" && name !== "@types/node") app.devDependencies = { ...app.devDependencies, [name]: range };
+  }
   for (const [name, command] of Object.entries(plan.scripts)) {
     if (name === "typecheck") continue;
     const scripts = (app.scripts ??= {});
@@ -914,7 +918,7 @@ import { env } from "agent-unit/env";
 
 // Mastra's LibSQL store${workers ? " on every host but Workers" : ""}: a local file by default. Serverless hosts lose
 // local files between invocations, so point MASTRA_DB_URL at a hosted database (Turso) there.
-export const storage = new LibSQLStore({ id: "${answers.name}", url: env.MASTRA_DB_URL ?? "file:./mastra.db", authToken: env.MASTRA_DB_AUTH_TOKEN });
+export const storage = new LibSQLStore({ id: "${answers.name}", url: env.MASTRA_DB_URL || "file:./mastra.db", authToken: env.MASTRA_DB_AUTH_TOKEN });
 `;
   if (workers) {
     files["src/storage.d1.ts"] = `import { D1Store } from "@mastra/cloudflare-d1";
