@@ -218,10 +218,7 @@ npx agent-unit build --preset <preset>
 Cloudflare builds turn on Workers' stub modules for `child_process`, `readline`, `worker_threads`
 and `tty`, and replace the Node `ws` package with the built-in WebSocket: Mastra and the OpenAI
 Agents SDK import these when they load, and one missing module stops the whole Worker from starting.
-They also leave out the TypeScript compiler, which Mastra's server imports only to check project
-files on disk: it was 1.4 MB gzipped of a 4.7 MB Mastra Worker. To bundle it anyway, set
-`nitro: { alias: { typescript: "typescript" } }`. Your own `compatibility_flags` and `alias`
-settings are kept.
+Your own `compatibility_flags` and `alias` settings are kept.
 
 Any other [Nitro preset](https://nitro.build/deploy) works too. Serverless hosts need shared
 storage, because their filesystem does not survive between invocations; the build warns when one is
@@ -366,6 +363,10 @@ import { env } from "agent-unit/env";
 
 export const storage = new D1Store({ id: "app", binding: env.DB });
 ```
+
+On Workers, the Mastra preset leaves out the TypeScript compiler, which Mastra's server imports
+only to check project files on disk: it was 1.4 MB gzipped of a 4.7 MB Worker. To bundle it
+anyway, set `nitro: { alias: { typescript: "typescript" } }`.
 
 Mastra's D1 store cannot de-duplicate two simultaneous resumes of the same workflow run (Mastra
 logs a warning saying so); stores with atomic updates, such as LibSQL and Postgres, can. Other
