@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildFixture, cleanup, collect, createAgentClient, prepareFixture, startServer, tempDir, type RunningServer } from "./helpers";
+import { buildFixture, cleanup, collect, createAgentClient, freePort, prepareFixture, startServer, tempDir, type RunningServer } from "./helpers";
 import { vercel, workerd, writeDurableConfig } from "./hosts";
 
 // `presets` in the config: one app, one config, no environment variables, and each host gets its own
@@ -46,7 +46,7 @@ describe("per-preset settings", () => {
     expect(result).toMatchObject({ preset: "cloudflare-module", runtime: "durable-objects", storage: { driver: "durable-objects" } });
     const disk = join(dir, "disk");
     mkdirSync(disk, { recursive: true });
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const port = await freePort();
     const { config, wrangler } = writeDurableConfig(dir, disk, port);
     expect(wrangler.durable_objects.bindings).toHaveLength(2);
     const server = await startServer(workerd!, ["serve", config], { cwd: dir, port });

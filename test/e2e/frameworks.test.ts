@@ -2,7 +2,7 @@ import { mkdirSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildFixture, cleanup, collect, createAgentClient, hasBinary, prepareFixture, startServer, tempDir, type RunningServer } from "./helpers";
+import { buildFixture, cleanup, collect, createAgentClient, freePort, hasBinary, prepareFixture, startServer, tempDir, type RunningServer } from "./helpers";
 import { lambda, netlify, vercel, workerd, writeDurableConfig, type FunctionHost } from "./hosts";
 
 // Every built-in adapter on every host, through the real production bundle: start a run that pauses
@@ -89,7 +89,7 @@ const durableObjects: Host = {
   async launch(out) {
     const disk = join(out, "do-disk");
     mkdirSync(disk, { recursive: true });
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const port = await freePort();
     const { config } = writeDurableConfig(out, disk, port);
     const start = () => startServer(workerd!, ["serve", config], { cwd: out, port });
     let server = await start();

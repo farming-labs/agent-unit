@@ -1,6 +1,6 @@
 import { mkdirSync } from "node:fs";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildFixture, cleanup, collect, createAgentClient, prepareFixture, startServer, tempDir, waitForStatus, type RunningServer } from "./helpers";
+import { buildFixture, cleanup, collect, createAgentClient, freePort, prepareFixture, startServer, tempDir, waitForStatus, type RunningServer } from "./helpers";
 import { workerd, writeDurableConfig } from "./hosts";
 
 // The cloudflare-module build with runtime "durable-objects", in workerd with Durable Objects kept on
@@ -29,7 +29,7 @@ describe.skipIf(!workerd)("Durable Objects runtime in workerd", () => {
     disk = tempDir("cf-durable-disk");
     mkdirSync(disk, { recursive: true });
     result = await buildFixture(root, "cloudflare-module", out, { AGENT_UNIT_RUNTIME: "durable-objects" });
-    port = 20_000 + Math.floor(Math.random() * 20_000);
+    port = await freePort();
     ({ config, wrangler } = writeDurableConfig(out, disk, port, { API_TOKEN: TOKEN, GREETING: "hey" }));
     server = await start();
   });
@@ -99,7 +99,7 @@ describe.skipIf(!workerd)("Durable Objects runtime in workerd: retention", () =>
     out = tempDir("cf-retention-out");
     disk = tempDir("cf-retention-disk");
     await buildFixture(root, "cloudflare-module", out, { AGENT_UNIT_RUNTIME: "durable-objects", AGENT_UNIT_RETENTION: "1s" });
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const port = await freePort();
     const { config } = writeDurableConfig(out, disk, port, { API_TOKEN: TOKEN, GREETING: "hey", AGENT_UNIT_RETENTION: "1s" });
     server = await startServer(workerd!, ["serve", config], { cwd: out, port, readyPath: "/.well-known/agent.json" });
   });
