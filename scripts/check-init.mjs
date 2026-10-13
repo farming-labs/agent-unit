@@ -23,8 +23,8 @@ const run = (command, args, cwd) => execFileSync(command, args, { cwd, encoding:
 const APPS = [
   { name: "mastra", args: ["--framework", "mastra", "--runner", "server", "--hosts", "node,cloudflare", "--store", "libsql", "--extras", "task"], smoke: ["/api/agents", '"assistant"'] },
   { name: "mastra-pg", args: ["--framework", "mastra", "--runner", "server", "--hosts", "vercel", "--store", "postgres", "--provider", "anthropic"], smoke: ["/health", ""] },
-  { name: "mastra-engine", args: ["--framework", "mastra", "--runner", "engine", "--hosts", "node,vercel", "--extras", "auth"], smoke: ["/agents", '"assistant"'] },
-  { name: "ai-sdk-engine", args: ["--framework", "ai-sdk", "--runner", "engine", "--hosts", "node,cloudflare,vercel,netlify,lambda", "--extras", "task,auth"], smoke: ["/agents", '"refund"'] },
+  { name: "mastra-engine", args: ["--framework", "mastra", "--runner", "engine", "--hosts", "node,vercel", "--extras", "auth,test"], smoke: ["/agents", '"assistant"'] },
+  { name: "ai-sdk-engine", args: ["--framework", "ai-sdk", "--runner", "engine", "--hosts", "node,cloudflare,vercel,netlify,lambda", "--extras", "task,auth,test"], smoke: ["/agents", '"refund"'] },
   { name: "ai-sdk-server", args: ["--framework", "ai-sdk", "--runner", "server", "--hosts", "node,cloudflare", "--provider", "google", "--extras", "auth,background,test"], smoke: ["/", '"ok":true'] },
   { name: "langgraph", args: ["--framework", "langgraph", "--hosts", "node,cloudflare", "--provider", "anthropic"], smoke: ["/agents", '"refund"'] },
   { name: "openai-agents", args: ["--framework", "openai-agents", "--hosts", "node,lambda"], smoke: ["/agents", '"refund"'] },

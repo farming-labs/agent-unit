@@ -53,7 +53,7 @@ export const EXTRAS = {
   task: { label: "A scheduled task", hint: "runs every day with the host's own scheduler" },
   auth: { label: "Bearer-token auth", hint: "API_TOKEN protects the agent route" },
   background: { label: "Background work", hint: "a route that answers first and finishes its work after, with waitUntil" },
-  test: { label: "A test", hint: "a vitest test that runs offline: npm test" },
+  test: { label: "A test", hint: "a vitest test that runs offline, on a scripted model where the agent calls one: npm test" },
 } as const;
 
 export type InitFramework = keyof typeof FRAMEWORKS;
@@ -95,8 +95,9 @@ export function extrasFor(framework: InitFramework, runner: InitRunner): InitExt
   if (framework === "mastra" && runner === "server") return ["task"];
   // A server agent-unit writes (Hono, or an AI SDK agent on Hono) has routes to add work to and test.
   if (runner === "server") return ["task", "auth", "background", "test"];
-  // Of the engine's agents, only defineAgent's run offline; the others call a model.
-  return framework === "agent-unit" ? ["task", "auth", "test"] : ["task", "auth"];
+  // defineAgent's agent runs offline as it is; AI SDK and Mastra agents take a scripted AI SDK model in
+  // the test. LangGraph and OpenAI Agents models have no scripted stand-in here yet.
+  return framework === "agent-unit" || framework === "ai-sdk" || framework === "mastra" ? ["task", "auth", "test"] : ["task", "auth"];
 }
 
 // Ranges start at the versions agent-unit's own tests run against.
@@ -366,7 +367,9 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string, app: Exi
   if (engine) Object.assign(files, engineAgent(answers));
   else if (framework === "mastra") Object.assign(files, ownMastra ? {} : mastraFiles(answers, workers));
   else if (!app.server) files["src/server.ts"] = serverFile(framework as "ai-sdk" | "hono", provider, auth, background);
-  if (test) files[engine ? "test/refund.test.ts" : "test/server.test.ts"] = engine ? AGENT_TEST : serverTest(framework as "ai-sdk" | "hono", auth, background);
+  // Engine agents on a model write their own test, beside the agent.
+  if (test && !engine) files["test/server.test.ts"] = serverTest(framework as "ai-sdk" | "hono", auth, background);
+  if (test && framework === "agent-unit") files["test/refund.test.ts"] = AGENT_TEST;
   if (task) {
     files["src/tasks/daily-summary.ts"] = `// Runs every day at 08:00 UTC: in-process on Node, Bun and Deno, a Cron Trigger on Workers, a Cron
 // Job on Vercel. \`npm run task\` runs it once now.
@@ -549,6 +552,60 @@ ${background ? `  afterEach(() => {
 `;
 }
 
+const modelAgentTest = (framework: "ai-sdk" | "mastra") => {
+  const adapter = framework === "mastra" ? "mastraAdapter" : "aiSdkAdapter";
+  return `import { ${adapter} } from "agent-unit/adapters/${framework}";
+import { createTestUnit } from "agent-unit/testing";
+import { MockLanguageModelV4 } from "ai/test";
+import { describe, expect, it } from "vitest";
+import { createAssistant } from "../agents/assistant";
+
+// The agent runs in memory on a scripted model, with no server and no API key: \`npm test\`.
+
+const usage = {
+  inputTokens: { total: 10, noCache: 10, cacheRead: undefined, cacheWrite: undefined },
+  outputTokens: { total: 5, text: 5, reasoning: undefined },
+};
+const stream = (parts: unknown[]) => ({
+  stream: new ReadableStream({
+    start(controller) {
+      for (const part of parts) controller.enqueue(part);
+      controller.close();
+    },
+  }),
+});
+
+/** Asks for the refund tool until the conversation holds its result, then answers. */
+const model = new MockLanguageModelV4({
+  doStream: async ({ prompt }) =>
+    prompt.some((message) => message.role === "tool")
+      ? stream([
+          { type: "stream-start", warnings: [] },
+          { type: "text-start", id: "t1" },
+          { type: "text-delta", id: "t1", delta: "Refunded o_42." },
+          { type: "text-end", id: "t1" },
+          { type: "finish", finishReason: { unified: "stop", raw: "stop" }, usage },
+        ])
+      : stream([
+          { type: "stream-start", warnings: [] },
+          { type: "tool-call", toolCallId: "call_1", toolName: "refund", input: JSON.stringify({ orderId: "o_42" }) },
+          { type: "finish", finishReason: { unified: "tool-calls", raw: "tool_calls" }, usage },
+        ]),
+});
+
+describe("assistant", () => {
+  it("asks a person before it refunds, then finishes", async () => {
+    // Builds find the framework's adapter on their own; a test unit is given it.
+    const unit = createTestUnit({ assistant: createAssistant(model) }, { adapters: [${adapter}] });
+    const parked = await unit.run("assistant", { prompt: "Please refund order o_42" });
+    expect(parked).toMatchObject({ status: "interrupted", interrupt: { name: "approve-refund", payload: { orderId: "o_42" } } });
+    const done = await unit.resume(parked.id, { approved: true });
+    expect(done).toMatchObject({ status: "completed", output: "Refunded o_42." });
+  });
+});
+`;
+};
+
 const INSTRUCTIONS = "You help customers with their orders. Keep answers short. Refund only with the refund tool.";
 
 function langgraphAgent(provider: (typeof PROVIDERS)[InitProvider]): string {
@@ -641,9 +698,11 @@ export default defineAgent({
   if (answers.framework === "langgraph") return { "agents/assistant.ts": langgraphAgent(provider) };
   if (answers.framework === "openai-agents") return { "agents/assistant.ts": openaiAgent() };
   const mastra = answers.framework === "mastra";
+  // With a test, the agent takes its model as an argument, so the test can give it a scripted one.
+  const factory = answers.extras.includes("test");
   const imports = mastra
     ? [`import { Agent } from "@mastra/core/agent";`, `import { createTool } from "@mastra/core/tools";`]
-    : [`import { tool, ToolLoopAgent } from "ai";`];
+    : [factory ? `import { type LanguageModel, tool, ToolLoopAgent } from "ai";` : `import { tool, ToolLoopAgent } from "ai";`];
   imports.push(
     `import { ${provider.create} } from "${provider.package}";`,
     `import { useRun } from "agent-unit";`,
@@ -655,12 +714,13 @@ export default defineAgent({
         const { approved } = await useRun().interrupt<{ approved: boolean }>("approve-refund", { orderId });
         return approved ? { status: "refunded", orderId } : { status: "declined", orderId };
       }`;
-  const body = mastra
-    ? `export default new Agent({
+  const model = factory ? "model" : `provider("${provider.model}")`;
+  const agent = mastra
+    ? `new Agent({
   id: "assistant",
   name: "Assistant",
   instructions: "${INSTRUCTIONS}",
-  model: provider("${provider.model}"),
+  ${factory ? "model" : `model: ${model}`},
   tools: {
     refund: createTool({
       id: "refund",
@@ -669,9 +729,9 @@ export default defineAgent({
       execute: ${execute},
     }),
   },
-});`
-    : `export default new ToolLoopAgent({
-  model: provider("${provider.model}"),
+})`
+    : `new ToolLoopAgent({
+  ${factory ? "model" : `model: ${model}`},
   instructions: "${INSTRUCTIONS}",
   tools: {
     refund: tool({
@@ -680,7 +740,16 @@ export default defineAgent({
       execute: ${execute},
     }),
   },
-});`;
+})`;
+  const modelType = mastra ? `ConstructorParameters<typeof Agent>[0]["model"]` : "LanguageModel";
+  const body = factory
+    ? `/** The agent on any model: the test gives it a scripted one. */
+export function createAssistant(model: ${modelType}) {
+  return ${agent.replaceAll("\n", "\n  ")};
+}
+
+export default createAssistant(provider("${provider.model}"));`
+    : `export default ${agent};`;
   return {
     "agents/assistant.ts": `${imports.join("\n")}
 
@@ -691,6 +760,7 @@ const provider = ${provider.create}({ apiKey: env.${provider.key} });
 
 ${body}
 `,
+    ...(factory ? { "test/assistant.test.ts": modelAgentTest(mastra ? "mastra" : "ai-sdk") } : {}),
   };
 }
 

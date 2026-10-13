@@ -630,6 +630,19 @@ expect(done.output).toBe("refunded");
 
 Pass the same `storage` to a second `createTestUnit` to test a restart.
 
+A framework's agent runs the same way, on a scripted model so the test needs no API key. Builds find
+the framework's adapter on their own; a test unit is given it:
+
+```ts
+import { aiSdkAdapter } from "agent-unit/adapters/ai-sdk";
+import { MockLanguageModelV4 } from "ai/test";
+
+const unit = createTestUnit({ assistant: createAssistant(new MockLanguageModelV4({ doStream })) }, { adapters: [aiSdkAdapter] });
+```
+
+`agent-unit init --extras test` writes such a test for AI SDK and Mastra agents, with the scripted
+model in it.
+
 ## Customize
 
 agent-unit is layered. Pick the layer that matches what you are changing:
