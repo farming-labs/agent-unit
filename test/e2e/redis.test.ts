@@ -9,7 +9,7 @@ import { redisCoordination } from "../../packages/runtime/src/redis";
 import { RunEngine } from "../../packages/runtime/src/runtime/engine";
 import { RunStore } from "../../packages/runtime/src/runtime/store";
 import type { RunRecord } from "../../packages/runtime/src/types";
-import { ROOT, buildFixture, cleanup, createAgentClient, hasBinary, prepareFixture, startServer, tempDir, waitForStatus, type RunningServer } from "./helpers";
+import { buildFixture, cleanup, createAgentClient, freePort, hasBinary, prepareFixture, ROOT, startServer, tempDir, waitForStatus, type RunningServer } from "./helpers";
 
 // Real Redis: REDIS_URL (CI runs a Redis service), or a throwaway redis-server when one is installed.
 // CI sets AGENT_UNIT_REQUIRE_REDIS so this suite can never be skipped there by accident.
@@ -32,7 +32,7 @@ describe.skipIf(!available)("Redis coordination", () => {
     if (process.env.REDIS_URL) {
       url = process.env.REDIS_URL;
     } else {
-      const port = 30_000 + Math.floor(Math.random() * 20_000);
+      const port = await freePort();
       server = spawn("redis-server", ["--port", String(port), "--save", "", "--appendonly", "no"], { stdio: "ignore" });
       url = `redis://127.0.0.1:${port}`;
     }

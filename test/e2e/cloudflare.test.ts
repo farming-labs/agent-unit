@@ -1,7 +1,7 @@
 import { readdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join, relative } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildFixture, cleanup, collect, createAgentClient, prepareFixture, startServer, tempDir, type RunningServer } from "./helpers";
+import { buildFixture, cleanup, collect, createAgentClient, freePort, prepareFixture, startServer, tempDir, type RunningServer } from "./helpers";
 
 // Runs the cloudflare-module build in workerd, the open-source Workers runtime, rather than through
 // wrangler's dev proxy (which buffers streamed responses).
@@ -65,7 +65,7 @@ describe.skipIf(!workerd)("cloudflare-module worker in workerd", () => {
     out = tempDir("cloudflare-out");
     const result = await buildFixture(root, "cloudflare-module", out, { AGENT_UNIT_STORAGE: "memory" });
     expect(result.budgetMs).toBe(25_000);
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const port = await freePort();
     const written = writeWorkerdConfig(out, port);
     wrangler = written.wrangler;
     server = await startServer(workerd!, ["serve", written.config], { cwd: out, port });

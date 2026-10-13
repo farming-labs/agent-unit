@@ -2,7 +2,7 @@ import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildFixture, cleanup, hasBinary, prepareFixture, ROOT, startServer, tempDir, type RunningServer } from "./helpers";
+import { buildFixture, cleanup, freePort, hasBinary, prepareFixture, ROOT, startServer, tempDir, type RunningServer } from "./helpers";
 import { lambda, netlify, vercel, workerd, writeDurableConfig, type FunctionHost } from "./hosts";
 
 // An app that brings its own server (a Hono app here): agent-unit builds it for every host and adds
@@ -75,7 +75,7 @@ const cloudflare: Host = {
   async launch(out) {
     const disk = join(out, "do-disk");
     mkdirSync(disk, { recursive: true });
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const port = await freePort();
     const { config } = writeDurableConfig(out, disk, port, { GREETING });
     const server = await startServer(workerd!, ["serve", config], { cwd: out, port, readyPath: "/" });
     return { fetch: (path, init) => fetch(`${server.url}${path}`, init), stop: () => server.stop() };

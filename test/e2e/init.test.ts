@@ -6,7 +6,7 @@ import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { Redis } from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildFixture, cleanup, collect, createAgentClient, hasBinary, prepareFixture, ROOT, startServer, tempDir, type RunningServer } from "./helpers";
+import { buildFixture, cleanup, collect, createAgentClient, freePort, hasBinary, prepareFixture, ROOT, startServer, tempDir, type RunningServer } from "./helpers";
 import { startMiniflare, vercel, workerd, writeDurableConfig } from "./hosts";
 
 // Apps written by `agent-unit init`, as a new user gets them: each typechecks against the real SDKs,
@@ -162,7 +162,7 @@ async function startUpstash(token: string) {
   let server: ChildProcess | undefined;
   let url = process.env.REDIS_URL;
   if (!url) {
-    const port = 30_000 + Math.floor(Math.random() * 20_000);
+    const port = await freePort();
     server = spawn("redis-server", ["--port", String(port), "--save", "", "--appendonly", "no"], { stdio: "ignore" });
     url = `redis://127.0.0.1:${port}`;
   }
@@ -246,7 +246,7 @@ describe("agent-unit init: agents on agent-unit's engine, one config for every h
     expect(await buildFixture(root, "cloudflare-module", dir)).toMatchObject({ runtime: "durable-objects" });
     const disk = join(dir, "disk");
     mkdirSync(disk, { recursive: true });
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const port = await freePort();
     const { config } = writeDurableConfig(dir, disk, port, { API_TOKEN: "secret" });
     const server = await startServer(workerd!, ["serve", config], { cwd: dir, port });
     try {
@@ -303,7 +303,7 @@ describe("agent-unit init: agents on agent-unit's engine, one config for every h
       await buildFixture(app, "cloudflare-module", worker);
       const disk = join(worker, "disk");
       mkdirSync(disk, { recursive: true });
-      const port = 20_000 + Math.floor(Math.random() * 20_000);
+      const port = await freePort();
       const { config } = writeDurableConfig(worker, disk, port, { OPENAI_API_KEY: "sk-test" });
       const served = await startServer(workerd, ["serve", config], { cwd: worker, port });
       try {

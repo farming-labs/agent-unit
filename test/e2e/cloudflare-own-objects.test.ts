@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildFixture, cleanup, collect, createAgentClient, prepareFixture, startServer, tempDir, type RunningServer } from "./helpers";
+import { buildFixture, cleanup, collect, createAgentClient, freePort, prepareFixture, startServer, tempDir, type RunningServer } from "./helpers";
 import { workerd, writeDurableConfig } from "./hosts";
 
 // An app on the Durable Objects runtime that brings its own Durable Object (a storage provider's, a
@@ -19,7 +19,7 @@ describe.skipIf(!workerd)("Durable Objects runtime with the app's own Durable Ob
     await buildFixture(root, "cloudflare-module", out);
     const disk = join(out, "disk");
     mkdirSync(disk, { recursive: true });
-    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const port = await freePort();
     ({ wrangler } = writeDurableConfig(out, disk, port));
     server = await startServer(workerd!, ["serve", join(out, "workerd.capnp")], { cwd: out, port, readyPath: "/.well-known/agent.json" });
   });

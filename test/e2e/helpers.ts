@@ -1,5 +1,6 @@
 import { spawn, spawnSync, type ChildProcess } from "node:child_process";
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from "node:fs";
+import { createServer, type AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -54,12 +55,26 @@ export interface RunningServer {
 }
 
 /** Starts a built server and resolves once it answers, failing fast if the process exits. */
+/**
+ * A port the OS reports free. A random pick could land on one held by an outgoing connection (on
+ * Linux those use 32768-60999) or a non-HTTP listener, which an HTTP probe cannot see.
+ */
+export function freePort(): Promise<number> {
+  return new Promise((resolve, reject) => {
+    const server = createServer().once("error", reject);
+    server.listen(0, "127.0.0.1", () => {
+      const { port } = server.address() as AddressInfo;
+      server.close(() => resolve(port));
+    });
+  });
+}
+
 export async function startServer(
   command: string,
   args: string[],
   options: { cwd: string; env?: Record<string, string>; port?: number; readyPath?: string },
 ): Promise<RunningServer> {
-  const port = options.port ?? 20_000 + Math.floor(Math.random() * 20_000);
+  const port = options.port ?? (await freePort());
   const url = `http://127.0.0.1:${port}`;
   // A leftover process on the port would answer the readiness check and stand in for this one.
   if (await fetch(url).then(() => true, () => false)) throw new Error(`Port ${port} is already in use.`);
