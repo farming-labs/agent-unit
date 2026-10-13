@@ -2,9 +2,16 @@
 // checked without touching the disk. Each template mirrors an app the e2e suite already runs.
 
 export const FRAMEWORKS = {
-  mastra: { label: "Mastra", hint: "Mastra's own server, routes and storage" },
-  "ai-sdk": { label: "AI SDK", hint: "an AI SDK agent on a Hono server" },
-  hono: { label: "None", hint: "a plain Hono server to bring your own agent code to" },
+  mastra: { label: "Mastra", hint: "a Mastra agent" },
+  "ai-sdk": { label: "AI SDK", hint: "an AI SDK agent" },
+  "agent-unit": { label: "None: defineAgent", hint: "agent-unit's own agents: plain functions with durable steps and approvals" },
+  hono: { label: "None: a Hono server", hint: "a plain server to bring your own agent code to" },
+} as const;
+
+/** Who runs the agent, for frameworks that can go either way. */
+export const RUNNERS = {
+  engine: { label: "agent-unit's engine", hint: "durable runs: journaled model and tool calls, approvals, resume after restarts" },
+  server: { label: "Its own server", hint: "the framework's server, routes and storage" },
 } as const;
 
 export const HOSTS = {
@@ -16,6 +23,9 @@ export const HOSTS = {
   netlify: { label: "Netlify", preset: "netlify" },
   lambda: { label: "AWS Lambda", preset: "aws-lambda" },
 } as const satisfies Record<string, { label: string; preset: string; start?: string; deploy?: string }>;
+
+/** Hosts without a disk that lasts between invocations, where the engine keeps runs in Upstash. */
+const SERVERLESS: InitHost[] = ["vercel", "netlify", "lambda"];
 
 /** Mastra's store on every host but Workers, where it is always D1. */
 export const STORES = {
@@ -35,6 +45,7 @@ export const EXTRAS = {
 } as const;
 
 export type InitFramework = keyof typeof FRAMEWORKS;
+export type InitRunner = keyof typeof RUNNERS;
 export type InitHost = keyof typeof HOSTS;
 export type InitStore = keyof typeof STORES;
 export type InitProvider = keyof typeof PROVIDERS;
@@ -44,6 +55,8 @@ export interface InitAnswers {
   /** package.json name. */
   name: string;
   framework: InitFramework;
+  /** Who runs the agent, when the framework can go either way. */
+  runner?: InitRunner;
   /** At least one; the first is what `build` builds. */
   hosts: InitHost[];
   /** Mastra's store off Workers. Default libsql. */
@@ -53,10 +66,18 @@ export interface InitAnswers {
   extras?: InitExtra[];
 }
 
-/** The questions that apply to a framework, so prompts and flags agree. */
-export const asksProvider = (framework: InitFramework) => framework !== "hono";
-export const asksStore = (framework: InitFramework) => framework === "mastra";
-export const extrasFor = (framework: InitFramework): InitExtra[] => (framework === "mastra" ? ["task"] : ["task", "auth"]);
+/** The questions that apply to the answers before them, so prompts and flags agree. */
+export const asksRunner = (framework: InitFramework) => framework === "mastra" || framework === "ai-sdk";
+/** Mastra keeps its own server by default; an AI SDK agent runs on the engine. */
+export const defaultRunner = (framework: InitFramework): InitRunner => (framework === "mastra" ? "server" : "engine");
+export function runnerFor(framework: InitFramework, runner?: InitRunner): InitRunner {
+  if (framework === "agent-unit") return "engine";
+  if (framework === "hono") return "server";
+  return runner ?? defaultRunner(framework);
+}
+export const asksProvider = (framework: InitFramework) => framework === "mastra" || framework === "ai-sdk";
+export const asksStore = (framework: InitFramework, runner: InitRunner) => framework === "mastra" && runner === "server";
+export const extrasFor = (framework: InitFramework, runner: InitRunner): InitExtra[] => (framework === "mastra" && runner === "server" ? ["task"] : ["task", "auth"]);
 
 // Ranges start at the versions agent-unit's own tests run against.
 const VERSIONS: Record<string, string> = {
@@ -69,6 +90,7 @@ const VERSIONS: Record<string, string> = {
   "@mastra/libsql": "^1.25.1",
   "@mastra/pg": "^1.29.0",
   "@types/node": "^20.19.0",
+  "@upstash/redis": "^1.39.0",
   ai: "^7.0.30",
   hono: "^4.13.13",
   typescript: "^5.9.3",
@@ -90,16 +112,21 @@ export function packageName(input: string): string {
 /** Fills in defaults and drops answers that do not apply, so `files()` sees one shape. */
 export function normalizeAnswers(answers: InitAnswers): Required<InitAnswers> {
   if (!answers.hosts.length) throw new Error("Choose at least one host.");
-  const allowed = extrasFor(answers.framework);
+  const runner = runnerFor(answers.framework, answers.runner);
+  const allowed = extrasFor(answers.framework, runner);
   return {
     name: packageName(answers.name),
     framework: answers.framework,
+    runner,
     hosts: [...new Set(answers.hosts)],
     store: answers.store ?? "libsql",
     provider: answers.provider ?? "openai",
     extras: [...new Set(answers.extras ?? [])].filter((extra) => allowed.includes(extra)),
   };
 }
+
+const and = (items: string[]) => (items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items.at(-1)}` : items.join(""));
+const objectKey = (key: string) => (/^[A-Za-z_$][\w$]*$/.test(key) ? key : JSON.stringify(key));
 
 export interface InitPlan {
   files: Record<string, string>;
@@ -111,8 +138,10 @@ export interface InitPlan {
 export function initFiles(input: InitAnswers, agentUnitVersion: string): InitPlan {
   const answers = normalizeAnswers(input);
   const { framework, hosts, extras } = answers;
+  const engine = answers.runner === "engine";
   const provider = PROVIDERS[answers.provider];
   const workers = hosts.includes("cloudflare");
+  const serverless = hosts.filter((host) => SERVERLESS.includes(host));
   const task = extras.includes("task");
   const auth = extras.includes("auth");
   const files: Record<string, string> = {};
@@ -120,7 +149,11 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string): InitPla
   // Dependencies
   const dependencies = ["zod"];
   const devDependencies = ["typescript", "@types/node"];
-  if (framework === "mastra") {
+  if (engine) {
+    if (framework === "mastra") dependencies.push("@mastra/core");
+    if (asksProvider(framework)) dependencies.push("ai", provider.package);
+    if (serverless.length) dependencies.push("@upstash/redis");
+  } else if (framework === "mastra") {
     dependencies.push("@mastra/core", "@mastra/hono", "hono", answers.store === "postgres" ? "@mastra/pg" : "@mastra/libsql");
     if (workers) dependencies.push("@mastra/cloudflare-d1");
   } else {
@@ -144,7 +177,7 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string): InitPla
   scripts.typecheck = "tsc --noEmit";
 
   const manifest: Record<string, unknown> = { name: answers.name, private: true, type: "module", scripts };
-  if (framework === "mastra") {
+  if (framework === "mastra" && !engine) {
     // Each host gets its own store: the build for Workers resolves `workerd`, every other host `default`.
     const store = `./src/storage.${answers.store}.ts`;
     manifest.imports = { "#storage": workers ? { workerd: "./src/storage.d1.ts", default: store } : store };
@@ -155,8 +188,14 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string): InitPla
 
   // agent-unit.config.ts
   const config: string[] = [];
-  if (framework !== "mastra") config.push(`  server: "./src/server.ts",`);
-  if (workers && framework === "mastra") {
+  if (!engine && framework !== "mastra") config.push(`  server: "./src/server.ts",`);
+  if (engine && auth) {
+    config.push(
+      `  // Clients send \`Authorization: Bearer <API_TOKEN>\`.`,
+      `  authorize: (request) => !!env.API_TOKEN && request.headers.get("authorization") === \`Bearer \${env.API_TOKEN}\`,`,
+    );
+  }
+  if (workers && framework === "mastra" && !engine) {
     config.push(
       `  // Mastra's D1 store on Workers. Create the database with \`npx wrangler d1 create ${answers.name}\``,
       `  // and put the id it prints here.`,
@@ -166,13 +205,31 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string): InitPla
     );
   }
   if (task) config.push(`  tasks: { "daily-summary": { schedule: "0 8 * * *", handler: "./src/tasks/daily-summary.ts" } },`);
-  const configComment =
-    framework === "mastra" ? "// No `server`: agent-unit finds src/mastra/index.ts and builds Mastra's own server.\n" : "// Your server, built for every host with `agent-unit build --preset <host>`.\n";
-  files["agent-unit.config.ts"] = `import { defineConfig } from "agent-unit";\n\n${configComment}export default defineConfig({${config.length ? `\n${config.join("\n")}\n` : ""}});\n`;
+  if (engine && (workers || serverless.length)) {
+    // Runs stay on disk on Node, Bun and Deno (the default); other hosts get theirs per preset.
+    config.push(`  presets: {`);
+    if (workers) config.push(`    // One Durable Object per run, with its own alarm: nothing to set up.`, `    "cloudflare-module": { runtime: "durable-objects" },`);
+    if (serverless.length) {
+      config.push(
+        `    // No disk lasts between invocations here, so runs go to Upstash. Its driver reads`,
+        `    // UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN when it runs.`,
+        ...serverless.map((host) => `    ${objectKey(HOSTS[host].preset)}: { storage: { driver: "upstash" } },`),
+      );
+    }
+    config.push(`  },`);
+  }
+  const configComment = engine
+    ? "// agent-unit's engine: every file in agents/ is an agent, served at /agents/<name>/runs.\n"
+    : framework === "mastra"
+      ? "// No `server`: agent-unit finds src/mastra/index.ts and builds Mastra's own server.\n"
+      : "// Your server, built for every host with `agent-unit build --preset <host>`.\n";
+  const configImports = [`import { defineConfig } from "agent-unit";`, ...(engine && auth ? [`import { env } from "agent-unit/env";`] : [])];
+  files["agent-unit.config.ts"] = `${configImports.join("\n")}\n\n${configComment}export default defineConfig({${config.length ? `\n${config.join("\n")}\n` : ""}});\n`;
 
   // The app
-  if (framework === "mastra") Object.assign(files, mastraFiles(answers, workers));
-  else files["src/server.ts"] = serverFile(framework, provider, auth);
+  if (engine) Object.assign(files, engineAgent(answers));
+  else if (framework === "mastra") Object.assign(files, mastraFiles(answers, workers));
+  else files["src/server.ts"] = serverFile(framework as "ai-sdk" | "hono", provider, auth);
   if (task) {
     files["src/tasks/daily-summary.ts"] = `// Runs every day at 08:00 UTC: in-process on Node, Bun and Deno, a Cron Trigger on Workers, a Cron
 // Job on Vercel. \`npm run task\` runs it once now.
@@ -184,12 +241,19 @@ export default async ({ scheduledTime }: { name: string; scheduledTime: number }
 
   // Environment
   const env: [string, string][] = [];
-  if (framework !== "hono") env.push([provider.key, `Your ${provider.label} API key`]);
-  if (framework === "mastra" && answers.store === "libsql") {
+  if (asksProvider(framework)) env.push([provider.key, `Your ${provider.label} API key`]);
+  if (engine && serverless.length) {
+    env.push(["UPSTASH_REDIS_REST_URL", `Upstash Redis REST URL, where runs are kept on ${and(serverless.map((host) => HOSTS[host].label))}`]);
+    env.push(["UPSTASH_REDIS_REST_TOKEN", "Upstash Redis REST token"]);
+  }
+  if (engine && serverless.length) {
+    env.push(["AGENT_UNIT_SECRET", "Any long random string in production: protects the internal continue and sweep endpoints"]);
+  }
+  if (framework === "mastra" && !engine && answers.store === "libsql") {
     env.push(["MASTRA_DB_URL", "LibSQL database. Default file:./mastra.db; serverless hosts need a hosted one, such as libsql://<db>.turso.io"]);
     env.push(["MASTRA_DB_AUTH_TOKEN", "Token for a hosted LibSQL database (Turso)"]);
   }
-  if (framework === "mastra" && answers.store === "postgres") env.push(["DATABASE_URL", "Postgres connection string"]);
+  if (framework === "mastra" && !engine && answers.store === "postgres") env.push(["DATABASE_URL", "Postgres connection string"]);
   if (auth) env.push(["API_TOKEN", "Clients send it as `Authorization: Bearer <token>`"]);
   if (env.length) files[".env.example"] = env.map(([key, comment]) => `# ${comment}\n${key}=\n`).join("\n");
 
@@ -264,6 +328,85 @@ function serverFile(framework: Exclude<InitFramework, "mastra">, provider: (type
   return `${imports.join("\n")}\n\n${lines.join("\n")}`;
 }
 
+/** The agent an engine app starts with: one that asks a person before it refunds an order. */
+function engineAgent(answers: Required<InitAnswers>): Record<string, string> {
+  const provider = PROVIDERS[answers.provider];
+  if (answers.framework === "agent-unit") {
+    return {
+      "agents/refund.ts": `import { defineAgent } from "agent-unit";
+
+// An agent-unit agent: each \`run.step\` is journaled, so a run that resumes after an approval, a
+// restart or a redeploy never repeats a finished step.
+// POST /agents/refund/runs {"input":{"orderId":"o_42"}}
+export default defineAgent({
+  description: "Refunds an order after a person approves it.",
+  async run(input: { orderId: string }, run) {
+    const order = await run.step("load-order", async () => ({ id: input.orderId, amount: 42 }));
+    const { approved } = await run.interrupt<{ approved: boolean }>("approve-refund", order);
+    if (!approved) return "declined";
+    await run.step("refund", async () => {
+      console.log(\`refunding \${order.id}\`);
+    });
+    return \`refunded \${order.id}\`;
+  },
+});
+`,
+    };
+  }
+  const mastra = answers.framework === "mastra";
+  const imports = mastra
+    ? [`import { Agent } from "@mastra/core/agent";`, `import { createTool } from "@mastra/core/tools";`]
+    : [`import { tool, ToolLoopAgent } from "ai";`];
+  imports.push(
+    `import { ${provider.create} } from "${provider.package}";`,
+    `import { useRun } from "agent-unit";`,
+    `import { env } from "agent-unit/env";`,
+    `import { z } from "zod";`,
+  );
+  const execute = `async ({ orderId }) => {
+        // Pauses the run until a person answers; the run resumes here, even on another instance.
+        const { approved } = await useRun().interrupt<{ approved: boolean }>("approve-refund", { orderId });
+        return approved ? { status: "refunded", orderId } : { status: "declined", orderId };
+      }`;
+  const body = mastra
+    ? `export default new Agent({
+  id: "assistant",
+  name: "Assistant",
+  instructions: "You help customers with their orders. Keep answers short. Refund only with the refund tool.",
+  model: provider("${provider.model}"),
+  tools: {
+    refund: createTool({
+      id: "refund",
+      description: "Refunds an order once a person approves it",
+      inputSchema: z.object({ orderId: z.string() }),
+      execute: ${execute},
+    }),
+  },
+});`
+    : `export default new ToolLoopAgent({
+  model: provider("${provider.model}"),
+  instructions: "You help customers with their orders. Keep answers short. Refund only with the refund tool.",
+  tools: {
+    refund: tool({
+      description: "Refunds an order once a person approves it",
+      inputSchema: z.object({ orderId: z.string() }),
+      execute: ${execute},
+    }),
+  },
+});`;
+  return {
+    "agents/assistant.ts": `${imports.join("\n")}
+
+// ${mastra ? "A Mastra" : "An AI SDK"} agent on agent-unit's engine: model and tool calls are journaled, so a run that
+// resumes after an approval, a restart or a redeploy picks up where it stopped.
+// POST /agents/assistant/runs {"input":{"prompt":"Please refund order o_42"}}
+const provider = ${provider.create}({ apiKey: env.${provider.key} });
+
+${body}
+`,
+  };
+}
+
 function mastraFiles(answers: Required<InitAnswers>, workers: boolean): Record<string, string> {
   const provider = PROVIDERS[answers.provider];
   const files: Record<string, string> = {};
@@ -323,10 +466,14 @@ export const storage = new D1Store({ id: "${answers.name}", binding: env.DB });
 
 function readme(answers: Required<InitAnswers>, env: string[]): string {
   const { framework, hosts } = answers;
+  const engine = answers.runner === "engine";
   const several = hosts.length > 1;
   const lines = [`# ${answers.name}`, ""];
+  const agentName = framework === "agent-unit" ? "refund" : "assistant";
   lines.push(
-    framework === "mastra"
+    engine
+      ? `${framework === "agent-unit" ? "An agent" : framework === "mastra" ? "A Mastra agent" : "An AI SDK agent"} on [agent-unit](https://github.com/farming-labs/agent-unit)'s engine: runs are durable, pause for approval and resume where they stopped, on any host.`
+      : framework === "mastra"
       ? "A Mastra app, built for any host by [agent-unit](https://github.com/farming-labs/agent-unit). Mastra owns its routes and storage; agent-unit builds it."
       : framework === "ai-sdk"
         ? "An AI SDK agent on a Hono server, built for any host by [agent-unit](https://github.com/farming-labs/agent-unit)."
@@ -340,8 +487,23 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
     "```",
     "",
   );
-  if (framework === "mastra") lines.push("Try it: `curl -X POST localhost:3000/api/agents/assistant/generate -H 'content-type: application/json' -d '{\"messages\":\"What time is it?\"}'`", "");
-  if (framework === "ai-sdk") lines.push("Try it: `curl -X POST localhost:3000/chat -H 'content-type: application/json' -d '{\"prompt\":\"What time is it?\"}'`", "");
+  if (engine) {
+    const input = framework === "agent-unit" ? `{"input":{"orderId":"o_42"}}` : `{"input":{"prompt":"Please refund order o_42"}}`;
+    const auth = answers.extras.includes("auth") ? ` -H "authorization: Bearer $API_TOKEN"` : "";
+    lines.push(
+      "Try it: start a run, which pauses for approval, then approve it with the `runId` the first call printed. Both stream the run's events.",
+      "",
+      "```sh",
+      `curl -N -X POST localhost:3000/agents/${agentName}/runs${auth} -H 'content-type: application/json' -H 'accept: text/event-stream' -d '${input}'`,
+      `curl -N -X POST localhost:3000/runs/<runId>/resume${auth} -H 'content-type: application/json' -H 'accept: text/event-stream' -d '{"answer":{"approved":true}}'`,
+      "```",
+      "",
+      "Each file in `agents/` is an agent named after the file. `GET /agents` lists them.",
+      "",
+    );
+  }
+  if (framework === "mastra" && !engine) lines.push("Try it: `curl -X POST localhost:3000/api/agents/assistant/generate -H 'content-type: application/json' -d '{\"messages\":\"What time is it?\"}'`", "");
+  if (framework === "ai-sdk" && !engine) lines.push("Try it: `curl -X POST localhost:3000/chat -H 'content-type: application/json' -d '{\"prompt\":\"What time is it?\"}'`", "");
   lines.push("## Build and deploy", "");
   for (const host of hosts) {
     const { label, preset } = HOSTS[host];
@@ -353,7 +515,9 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
     else lines.push(build);
     if (start) lines.push(`npm run start${suffix}`);
     lines.push("```", "");
-    if (host === "cloudflare" && framework === "mastra") {
+    if (host === "cloudflare" && engine) lines.push("Each run gets its own Durable Object; the build writes their bindings into `wrangler.json`.", "");
+    if (engine && (SERVERLESS as string[]).includes(host)) lines.push("Runs are kept in [Upstash](https://upstash.com) Redis here: set `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` and `AGENT_UNIT_SECRET`.", "");
+    if (host === "cloudflare" && framework === "mastra" && !engine) {
       lines.push(`Create the D1 database once with \`npx wrangler d1 create ${answers.name}\` and put its id in \`agent-unit.config.ts\`.`, "");
     }
     if (host === "cloudflare" && env.length) lines.push(`Set secrets with \`npx wrangler secret put <NAME>\`.`, "");

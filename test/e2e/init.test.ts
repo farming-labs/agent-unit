@@ -1,10 +1,13 @@
-import { spawnSync } from "node:child_process";
-import { existsSync, mkdirSync, symlinkSync } from "node:fs";
+import { spawn, spawnSync, type ChildProcess } from "node:child_process";
+import { existsSync, mkdirSync, readdirSync, readFileSync, symlinkSync } from "node:fs";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import { dirname, join } from "node:path";
 import { pathToFileURL } from "node:url";
+import { Redis } from "ioredis";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { buildFixture, cleanup, prepareFixture, ROOT, startServer, tempDir, type RunningServer } from "./helpers";
-import { startMiniflare, vercel } from "./hosts";
+import { buildFixture, cleanup, collect, createAgentClient, hasBinary, prepareFixture, ROOT, startServer, tempDir, type RunningServer } from "./helpers";
+import { startMiniflare, vercel, workerd, writeDurableConfig } from "./hosts";
 
 // Apps written by `agent-unit init`, as a new user gets them: each typechecks against the real SDKs,
 // builds for its hosts and answers there. They are generated inside the repo so they resolve the
@@ -38,7 +41,7 @@ describe("agent-unit init: a Mastra app for Node and Workers", () => {
   let root: string;
   const outs: string[] = [];
   beforeAll(async () => {
-    root = await generate("mastra", { framework: "mastra", hosts: "node,cloudflare", store: "libsql", provider: "openai", extras: "task" });
+    root = await generate("mastra", { framework: "mastra", runner: "server", hosts: "node,cloudflare", store: "libsql", provider: "openai", extras: "task" });
   });
   afterAll(() => cleanup(...outs));
 
@@ -85,7 +88,7 @@ describe("agent-unit init: an AI SDK agent on Hono for Node and Vercel", () => {
   let root: string;
   const outs: string[] = [];
   beforeAll(async () => {
-    root = await generate("ai-sdk", { framework: "ai-sdk", hosts: "node,vercel", provider: "openai", extras: "auth" });
+    root = await generate("ai-sdk", { framework: "ai-sdk", runner: "server", hosts: "node,vercel", provider: "openai", extras: "auth" });
   });
   afterAll(() => cleanup(...outs));
 
@@ -135,7 +138,7 @@ describe("agent-unit init: the other choices", () => {
   });
 
   it("a Mastra app on Postgres builds for Vercel", async () => {
-    const root = await generate("mastra-pg", { framework: "mastra", hosts: "vercel", store: "postgres", provider: "anthropic", extras: "none" });
+    const root = await generate("mastra-pg", { framework: "mastra", runner: "server", hosts: "vercel", store: "postgres", provider: "anthropic", extras: "none" });
     typecheck(root);
     const out = tempDir("init-out");
     outs.push(out);
@@ -144,8 +147,154 @@ describe("agent-unit init: the other choices", () => {
   });
 
   for (const provider of ["anthropic", "google"]) {
-    it(`an AI SDK app on ${provider} typechecks`, async () => {
-      typecheck(await generate(`ai-sdk-${provider}`, { framework: "ai-sdk", hosts: "cloudflare", provider, extras: "task,auth" }));
+    it(`an AI SDK agent on ${provider} typechecks`, async () => {
+      typecheck(await generate(`ai-sdk-${provider}`, { framework: "ai-sdk", runner: "engine", hosts: "cloudflare", provider, extras: "task,auth" }));
     });
   }
 });
+
+// Upstash's REST API in front of a real Redis: commands as JSON arrays, results base64-encoded when
+// the client asks (it does by default). Generated apps keep runs in Upstash on serverless hosts.
+const redisAvailable = Boolean(process.env.REDIS_URL) || hasBinary("redis-server");
+if (process.env.AGENT_UNIT_REQUIRE_REDIS && !redisAvailable) throw new Error("Redis is required for this suite.");
+
+async function startUpstash(token: string) {
+  let server: ChildProcess | undefined;
+  let url = process.env.REDIS_URL;
+  if (!url) {
+    const port = 30_000 + Math.floor(Math.random() * 20_000);
+    server = spawn("redis-server", ["--port", String(port), "--save", "", "--appendonly", "no"], { stdio: "ignore" });
+    url = `redis://127.0.0.1:${port}`;
+  }
+  const redis = new Redis(url, { maxRetriesPerRequest: 2 });
+  redis.on("error", () => {}); // refused until a fresh redis-server listens; ping retries
+  await redis.ping();
+  const encode = (value: unknown, base64: boolean): unknown =>
+    Array.isArray(value) ? value.map((item) => encode(item, base64)) : typeof value === "string" && base64 ? Buffer.from(value).toString("base64") : value;
+  const run = async (command: (string | number)[]) => {
+    try {
+      return { result: await redis.call(String(command[0]), ...command.slice(1).map(String)) };
+    } catch (error) {
+      return { error: (error as Error).message };
+    }
+  };
+  const http = createServer(async (request, response) => {
+    let body = "";
+    for await (const chunk of request) body += chunk;
+    if (request.headers.authorization !== `Bearer ${token}`) return void response.writeHead(401).end(JSON.stringify({ error: "Unauthorized" }));
+    const base64 = request.headers["upstash-encoding"] === "base64";
+    const command = JSON.parse(body) as (string | number)[] | (string | number)[][];
+    const reply = (value: { result?: unknown; error?: string }) => ("error" in value && value.error ? value : { result: encode(value.result, base64) });
+    const result = request.url === "/" ? reply(await run(command as (string | number)[])) : await Promise.all((command as (string | number)[][]).map(async (item) => reply(await run(item))));
+    response.writeHead(200, { "content-type": "application/json" }).end(JSON.stringify(result));
+  });
+  await new Promise<void>((resolve) => http.listen(0, "127.0.0.1", resolve));
+  return {
+    url: `http://127.0.0.1:${(http.address() as AddressInfo).port}`,
+    redis,
+    async stop() {
+      await new Promise((resolve) => http.close(resolve));
+      redis.disconnect();
+      server?.kill("SIGKILL");
+    },
+  };
+}
+
+const files = (dir: string): string[] =>
+  readdirSync(dir, { withFileTypes: true }).flatMap((entry) => (entry.isDirectory() ? files(join(dir, entry.name)) : [join(dir, entry.name)]));
+
+describe("agent-unit init: agents on agent-unit's engine, one config for every host", () => {
+  let root: string;
+  const outs: string[] = [];
+  const out = () => {
+    const dir = tempDir("init-out");
+    outs.push(dir);
+    return dir;
+  };
+  const headers = { authorization: "Bearer secret" };
+  beforeAll(async () => {
+    root = await generate("engine", { framework: "agent-unit", hosts: "node,cloudflare,vercel", extras: "auth" });
+  });
+  afterAll(() => cleanup(...outs));
+
+  /** Starts a refund, which pauses for approval, then approves it: the run finishes after the resume. */
+  async function refund(baseUrl: string, fetchImpl?: typeof fetch) {
+    const client = createAgentClient({ baseUrl, headers, fetch: fetchImpl });
+    const first = await collect(client.run("refund", { orderId: "o_42" }));
+    expect(first.at(-1)).toMatchObject({ type: "RUN_INTERRUPTED", interrupt: { name: "approve-refund", payload: { id: "o_42", amount: 42 } } });
+    const second = await collect(client.resume(first[0]!.runId, { approved: true }));
+    expect(second.at(-1)).toMatchObject({ type: "RUN_FINISHED", result: "refunded o_42" });
+    return first[0]!.runId;
+  }
+
+  it("typechecks", () => typecheck(root));
+
+  it("keeps runs on disk on Node, behind the token", async () => {
+    const dir = out();
+    expect(await buildFixture(root, "node-server", dir)).toMatchObject({ runtime: "default", storage: { driver: "fs-lite" } });
+    const server = await startServer(process.execPath, [join(dir, "server/index.mjs")], { cwd: dir, env: { API_TOKEN: "secret" } });
+    try {
+      expect((await fetch(`${server.url}/agents`)).status).toBe(401);
+      await refund(server.url);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.skipIf(!workerd)("gives every run its own Durable Object on Workers", async () => {
+    const dir = out();
+    expect(await buildFixture(root, "cloudflare-module", dir)).toMatchObject({ runtime: "durable-objects" });
+    const disk = join(dir, "disk");
+    mkdirSync(disk, { recursive: true });
+    const port = 20_000 + Math.floor(Math.random() * 20_000);
+    const { config } = writeDurableConfig(dir, disk, port, { API_TOKEN: "secret" });
+    const server = await startServer(workerd!, ["serve", config], { cwd: dir, port });
+    try {
+      await refund(server.url);
+    } finally {
+      await server.stop();
+    }
+  });
+
+  it.skipIf(!redisAvailable)("keeps runs in Upstash on Vercel, with no credentials in the build", async () => {
+    const upstash = await startUpstash("upstash-token");
+    const dir = out();
+    const env = { UPSTASH_REDIS_REST_URL: upstash.url, UPSTASH_REDIS_REST_TOKEN: "upstash-token", API_TOKEN: "secret" };
+    try {
+      // Built with the variables set, as on Vercel: they still must not end up in the output.
+      expect(await buildFixture(root, "vercel", dir, env)).toMatchObject({ storage: { driver: "upstash" } });
+      for (const file of files(dir)) expect(readFileSync(file, "utf8"), file).not.toContain("upstash-token");
+      Object.assign(process.env, env);
+      const module = (await import(pathToFileURL(join(dir, vercel.entry)).href)) as Record<string, any>;
+      const pending: Promise<unknown>[] = [];
+      const runId = await refund("https://app.example.com", async (input, init) => {
+        const response = await vercel.invoke(module, new Request(input, init), (promise) => pending.push(promise));
+        await Promise.all(pending.splice(0));
+        return response;
+      });
+      expect(await upstash.redis.keys(`*${runId}*`)).not.toEqual([]);
+    } finally {
+      for (const key of Object.keys(env)) delete process.env[key];
+      await upstash.stop();
+    }
+  });
+
+  for (const framework of ["ai-sdk", "mastra"] as const) {
+    it(`serves ${framework === "mastra" ? "a Mastra" : "an AI SDK"} agent on Node`, async () => {
+      const app = await generate(`engine-${framework}`, { framework, runner: "engine", hosts: "node,cloudflare,lambda", provider: "openai", extras: "none" });
+      typecheck(app);
+      const dir = out();
+      await buildFixture(app, "node-server", dir);
+      const server = await startServer(process.execPath, [join(dir, "server/index.mjs")], { cwd: dir, env: { OPENAI_API_KEY: "sk-test" } });
+      try {
+        const { agents } = await createAgentClient({ baseUrl: server.url }).manifest();
+        expect(agents).toEqual([expect.objectContaining({ name: "assistant", framework })]);
+        // Mastra's adapter does not list tools, which Mastra can resolve per request.
+        if (framework === "ai-sdk") expect(agents[0]!.tools).toEqual([expect.objectContaining({ name: "refund" })]);
+      } finally {
+        await server.stop();
+      }
+    });
+  }
+});
+
