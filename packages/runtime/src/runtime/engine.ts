@@ -514,7 +514,11 @@ export class RunEngine {
       const timeout = new Promise((resolve) => setTimeout(resolve, this.options.cancelWaitMs ?? 2000));
       await Promise.race([this.idle(id), timeout]);
       const current = await this.getRun(id);
-      return current.status === "running" ? { ...current, cancelRequested: true } : current;
+      if (current.status === "running") return { ...current, cancelRequested: true };
+      // It parked (an interrupt or a sleep) before the cancel reached it, so the execution ended
+      // without cancelling: cancel the parked run now, as any other.
+      if (!TERMINAL.has(current.status) && !this.active.has(id)) return retry();
+      return current;
     }
     // Executing in another process: ask that executor to cancel. Writing the cancel here would race
     // its events and its final write; it notices within a second, at its next step.
