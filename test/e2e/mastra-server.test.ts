@@ -137,6 +137,13 @@ for (const host of [node, vercelFunction, workers]) {
         const wrangler = JSON.parse(readFileSync(join(out, "server/wrangler.json"), "utf8"));
         expect(wrangler.d1_databases).toEqual([{ binding: "DB", database_name: "refunds", database_id: "00000000-0000-0000-0000-000000000000" }]);
       });
+
+      it("leaves the TypeScript compiler Mastra imports out of the Worker", () => {
+        // Mastra's server imports it only to check project files on disk; it was 1.4 MB gzipped of the Worker.
+        const scripts = files(join(out, "server")).filter((file) => /\.m?js$/.test(file));
+        expect(scripts.filter((file) => readFileSync(file, "utf8").includes("versionMajorMinor"))).toEqual([]);
+        expect(scripts.some((file) => readFileSync(file, "utf8").includes("The TypeScript compiler is not bundled into Cloudflare Workers builds"))).toBe(true);
+      });
     }
 
     it("contains none of agent-unit's engine", () => {
