@@ -625,7 +625,7 @@ const model = RunnableLambda.from(async (messages: BaseMessage[]) =>
 describe("assistant", () => {
   it("asks a person before it refunds, then finishes", async () => {
     // Builds find the framework's adapter on their own; a test unit is given it.
-    const unit = createTestUnit({ assistant: createAssistant(model) }, { adapters: [langGraphAdapter] });
+    const unit = createTestUnit({ assistant: createAssistant(() => model) }, { adapters: [langGraphAdapter] });
     const parked = await unit.run("assistant", { prompt: "Please refund order o_42" });
     // The graph pauses in its tools node, where the refund tool called interrupt().
     expect(parked).toMatchObject({ status: "interrupted", interrupt: { name: "tools", payload: { orderId: "o_42" } } });
@@ -686,7 +686,7 @@ const INSTRUCTIONS = "You help customers with their orders. Keep answers short. 
 function langgraphAgent(provider: (typeof PROVIDERS)[InitProvider], factory: boolean): string {
   const graph = `new StateGraph(MessagesAnnotation)
   .addNode("agent", async ({ messages }) => ({
-    messages: [await model.invoke([new SystemMessage("${INSTRUCTIONS}"), ...messages])],
+    messages: [await model().invoke([new SystemMessage("${INSTRUCTIONS}"), ...messages])],
   }))
   .addNode("tools", new ToolNode([refund]))
   .addEdge(START, "agent")
@@ -694,7 +694,8 @@ function langgraphAgent(provider: (typeof PROVIDERS)[InitProvider], factory: boo
   .addEdge("tools", "agent")
   .compile()`;
   const chat = `new ${provider.chat}({ model: "${provider.model}", apiKey: env.${provider.key} }).bindTools([refund])`;
-  return `${factory ? `import { SystemMessage, type BaseMessage } from "@langchain/core/messages";\nimport type { Runnable } from "@langchain/core/runnables";` : `import { SystemMessage } from "@langchain/core/messages";`}
+  return `import { SystemMessage, type BaseMessage } from "@langchain/core/messages";
+import type { Runnable } from "@langchain/core/runnables";
 import { tool } from "@langchain/core/tools";
 import { END, interrupt, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph";
 import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
@@ -715,17 +716,20 @@ const refund = tool(
   { name: "refund", description: "Refunds an order once a person approves it", schema: z.object({ orderId: z.string() }) },
 );
 
+// Created on first use, so the app starts, builds and runs its tests before the key is set (some
+// LangChain chat models check it when they are created).
+let chat: Runnable<BaseMessage[], BaseMessage> | undefined;
+const ${factory ? "providerModel" : "model"} = () => (chat ??= ${chat});
+
 ${
   factory
     ? `/** The graph on any chat model with the refund tool bound: the test gives it a scripted one. */
-export function createAssistant(model: Runnable<BaseMessage[], BaseMessage>) {
+export function createAssistant(model: () => Runnable<BaseMessage[], BaseMessage>) {
   return ${graph.replaceAll("\n", "\n  ")};
 }
 
-export default createAssistant(${chat});`
-    : `const model = ${chat};
-
-export default ${graph};`
+export default createAssistant(providerModel);`
+    : `export default ${graph};`
 }
 `;
 }
