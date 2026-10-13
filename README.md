@@ -33,7 +33,7 @@ and one runtime contract, with presets for every host.
 ## Start a new app
 
 ```sh
-npx agent-unit init my-agent
+npm create agent-unit@latest my-agent    # or: pnpm create agent-unit, bun create agent-unit, npx agent-unit init
 ```
 
 It asks for the framework (Mastra, the AI SDK, LangGraph, the OpenAI Agents SDK, agent-unit's own

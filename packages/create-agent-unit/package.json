@@ -1,0 +1,29 @@
+{
+  "name": "create-agent-unit",
+  "version": "0.1.15",
+  "description": "Start a new agent-unit app: npm create agent-unit",
+  "license": "MIT",
+  "author": "Farming Labs",
+  "type": "module",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/farming-labs/agent-unit.git",
+    "directory": "packages/create-agent-unit"
+  },
+  "engines": {
+    "node": ">=20.19"
+  },
+  "bin": {
+    "create-agent-unit": "./index.mjs"
+  },
+  "files": [
+    "index.mjs",
+    "LICENSE"
+  ],
+  "dependencies": {
+    "agent-unit": "workspace:^"
+  },
+  "publishConfig": {
+    "access": "public"
+  }
+}
