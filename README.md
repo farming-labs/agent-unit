@@ -36,8 +36,9 @@ and one runtime contract, with presets for every host.
 npx agent-unit init my-agent
 ```
 
-It asks for the framework (Mastra, the AI SDK, agent-unit's own `defineAgent`, or a plain Hono
-server), whether agent-unit's engine or the framework's own server runs it, the hosts to deploy to,
+It asks for the framework (Mastra, the AI SDK, LangGraph, the OpenAI Agents SDK, agent-unit's own
+`defineAgent`, or a plain Hono server), whether agent-unit's engine or the framework's own server
+runs it (LangGraph and the OpenAI Agents SDK always run on the engine), the hosts to deploy to,
 the model provider and extras (a scheduled task, bearer-token auth), and writes an app with one
 working agent, `build` and `deploy` scripts per host, and a README.
 

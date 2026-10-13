@@ -4,6 +4,8 @@
 export const FRAMEWORKS = {
   mastra: { label: "Mastra", hint: "a Mastra agent" },
   "ai-sdk": { label: "AI SDK", hint: "an AI SDK agent" },
+  langgraph: { label: "LangGraph", hint: "a LangGraph agent, its checkpoints in agent-unit's storage" },
+  "openai-agents": { label: "OpenAI Agents SDK", hint: "an OpenAI Agents SDK agent, on OpenAI" },
   "agent-unit": { label: "None: defineAgent", hint: "agent-unit's own agents: plain functions with durable steps and approvals" },
   hono: { label: "None: a Hono server", hint: "a plain server to bring your own agent code to" },
 } as const;
@@ -34,9 +36,17 @@ export const STORES = {
 } as const;
 
 export const PROVIDERS = {
-  openai: { label: "OpenAI", package: "@ai-sdk/openai", create: "createOpenAI", key: "OPENAI_API_KEY", model: "gpt-5-mini" },
-  anthropic: { label: "Anthropic", package: "@ai-sdk/anthropic", create: "createAnthropic", key: "ANTHROPIC_API_KEY", model: "claude-sonnet-4-5" },
-  google: { label: "Google", package: "@ai-sdk/google", create: "createGoogleGenerativeAI", key: "GOOGLE_GENERATIVE_AI_API_KEY", model: "gemini-2.5-flash" },
+  openai: { label: "OpenAI", package: "@ai-sdk/openai", create: "createOpenAI", langchain: "@langchain/openai", chat: "ChatOpenAI", key: "OPENAI_API_KEY", model: "gpt-5-mini" },
+  anthropic: { label: "Anthropic", package: "@ai-sdk/anthropic", create: "createAnthropic", langchain: "@langchain/anthropic", chat: "ChatAnthropic", key: "ANTHROPIC_API_KEY", model: "claude-sonnet-4-5" },
+  google: {
+    label: "Google",
+    package: "@ai-sdk/google",
+    create: "createGoogleGenerativeAI",
+    langchain: "@langchain/google-genai",
+    chat: "ChatGoogleGenerativeAI",
+    key: "GOOGLE_GENERATIVE_AI_API_KEY",
+    model: "gemini-2.5-flash",
+  },
 } as const;
 
 export const EXTRAS = {
@@ -71,11 +81,13 @@ export const asksRunner = (framework: InitFramework) => framework === "mastra" |
 /** Mastra keeps its own server by default; an AI SDK agent runs on the engine. */
 export const defaultRunner = (framework: InitFramework): InitRunner => (framework === "mastra" ? "server" : "engine");
 export function runnerFor(framework: InitFramework, runner?: InitRunner): InitRunner {
-  if (framework === "agent-unit") return "engine";
-  if (framework === "hono") return "server";
+  // LangGraph and the OpenAI Agents SDK have no server of their own; a plain Hono app has no agent.
+  if (!asksRunner(framework)) return framework === "hono" ? "server" : "engine";
   return runner ?? defaultRunner(framework);
 }
-export const asksProvider = (framework: InitFramework) => framework === "mastra" || framework === "ai-sdk";
+/** The OpenAI Agents SDK calls OpenAI, so it is not asked. */
+export const asksProvider = (framework: InitFramework) => framework === "mastra" || framework === "ai-sdk" || framework === "langgraph";
+const callsModel = (framework: InitFramework) => asksProvider(framework) || framework === "openai-agents";
 export const asksStore = (framework: InitFramework, runner: InitRunner) => framework === "mastra" && runner === "server";
 export const extrasFor = (framework: InitFramework, runner: InitRunner): InitExtra[] => (framework === "mastra" && runner === "server" ? ["task"] : ["task", "auth"]);
 
@@ -84,11 +96,17 @@ const VERSIONS: Record<string, string> = {
   "@ai-sdk/anthropic": "^4.0.21",
   "@ai-sdk/google": "^4.0.24",
   "@ai-sdk/openai": "^4.0.20",
+  "@langchain/anthropic": "^1.5.12",
+  "@langchain/core": "^1.2.14",
+  "@langchain/google-genai": "^2.3.2",
+  "@langchain/langgraph": "^1.4.19",
+  "@langchain/openai": "^1.6.2",
   "@mastra/cloudflare-d1": "^1.4.1",
   "@mastra/core": "^1.74.0",
   "@mastra/hono": "^1.7.16",
   "@mastra/libsql": "^1.25.1",
   "@mastra/pg": "^1.29.0",
+  "@openai/agents": "^0.19.0",
   "@types/node": "^20.19.0",
   "@upstash/redis": "^1.39.0",
   ai: "^7.0.30",
@@ -120,7 +138,7 @@ export function normalizeAnswers(answers: InitAnswers): Required<InitAnswers> {
     runner,
     hosts: [...new Set(answers.hosts)],
     store: answers.store ?? "libsql",
-    provider: answers.provider ?? "openai",
+    provider: answers.framework === "openai-agents" ? "openai" : (answers.provider ?? "openai"),
     extras: [...new Set(answers.extras ?? [])].filter((extra) => allowed.includes(extra)),
   };
 }
@@ -151,7 +169,9 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string): InitPla
   const devDependencies = ["typescript", "@types/node"];
   if (engine) {
     if (framework === "mastra") dependencies.push("@mastra/core");
-    if (asksProvider(framework)) dependencies.push("ai", provider.package);
+    if (framework === "mastra" || framework === "ai-sdk") dependencies.push("ai", provider.package);
+    if (framework === "langgraph") dependencies.push("@langchain/core", "@langchain/langgraph", provider.langchain);
+    if (framework === "openai-agents") dependencies.push("@openai/agents");
     if (serverless.length) dependencies.push("@upstash/redis");
   } else if (framework === "mastra") {
     dependencies.push("@mastra/core", "@mastra/hono", "hono", answers.store === "postgres" ? "@mastra/pg" : "@mastra/libsql");
@@ -241,7 +261,7 @@ export default async ({ scheduledTime }: { name: string; scheduledTime: number }
 
   // Environment
   const env: [string, string][] = [];
-  if (asksProvider(framework)) env.push([provider.key, `Your ${provider.label} API key`]);
+  if (callsModel(framework)) env.push([provider.key, `Your ${provider.label} API key`]);
   if (engine && serverless.length) {
     env.push(["UPSTASH_REDIS_REST_URL", `Upstash Redis REST URL, where runs are kept on ${and(serverless.map((host) => HOSTS[host].label))}`]);
     env.push(["UPSTASH_REDIS_REST_TOKEN", "Upstash Redis REST token"]);
@@ -328,6 +348,70 @@ function serverFile(framework: Exclude<InitFramework, "mastra">, provider: (type
   return `${imports.join("\n")}\n\n${lines.join("\n")}`;
 }
 
+const INSTRUCTIONS = "You help customers with their orders. Keep answers short. Refund only with the refund tool.";
+
+function langgraphAgent(provider: (typeof PROVIDERS)[InitProvider]): string {
+  return `import { tool } from "@langchain/core/tools";
+import { END, interrupt, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph";
+import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
+import { ${provider.chat} } from "${provider.langchain}";
+import { env } from "agent-unit/env";
+import { z } from "zod";
+
+// A LangGraph agent on agent-unit's engine: its checkpoints are kept in agent-unit's storage, so a run
+// that pauses for approval, restarts or moves to another instance resumes from its last step.
+// POST /agents/assistant/runs {"input":{"prompt":"Please refund order o_42"}}
+
+const refund = tool(
+  async ({ orderId }) => {
+    // Pauses the run until a person answers; the run resumes here with their answer.
+    const { approved } = interrupt<{ orderId: string }, { approved: boolean }>({ orderId });
+    return approved ? \`refunded \${orderId}\` : \`declined \${orderId}\`;
+  },
+  { name: "refund", description: "Refunds an order once a person approves it", schema: z.object({ orderId: z.string() }) },
+);
+
+const model = new ${provider.chat}({ model: "${provider.model}", apiKey: env.${provider.key} }).bindTools([refund]);
+
+export default new StateGraph(MessagesAnnotation)
+  .addNode("agent", async ({ messages }) => ({
+    messages: [await model.invoke([{ role: "system", content: "${INSTRUCTIONS}" }, ...messages])],
+  }))
+  .addNode("tools", new ToolNode([refund]))
+  .addEdge(START, "agent")
+  .addConditionalEdges("agent", toolsCondition, ["tools", END])
+  .addEdge("tools", "agent")
+  .compile();
+`;
+}
+
+function openaiAgent(): string {
+  return `import { Agent, setDefaultOpenAIKey, tool } from "@openai/agents";
+import { env } from "agent-unit/env";
+import { z } from "zod";
+
+// An OpenAI Agents SDK agent on agent-unit's engine: model and tool calls are journaled, and a tool
+// that needs approval pauses the run until a person answers, even across restarts and instances.
+// POST /agents/assistant/runs {"input":{"prompt":"Please refund order o_42"}}
+setDefaultOpenAIKey(env.OPENAI_API_KEY ?? "");
+
+export default new Agent({
+  name: "Assistant",
+  instructions: "${INSTRUCTIONS}",
+  model: "gpt-5-mini",
+  tools: [
+    tool({
+      name: "refund",
+      description: "Refunds an order once a person approves it",
+      parameters: z.object({ orderId: z.string() }),
+      needsApproval: true,
+      execute: async ({ orderId }) => \`refunded \${orderId}\`,
+    }),
+  ],
+});
+`;
+}
+
 /** The agent an engine app starts with: one that asks a person before it refunds an order. */
 function engineAgent(answers: Required<InitAnswers>): Record<string, string> {
   const provider = PROVIDERS[answers.provider];
@@ -353,6 +437,8 @@ export default defineAgent({
 `,
     };
   }
+  if (answers.framework === "langgraph") return { "agents/assistant.ts": langgraphAgent(provider) };
+  if (answers.framework === "openai-agents") return { "agents/assistant.ts": openaiAgent() };
   const mastra = answers.framework === "mastra";
   const imports = mastra
     ? [`import { Agent } from "@mastra/core/agent";`, `import { createTool } from "@mastra/core/tools";`]
@@ -372,7 +458,7 @@ export default defineAgent({
     ? `export default new Agent({
   id: "assistant",
   name: "Assistant",
-  instructions: "You help customers with their orders. Keep answers short. Refund only with the refund tool.",
+  instructions: "${INSTRUCTIONS}",
   model: provider("${provider.model}"),
   tools: {
     refund: createTool({
@@ -385,7 +471,7 @@ export default defineAgent({
 });`
     : `export default new ToolLoopAgent({
   model: provider("${provider.model}"),
-  instructions: "You help customers with their orders. Keep answers short. Refund only with the refund tool.",
+  instructions: "${INSTRUCTIONS}",
   tools: {
     refund: tool({
       description: "Refunds an order once a person approves it",
@@ -464,6 +550,14 @@ export const storage = new D1Store({ id: "${answers.name}", binding: env.DB });
   return files;
 }
 
+const ENGINE_AGENTS: Record<Exclude<InitFramework, "hono">, string> = {
+  mastra: "A Mastra agent",
+  "ai-sdk": "An AI SDK agent",
+  langgraph: "A LangGraph agent",
+  "openai-agents": "An OpenAI Agents SDK agent",
+  "agent-unit": "An agent",
+};
+
 function readme(answers: Required<InitAnswers>, env: string[]): string {
   const { framework, hosts } = answers;
   const engine = answers.runner === "engine";
@@ -472,7 +566,7 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
   const agentName = framework === "agent-unit" ? "refund" : "assistant";
   lines.push(
     engine
-      ? `${framework === "agent-unit" ? "An agent" : framework === "mastra" ? "A Mastra agent" : "An AI SDK agent"} on [agent-unit](https://github.com/farming-labs/agent-unit)'s engine: runs are durable, pause for approval and resume where they stopped, on any host.`
+      ? `${ENGINE_AGENTS[framework as Exclude<InitFramework, "hono">]} on [agent-unit](https://github.com/farming-labs/agent-unit)'s engine: runs are durable, pause for approval and resume where they stopped, on any host.`
       : framework === "mastra"
       ? "A Mastra app, built for any host by [agent-unit](https://github.com/farming-labs/agent-unit). Mastra owns its routes and storage; agent-unit builds it."
       : framework === "ai-sdk"

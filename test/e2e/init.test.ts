@@ -279,21 +279,44 @@ describe("agent-unit init: agents on agent-unit's engine, one config for every h
     }
   });
 
-  for (const framework of ["ai-sdk", "mastra"] as const) {
-    it(`serves ${framework === "mastra" ? "a Mastra" : "an AI SDK"} agent on Node`, async () => {
+  for (const framework of ["ai-sdk", "mastra", "langgraph", "openai-agents"] as const) {
+    it(`serves its ${framework} agent on Node and on Workers`, async () => {
       const app = await generate(`engine-${framework}`, { framework, runner: "engine", hosts: "node,cloudflare,lambda", provider: "openai", extras: "none" });
       typecheck(app);
-      const dir = out();
-      await buildFixture(app, "node-server", dir);
-      const server = await startServer(process.execPath, [join(dir, "server/index.mjs")], { cwd: dir, env: { OPENAI_API_KEY: "sk-test" } });
-      try {
-        const { agents } = await createAgentClient({ baseUrl: server.url }).manifest();
+      const check = async (url: string) => {
+        const { agents } = await createAgentClient({ baseUrl: url }).manifest();
         expect(agents).toEqual([expect.objectContaining({ name: "assistant", framework })]);
         // Mastra's adapter does not list tools, which Mastra can resolve per request.
-        if (framework === "ai-sdk") expect(agents[0]!.tools).toEqual([expect.objectContaining({ name: "refund" })]);
+        if (framework !== "mastra") expect(agents[0]!.tools).toEqual([expect.objectContaining({ name: "refund" })]);
+      };
+      const node = out();
+      await buildFixture(app, "node-server", node);
+      const server = await startServer(process.execPath, [join(node, "server/index.mjs")], { cwd: node, env: { OPENAI_API_KEY: "sk-test" } });
+      try {
+        await check(server.url);
       } finally {
         await server.stop();
       }
+      if (!workerd) return;
+      // The SDK loads in a Worker: one module it imports that Workers lack would stop it starting.
+      const worker = out();
+      await buildFixture(app, "cloudflare-module", worker);
+      const disk = join(worker, "disk");
+      mkdirSync(disk, { recursive: true });
+      const port = 20_000 + Math.floor(Math.random() * 20_000);
+      const { config } = writeDurableConfig(worker, disk, port, { OPENAI_API_KEY: "sk-test" });
+      const served = await startServer(workerd, ["serve", config], { cwd: worker, port });
+      try {
+        await check(served.url);
+      } finally {
+        await served.stop();
+      }
+    });
+  }
+
+  for (const provider of ["anthropic", "google"]) {
+    it(`a LangGraph agent on ${provider} typechecks`, async () => {
+      typecheck(await generate(`langgraph-${provider}`, { framework: "langgraph", hosts: "node", provider, extras: "none" }));
     });
   }
 });
