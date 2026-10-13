@@ -106,6 +106,26 @@ describe("the files agent-unit init writes", () => {
     expect(env).toEqual(["OPENAI_API_KEY", "API_TOKEN"]);
   });
 
+  it("writes a LangGraph agent on the provider's LangChain chat model, pausing inside its tool", () => {
+    const { files, env } = initFiles({ name: "g", framework: "langgraph", runner: "server", hosts: ["node"], provider: "google" }, "0.1.16");
+    expect(Object.keys(manifest(files).dependencies)).toEqual(["agent-unit", "@langchain/core", "@langchain/google-genai", "@langchain/langgraph", "zod"]);
+    const agent = files["agents/assistant.ts"]!;
+    expect(agent).toContain(`import { ChatGoogleGenerativeAI } from "@langchain/google-genai";`);
+    expect(agent).toContain(`new ChatGoogleGenerativeAI({ model: "gemini-2.5-flash", apiKey: env.GOOGLE_GENERATIVE_AI_API_KEY })`);
+    expect(agent).toContain(`.addNode("tools", new ToolNode([refund]))`);
+    expect(agent).toContain(`interrupt<{ orderId: string }, { approved: boolean }>({ orderId })`);
+    expect(env).toEqual(["GOOGLE_GENERATIVE_AI_API_KEY"]);
+    expect(files["README.md"]).toContain("A LangGraph agent on [agent-unit]");
+  });
+
+  it("writes an OpenAI Agents SDK agent on OpenAI whatever the provider, its tool needing approval", () => {
+    const { files, env } = initFiles({ name: "o", framework: "openai-agents", hosts: ["vercel"], provider: "anthropic" }, "0.1.16");
+    expect(Object.keys(manifest(files).dependencies)).toEqual(["agent-unit", "@openai/agents", "@upstash/redis", "zod"]);
+    expect(files["agents/assistant.ts"]).toContain(`setDefaultOpenAIKey(env.OPENAI_API_KEY ?? "");`);
+    expect(files["agents/assistant.ts"]).toContain(`needsApproval: true,`);
+    expect(env).toEqual(["OPENAI_API_KEY", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "AGENT_UNIT_SECRET"]);
+  });
+
   it("writes a defineAgent app with no framework and no model", () => {
     const { files, env } = initFiles({ name: "plain", framework: "agent-unit", runner: "server", hosts: ["cloudflare"], provider: "google" }, "0.1.16");
     expect(Object.keys(manifest(files).dependencies)).toEqual(["agent-unit", "zod"]);
@@ -162,10 +182,11 @@ describe("agent-unit init", () => {
   it("refuses unknown values, extras that do not apply, and a directory with files in it", async () => {
     const root = temp();
     const options = { install: false, version: "0.1.16", logger: quiet };
-    await expect(init({ ...options, dir: join(root, "a"), framework: "crewai", yes: true })).rejects.toThrow("--framework crewai is not one of: mastra, ai-sdk, agent-unit, hono.");
+    await expect(init({ ...options, dir: join(root, "a"), framework: "crewai", yes: true })).rejects.toThrow("--framework crewai is not one of: mastra, ai-sdk, langgraph, openai-agents, agent-unit, hono.");
     await expect(init({ ...options, dir: join(root, "b"), hosts: "node,heroku", yes: true })).rejects.toThrow("--hosts heroku is not one of");
     await expect(init({ ...options, dir: join(root, "c"), framework: "mastra", extras: "auth", yes: true })).rejects.toThrow("--extras auth does not apply to Mastra apps on their own server.");
     await expect(init({ ...options, dir: join(root, "d"), framework: "hono", runner: "engine", yes: true })).rejects.toThrow("--runner only applies to Mastra and AI SDK apps.");
+    await expect(init({ ...options, dir: join(root, "f"), framework: "langgraph", runner: "server", yes: true })).rejects.toThrow("--runner only applies to Mastra and AI SDK apps.");
     await expect(init({ ...options, dir: join(root, "e"), framework: "ai-sdk", runner: "lambda", yes: true })).rejects.toThrow("--runner lambda is not one of: engine, server.");
     mkdirSync(join(root, "taken"));
     writeFileSync(join(root, "taken/index.ts"), "");

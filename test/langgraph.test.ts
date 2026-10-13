@@ -2,7 +2,7 @@ import { AIMessage } from "@langchain/core/messages";
 import { tool } from "@langchain/core/tools";
 import { FakeListChatModel } from "@langchain/core/utils/testing";
 import { END, interrupt, MemorySaver, MessagesAnnotation, START, StateGraph } from "@langchain/langgraph";
-import { ToolNode } from "@langchain/langgraph/prebuilt";
+import { ToolNode, toolsCondition } from "@langchain/langgraph/prebuilt";
 import { describe, expect, it } from "vitest";
 import { z } from "zod";
 import { functionAdapter } from "../packages/runtime/src/agents";
@@ -134,6 +134,41 @@ describe("LangGraph adapter", () => {
     expect(events.find((event) => event.type === "TOOL_CALL_RESULT")).toMatchObject({ toolCallId: "call_1", content: "order o_9 is paid" });
     const text = events.filter((event) => event.type === "TEXT_MESSAGE_CONTENT").map((event) => (event as { delta: string }).delta);
     expect(text.join("")).toBe("The order is paid.");
+  });
+
+  it("pauses inside a ToolNode tool and resumes there with the answer, as agent-unit init writes it", async () => {
+    const refund = tool(
+      async ({ orderId }: { orderId: string }) => {
+        const { approved } = interrupt<{ orderId: string }, { approved: boolean }>({ orderId });
+        return approved ? `refunded ${orderId}` : `declined ${orderId}`;
+      },
+      { name: "refund", description: "Refunds an order once a person approves it", schema: z.object({ orderId: z.string() }) },
+    );
+    const calls = { model: 0 };
+    const assistant = () =>
+      new StateGraph(MessagesAnnotation)
+        .addNode("agent", async (state) => {
+          calls.model++;
+          const answered = state.messages.some((message) => message.getType() === "tool");
+          return { messages: [answered ? new AIMessage("Done.") : new AIMessage({ content: "", tool_calls: [{ id: "call_1", name: "refund", args: { orderId: "o_42" } }] })] };
+        })
+        .addNode("tools", new ToolNode([refund]))
+        .addEdge(START, "agent")
+        .addConditionalEdges("agent", toolsCondition, ["tools", END])
+        .addEdge("tools", "agent")
+        .compile();
+    const store = memoryStore();
+
+    const { run, done } = await createEngine({ assistant: assistant() }, { store }, adapters).start("assistant", { prompt: "refund o_42" });
+    expect(await done).toMatchObject({ status: "interrupted", interrupt: { payload: { orderId: "o_42" } } });
+    expect(calls.model).toBe(1);
+
+    // Resumed by a fresh engine on the same storage: the model's tool call is not asked for again.
+    const resumed = await createEngine({ assistant: assistant() }, { store }, adapters).resume(run.id, { approved: true });
+    expect(await resumed.done).toMatchObject({ status: "completed" });
+    expect(calls.model).toBe(2);
+    const events = await collect(createEngine({ assistant: assistant() }, { store }, adapters).events(run.id));
+    expect(events.find((event) => event.type === "TOOL_CALL_RESULT")).toMatchObject({ toolCallId: "call_1", content: "refunded o_42" });
   });
 
   it("continues a turn that crashed mid-graph instead of sending the input again", async () => {
