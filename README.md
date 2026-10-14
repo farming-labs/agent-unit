@@ -2,9 +2,8 @@
 
 Build any agent server for any host.
 
-agent-unit is to agents what [Nitro](https://nitro.build) is to web servers, and it is built on
-Nitro. Give it the server you already have, or the agents you want served, and
-`agent-unit build --preset <host>` turns it into a deployable build for Node, Bun, Deno, Cloudflare
+Give agent-unit the server you already have, or the agents you want served, and one command,
+`agent-unit build --preset <host>`, turns it into a deployable build for Node, Bun, Deno, Cloudflare
 Workers, Vercel, Netlify or AWS Lambda. It handles what each host does differently, so your code
 does not have to.
 
