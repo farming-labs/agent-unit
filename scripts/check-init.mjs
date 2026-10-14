@@ -3,7 +3,7 @@
 // the ranges the templates pin. Each app has to install with npm (no peer conflicts), typecheck,
 // build for every host it chose, resolve one copy of its framework (so `instanceof` checks hold), and
 // answer a request from its Node build, and from its Bun and Deno builds when it chose those hosts
-// and they are installed.
+// and they are installed. Workers builds also pass `wrangler deploy --dry-run`.
 // The e2e suite checks the same apps against the SDK versions in agent-unit's lockfile; this catches
 // what npm resolves today. Usage: node scripts/check-init.mjs [name ...] (after pnpm build)
 import { execFileSync, spawn, spawnSync } from "node:child_process";
@@ -144,7 +144,14 @@ try {
       // The app's own test, on the vitest npm resolves.
       if (manifest.scripts.test) step("npm test", "npm", ["test"]);
       const builds = Object.keys(manifest.scripts).filter((script) => /^build(:|$)/.test(script));
-      for (const build of builds.length > 1 ? builds.filter((script) => script !== "build") : builds) step(`npm run ${build}`, "npm", ["run", build]);
+      for (const build of builds.length > 1 ? builds.filter((script) => script !== "build") : builds) {
+        step(`npm run ${build}`, "npm", ["run", build]);
+        // Wrangler checks a Workers build the way a deploy does (config, bindings, migrations, bundle),
+        // without an account: right after the build, before another one replaces .output.
+        if (manifest.scripts[build].includes("cloudflare-module")) {
+          step("wrangler deploy --dry-run", "npx", ["-y", "wrangler@4", "deploy", "--dry-run", "--outdir", join(root, ".wrangler-dry-run")]);
+        }
+      }
       const duplicated = SINGLE.map((name) => [name, [...versions(root, name)]]).filter(([, found]) => found.length > 1);
       if (duplicated.length) throw new Error(`more than one copy of ${duplicated.map(([name, found]) => `${name} (${found.join(", ")})`).join(", ")}`);
       // The Node build last, so its .output is the one served (Workers, Bun and Deno builds use the same directory).

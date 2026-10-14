@@ -22,7 +22,8 @@ describe("the files agent-unit init writes", () => {
       build: "agent-unit build --preset node-server",
       "build:node": "agent-unit build --preset node-server",
       "start:node": "node .output/server/index.mjs",
-      "deploy:cloudflare": "agent-unit build --preset cloudflare-module && npx wrangler deploy",
+      "deploy:cloudflare": "agent-unit build --preset cloudflare-module && npx wrangler@4 deploy",
+      "preview:cloudflare": "agent-unit build --preset cloudflare-module && npx wrangler@4 dev",
     });
     expect(files["agent-unit.config.ts"]).not.toContain("server:");
     expect(files["agent-unit.config.ts"]).toContain(`d1_databases: [{ binding: "DB", database_name: "refund-desk"`);
@@ -31,7 +32,7 @@ describe("the files agent-unit init writes", () => {
     // `cp .env.example .env` leaves MASTRA_DB_URL empty: that has to fall back to the local file too.
     expect(files["src/storage.libsql.ts"]).toContain(`url: env.MASTRA_DB_URL || "file:./mastra.db"`);
     expect(env).toEqual(["ANTHROPIC_API_KEY", "MASTRA_DB_URL", "MASTRA_DB_AUTH_TOKEN"]);
-    expect(files["README.md"]).toContain("npx wrangler d1 create refund-desk");
+    expect(files["README.md"]).toContain("npx wrangler@4 d1 create refund-desk");
   });
 
   it("uses one store and no D1 when Workers is not a host", () => {
@@ -40,7 +41,7 @@ describe("the files agent-unit init writes", () => {
     expect(pkg.imports).toEqual({ "#storage": "./src/storage.postgres.ts" });
     expect(pkg.dependencies).toHaveProperty("@mastra/pg");
     expect(pkg.dependencies).not.toHaveProperty("@mastra/cloudflare-d1");
-    expect(pkg.scripts).toMatchObject({ build: "agent-unit build --preset vercel", deploy: "agent-unit build --preset vercel && npx vercel deploy --prebuilt" });
+    expect(pkg.scripts).toMatchObject({ build: "agent-unit build --preset vercel", deploy: "agent-unit build --preset vercel && npx vercel deploy --prebuilt --prod" });
     expect(Object.keys(files).filter((path) => path.startsWith("src/storage"))).toEqual(["src/storage.postgres.ts"]);
     expect(files["agent-unit.config.ts"]).not.toContain("cloudflare");
   });
@@ -83,7 +84,7 @@ describe("the files agent-unit init writes", () => {
     const config = files["agent-unit.config.ts"]!;
     expect(config).not.toContain("server:");
     expect(config).toContain(`"cloudflare-module": { runtime: "durable-objects" },`);
-    expect(config).toContain(`    vercel: { storage: { driver: "upstash" } },\n    "aws-lambda": { storage: { driver: "upstash" } },`);
+    expect(config).toContain(`    vercel: { storage: { driver: "upstash" }, sweep: "0 0 * * *" },\n    "aws-lambda": { storage: { driver: "upstash" } },`);
     // No secret in the config: storage options are written into the build output.
     expect(config).not.toMatch(/UPSTASH_REDIS_REST_(URL|TOKEN)[^\n]*[,}]/);
     expect(config).toContain(`authorize: (request) => !!env.API_TOKEN`);
@@ -91,7 +92,7 @@ describe("the files agent-unit init writes", () => {
     expect(files["agents/assistant.ts"]).toContain(`model: provider("claude-sonnet-4-5")`);
     expect(files["agents/assistant.ts"]).toContain(`useRun().interrupt<{ approved: boolean }>("approve-refund"`);
     expect(files["src/server.ts"]).toBeUndefined();
-    expect(env).toEqual(["ANTHROPIC_API_KEY", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "AGENT_UNIT_SECRET", "API_TOKEN"]);
+    expect(env).toEqual(["ANTHROPIC_API_KEY", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "AGENT_UNIT_SECRET", "CRON_SECRET", "API_TOKEN"]);
     expect(files["README.md"]).toContain(`curl -N -X POST localhost:3000/agents/assistant/runs -H "authorization: Bearer $API_TOKEN"`);
     expect(files["README.md"]).toContain("Each run gets its own Durable Object");
   });
@@ -124,7 +125,7 @@ describe("the files agent-unit init writes", () => {
     expect(Object.keys(manifest(files).dependencies)).toEqual(["agent-unit", "@openai/agents", "@upstash/redis", "zod"]);
     expect(files["agents/assistant.ts"]).toContain(`setDefaultOpenAIKey(env.OPENAI_API_KEY ?? "");`);
     expect(files["agents/assistant.ts"]).toContain(`needsApproval: true,`);
-    expect(env).toEqual(["OPENAI_API_KEY", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "AGENT_UNIT_SECRET"]);
+    expect(env).toEqual(["OPENAI_API_KEY", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "AGENT_UNIT_SECRET", "CRON_SECRET"]);
   });
 
   it("writes a defineAgent app with no framework and no model", () => {
@@ -188,15 +189,32 @@ describe("the files agent-unit init writes", () => {
   it("puts each host's steps where a newcomer needs them", () => {
     const mastra = initFiles({ name: "desk", framework: "mastra", runner: "server", hosts: ["node", "cloudflare"], store: "libsql" }, "0.1.16");
     const readme = mastra.files["README.md"]!;
-    expect(readme.indexOf("npx wrangler d1 create desk")).toBeLessThan(readme.indexOf("npm run deploy:cloudflare"));
+    expect(readme.indexOf("npx wrangler@4 d1 create desk")).toBeLessThan(readme.indexOf("npm run deploy:cloudflare"));
+    expect(readme).toContain("Sign in once with `npx wrangler@4 login`");
+    // Workers keep Mastra in D1; the LibSQL variables are for the Node host here.
+    expect(initFiles({ name: "d", framework: "mastra", runner: "server", hosts: ["cloudflare"] }, "0.1.16").env).not.toContain("MASTRA_DB_URL");
     expect(readme).toContain("node --env-file=.env .output/server/index.mjs");
     expect(mastra.files[".gitignore"]).toContain("*.db-wal");
 
     const engine = initFiles({ name: "e", framework: "agent-unit", hosts: ["vercel", "netlify", "lambda"] }, "0.1.16");
-    expect(engine.files["agent-unit.config.ts"]).toContain(`On Vercel's Hobby plan cron jobs run at most daily: add sweep: "0 0 * * *"`);
-    expect(engine.files["README.md"]).toContain("Vercel's Hobby plan runs cron jobs at most once a day");
-    expect(engine.files["README.md"]).toContain("`dist` as the publish directory");
-    expect(engine.files["README.md"]).toContain("the handler `index.handler`");
+    // Vercel: a daily sweep, which the Hobby plan allows, and a production deploy, where crons run.
+    expect(engine.files["agent-unit.config.ts"]).toContain(`vercel: { storage: { driver: "upstash" }, sweep: "0 0 * * *" },`);
+    expect(engine.files["README.md"]).toContain("The sweep that wakes sleeping runs runs once a day, which Vercel's Hobby plan allows");
+    expect(engine.files["README.md"]).toContain("`npx vercel env add <NAME> production`");
+    expect(engine.env).toContain("CRON_SECRET");
+    // Netlify: netlify.toml has the build, and its CLI builds and deploys.
+    expect(engine.files["netlify.toml"]).toBe(
+      `# Netlify builds and deploys from this, with \`npm run deploy:netlify\` or from a connected repository.\n[build]\n  command = "npm run build:netlify"\n  publish = "dist"\n`,
+    );
+    expect(manifest(engine.files).scripts["deploy:netlify"]).toBe("npx netlify-cli deploy --prod");
+    expect(engine.files["README.md"]).toContain("npm run deploy:netlify   # npx netlify-cli deploy --prod, which builds with netlify.toml");
+    // Lambda: a SAM template for the build, deployed with the SAM CLI.
+    expect(manifest(engine.files).scripts["deploy:lambda"]).toBe("agent-unit build --preset aws-lambda && sam deploy");
+    expect(engine.files["template.yaml"]).toContain("      CodeUri: .output/server/\n      Handler: index.handler\n      Runtime: nodejs22.x");
+    expect(engine.files["template.yaml"]).toContain("          UPSTASH_REDIS_REST_TOKEN: !Ref UpstashRedisRestToken");
+    expect(engine.files["template.yaml"]).not.toContain("CRON_SECRET");
+    expect(engine.files["README.md"]).toContain("`npm run deploy:lambda -- --guided`");
+    expect(engine.files[".gitignore"]).toMatch(/^\.aws-sam$/m);
     expect(engine.files["README.md"]).toContain("Anyone who can reach the server can start and read runs.");
     expect(engine.files[".gitignore"]).toMatch(/^dist$/m);
 

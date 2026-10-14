@@ -20,11 +20,15 @@ export const HOSTS = {
   node: { label: "Node", preset: "node-server", start: "node .output/server/index.mjs" },
   bun: { label: "Bun", preset: "bun", start: "bun run .output/server/index.mjs" },
   deno: { label: "Deno", preset: "deno-server", start: "deno run -A .output/server/index.mjs" },
-  cloudflare: { label: "Cloudflare Workers", preset: "cloudflare-module", deploy: "npx wrangler deploy" },
-  vercel: { label: "Vercel", preset: "vercel", deploy: "npx vercel deploy --prebuilt" },
-  netlify: { label: "Netlify", preset: "netlify" },
-  lambda: { label: "AWS Lambda", preset: "aws-lambda" },
-} as const satisfies Record<string, { label: string; preset: string; start?: string; deploy?: string }>;
+  // wrangler's major version is pinned, so a deploy does not change with its next breaking release.
+  cloudflare: { label: "Cloudflare Workers", preset: "cloudflare-module", deploy: "npx wrangler@4 deploy" },
+  // --prod: Vercel runs cron jobs (agent-unit's sweep, the app's tasks) only on production deployments.
+  vercel: { label: "Vercel", preset: "vercel", deploy: "npx vercel deploy --prebuilt --prod" },
+  // The Netlify CLI runs the build itself, from netlify.toml, then deploys what it built.
+  netlify: { label: "Netlify", preset: "netlify", deploy: "npx netlify-cli deploy --prod", buildsItself: true },
+  // The AWS SAM CLI deploys template.yaml, which points at the build.
+  lambda: { label: "AWS Lambda", preset: "aws-lambda", deploy: "sam deploy" },
+} as const satisfies Record<string, { label: string; preset: string; start?: string; deploy?: string; buildsItself?: boolean }>;
 
 /** Hosts without a disk that lasts between invocations, where the engine keeps runs in Upstash. */
 const SERVERLESS: InitHost[] = ["vercel", "netlify", "lambda"];
@@ -161,6 +165,56 @@ export function normalizeAnswers(answers: InitAnswers): Required<InitAnswers> {
     provider: answers.framework === "openai-agents" ? "openai" : (answers.provider ?? "openai"),
     extras: [...new Set(answers.extras ?? [])].filter((extra) => allowed.includes(extra)),
   };
+}
+
+/**
+ * An AWS SAM template for the Lambda build: one function on Node.js 22 behind a public function URL,
+ * with each environment variable as a deploy parameter (secrets hidden in the console and the logs).
+ */
+function samTemplate(name: string, env: string[], script: string): string {
+  const parameter = (key: string) => key.toLowerCase().replace(/(^|_)([a-z0-9])/g, (_match, _sep, char: string) => char.toUpperCase());
+  const secret = (key: string) => /KEY|TOKEN|SECRET|PASSWORD|AUTH/.test(key);
+  const lines = [
+    `# AWS SAM template for this app's Lambda build. \`npm run ${script}\` deploys it; the first time, add -- --guided.`,
+    `AWSTemplateFormatVersion: "2010-09-09"`,
+    `Transform: AWS::Serverless-2016-10-31`,
+    `Description: ${name}, built by agent-unit for AWS Lambda`,
+    ``,
+  ];
+  if (env.length) {
+    lines.push(`Parameters:`);
+    for (const key of env) lines.push(`  ${parameter(key)}:`, `    Type: String`, ...(secret(key) ? [`    NoEcho: true`] : []), ...(/^(FEEDBACK_WEBHOOK_URL)$/.test(key) ? [`    Default: ""`] : []));
+    lines.push(``);
+  }
+  lines.push(
+    `Resources:`,
+    `  App:`,
+    `    Type: AWS::Serverless::Function`,
+    `    Properties:`,
+    `      CodeUri: .output/server/`,
+    `      Handler: index.handler`,
+    `      Runtime: nodejs22.x`,
+    `      Architectures: [x86_64]`,
+    `      MemorySize: 1024`,
+    `      # Lambda's default is 3 seconds; a run with model calls needs longer.`,
+    `      Timeout: 300`,
+  );
+  if (env.length) {
+    lines.push(`      Environment:`, `        Variables:`);
+    for (const key of env) lines.push(`          ${key}: !Ref ${parameter(key)}`);
+  }
+  lines.push(
+    `      FunctionUrlConfig:`,
+    `        AuthType: NONE`,
+    `        InvokeMode: BUFFERED`,
+    ``,
+    `Outputs:`,
+    `  Url:`,
+    `    Description: The app's URL`,
+    `    Value: !GetAtt AppUrl.FunctionUrl`,
+    ``,
+  );
+  return lines.join("\n");
 }
 
 const and = (items: string[]) => (items.length > 1 ? `${items.slice(0, -1).join(", ")} and ${items.at(-1)}` : items.join(""));
@@ -317,11 +371,13 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string, app: Exi
   const scripts: Record<string, string> = { dev: "agent-unit dev", build: `agent-unit build --preset ${HOSTS[hosts[0]!].preset}` };
   for (const host of hosts) {
     const { preset } = HOSTS[host];
-    const { start, deploy } = HOSTS[host] as { start?: string; deploy?: string };
+    const { start, deploy, buildsItself } = HOSTS[host] as { start?: string; deploy?: string; buildsItself?: boolean };
     const suffix = hosts.length > 1 ? `:${host}` : "";
     if (suffix) scripts[`build${suffix}`] = `agent-unit build --preset ${preset}`;
     if (start) scripts[`start${suffix}`] = start;
-    if (deploy) scripts[`deploy${suffix}`] = `agent-unit build --preset ${preset} && ${deploy}`;
+    if (deploy) scripts[`deploy${suffix}`] = buildsItself ? deploy : `agent-unit build --preset ${preset} && ${deploy}`;
+    // The Worker on Cloudflare's own runtime, locally: Durable Objects and bindings as deployed.
+    if (host === "cloudflare") scripts[`preview${suffix}`] = `agent-unit build --preset ${preset} && npx wrangler@4 dev`;
   }
   if (task) scripts.task = "agent-unit task daily-summary";
   if (test) scripts.test = "vitest run";
@@ -364,8 +420,15 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string, app: Exi
       config.push(
         `    // No disk lasts between invocations here, so runs go to Upstash. Its driver reads`,
         `    // UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN when it runs.`,
-        ...(serverless.includes("vercel") ? [`    // On Vercel's Hobby plan cron jobs run at most daily: add sweep: "0 0 * * *" to vercel's entry there.`] : []),
-        ...serverless.map((host) => `    ${objectKey(HOSTS[host].preset)}: { storage: { driver: "upstash" } },`),
+        ...serverless.flatMap((host) =>
+          host === "vercel"
+            ? [
+                `    // The sweep wakes sleeping runs and recovers stalled ones. Vercel's Hobby plan runs cron jobs`,
+                `    // at most once a day; on Pro, remove \`sweep\` here for a sweep every minute.`,
+                `    vercel: { storage: { driver: "upstash" }, sweep: "0 0 * * *" },`,
+              ]
+            : [`    ${objectKey(HOSTS[host].preset)}: { storage: { driver: "upstash" } },`],
+        ),
       );
     }
     config.push(`  },`);
@@ -404,7 +467,10 @@ export default async ({ scheduledTime }: { name: string; scheduledTime: number }
   if (engine && serverless.length) {
     env.push(["AGENT_UNIT_SECRET", "Any long random string in production: protects the internal continue and sweep endpoints"]);
   }
-  if (framework === "mastra" && !engine && !ownMastra && answers.store === "libsql") {
+  // Vercel sends it with each cron request; without it, anyone can call the cron route.
+  if (hosts.includes("vercel") && (engine || task)) env.push(["CRON_SECRET", "Any long random string on Vercel: its cron jobs send it, and other callers are refused"]);
+  // Workers keep Mastra in D1: its LibSQL settings matter only where another host runs it.
+  if (framework === "mastra" && !engine && !ownMastra && answers.store === "libsql" && hosts.some((host) => host !== "cloudflare")) {
     env.push(["MASTRA_DB_URL", "LibSQL database. Default file:./mastra.db; serverless hosts need a hosted one, such as libsql://<db>.turso.io"]);
     env.push(["MASTRA_DB_AUTH_TOKEN", "Token for a hosted LibSQL database (Turso)"]);
   }
@@ -413,8 +479,17 @@ export default async ({ scheduledTime }: { name: string; scheduledTime: number }
   if (background) env.push(["FEEDBACK_WEBHOOK_URL", "Optional: where POST /feedback forwards feedback after answering; unset, it is logged"]);
   if (env.length) files[".env.example"] = env.map(([key, comment]) => `# ${comment}\n${key}=\n`).join("\n");
 
+  if (hosts.includes("netlify")) {
+    files["netlify.toml"] = `# Netlify builds and deploys from this, with \`npm run deploy${hosts.length > 1 ? ":netlify" : ""}\` or from a connected repository.
+[build]
+  command = "npm run build${hosts.length > 1 ? ":netlify" : ""}"
+  publish = "dist"
+`;
+  }
+  if (hosts.includes("lambda")) files["template.yaml"] = samTemplate(answers.name, env.map(([key]) => key).filter((key) => key !== "CRON_SECRET"), hosts.length > 1 ? "deploy:lambda" : "deploy");
+
   // Netlify's build puts static files in dist/; LibSQL keeps -shm and -wal files beside its database.
-  const ignored = ["node_modules", ".output", ".agent-unit", ".data", ".nitro", ".vercel", ".netlify", ".wrangler", ...(hosts.includes("netlify") ? ["dist"] : []), "*.db", "*.db-shm", "*.db-wal"];
+  const ignored = ["node_modules", ".output", ".agent-unit", ".data", ".nitro", ".vercel", ".netlify", ".wrangler", ...(hosts.includes("netlify") ? ["dist"] : []), ...(hosts.includes("lambda") ? [".aws-sam"] : []), "*.db", "*.db-shm", "*.db-wal"];
   files[".gitignore"] = [...ignored, ".env", ".env.*", "!.env.example", ".dev.vars", ""].join("\n");
   files["tsconfig.json"] = `${JSON.stringify(
     {
@@ -1012,24 +1087,39 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
     // What to do once before the first deploy, then the commands, then what to know after.
     const before: string[] = [];
     const after: string[] = [];
-    if (host === "cloudflare" && framework === "mastra" && !engine) {
-      before.push(`Before the first deploy, create the D1 database with \`npx wrangler d1 create ${answers.name}\` and put the id it prints in \`agent-unit.config.ts\`.`);
+    const vars = env.length ? " each variable in `.env.example`" : "";
+    if (host === "cloudflare") {
+      before.push("Sign in once with `npx wrangler@4 login` (in CI, set `CLOUDFLARE_API_TOKEN` and `CLOUDFLARE_ACCOUNT_ID` instead).");
+      if (framework === "mastra" && !engine) {
+        before.push(`Create the D1 database before the first deploy, with \`npx wrangler@4 d1 create ${answers.name}\`, and put the id it prints in \`agent-unit.config.ts\`.`);
+      }
+      if (vars) before.push(`Set${vars} as a secret: \`npx wrangler@4 secret put <NAME>\`.`);
+      after.push(`\`npm run preview${suffix}\` runs the build on Cloudflare's runtime on your machine first.`);
+      if (engine) after.push("Each run gets its own Durable Object; the build writes their bindings into `wrangler.json`.");
     }
-    if (host === "vercel") before.push("Run `npx vercel link` once, and set the environment variables in the Vercel project.");
-    if (host === "vercel" && engine) {
+    if (host === "vercel") {
+      before.push(`Link the project once with \`npx vercel link\`${vars ? `, and add${vars}: \`npx vercel env add <NAME> production\`` : ""}.`);
+      if (engine) after.push("The sweep that wakes sleeping runs runs once a day, which Vercel's Hobby plan allows; on Pro, remove `sweep` from `vercel` in `agent-unit.config.ts` for a sweep every minute.");
+    }
+    if (host === "netlify") {
       before.push(
-        "Vercel's Hobby plan runs cron jobs at most once a day, and a deploy with a more frequent one fails. On Hobby, add `sweep: \"0 0 * * *\"` to `vercel` in `agent-unit.config.ts`: runs that sleep or stall then continue once a day.",
+        `Sign in once with \`npx netlify-cli login\` (in CI, set \`NETLIFY_AUTH_TOKEN\`); the first deploy asks to create or link a site.${vars ? ` Set${vars}: \`npx netlify-cli env:set <NAME> <value>\`.` : ""}`,
       );
+      after.push("Or connect the repository in Netlify: `netlify.toml` sets the build command and the publish directory.");
     }
-    if (host === "cloudflare" && engine) after.push("Each run gets its own Durable Object; the build writes their bindings into `wrangler.json`.");
-    if (engine && (SERVERLESS as string[]).includes(host)) after.push("Runs are kept in [Upstash](https://upstash.com) Redis here: set `UPSTASH_REDIS_REST_URL`, `UPSTASH_REDIS_REST_TOKEN` and `AGENT_UNIT_SECRET`.");
-    if (host === "cloudflare" && env.length) after.push("Set secrets with `npx wrangler secret put <NAME>`, one for each variable in `.env.example`.");
-    if (host === "netlify") after.push(`Connect the repository in Netlify with \`${build}\` as the build command and \`dist\` as the publish directory.`);
-    if (host === "lambda") after.push("Deploy `.output/server` as a Node.js 20 or later function with the handler `index.handler` (SAM, CDK, Terraform or the console), behind a function URL or API Gateway.");
+    if (host === "lambda") {
+      before.push(
+        "Install the [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html) and sign in to AWS (`aws configure` or `aws sso login`).",
+        `The first deploy asks for a stack name, a region${vars ? " and each variable" : ""}, and saves your answers in \`samconfig.toml\`: \`npm run deploy${suffix} -- --guided\`.`,
+      );
+      after.push("`template.yaml` describes the function: Node.js 22, the handler `index.handler`, a 5-minute timeout and a public function URL, printed as `Url` when the deploy finishes.");
+    }
+    if (engine && (SERVERLESS as string[]).includes(host)) after.push("Runs are kept in [Upstash](https://upstash.com) Redis here, from `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.");
     lines.push(`**${label}** (\`${preset}\`)`, "");
     for (const line of before) lines.push(line, "");
     lines.push("```sh");
-    if (deploy) lines.push(`npm run deploy${suffix}   # builds, then ${deploy}`);
+    const { buildsItself } = HOSTS[host] as { buildsItself?: boolean };
+    if (deploy) lines.push(`npm run deploy${suffix}   # ${buildsItself ? `${deploy}, which builds with netlify.toml` : `builds, then ${deploy}`}`);
     else lines.push(build);
     if (start) lines.push(`npm run start${suffix}`);
     lines.push("```", "");

@@ -279,7 +279,29 @@ or the `origin` option) and never from an incoming request; without one it conti
 
 On Vercel's Hobby plan, cron jobs run at most once a day, and a deploy with a more frequent one
 fails. The engine's sweep (which wakes sleeping runs and recovers stalled ones) runs every minute by
-default, so on Hobby set `presets: { vercel: { sweep: "0 0 * * *" } }`, or `sweep: false`.
+default, so on Hobby set `presets: { vercel: { sweep: "0 0 * * *" } }`, or `sweep: false`. Apps from
+`agent-unit init` start with the daily sweep on Vercel.
+
+### Deploy in one command
+
+An app from `agent-unit init` has a `deploy` script for each platform (`deploy:<host>` when it has
+several), and its README has the same steps:
+
+| Platform | `npm run deploy` runs | Once, before the first deploy |
+| --- | --- | --- |
+| Cloudflare Workers | the build, then `npx wrangler@4 deploy` | `npx wrangler@4 login` (in CI, `CLOUDFLARE_API_TOKEN`); each secret with `npx wrangler@4 secret put <NAME>` |
+| Vercel | the build, then `npx vercel deploy --prebuilt --prod` | `npx vercel link`; each variable with `npx vercel env add <NAME> production` |
+| Netlify | `npx netlify-cli deploy --prod`, which builds from the app's `netlify.toml` | `npx netlify-cli login` (in CI, `NETLIFY_AUTH_TOKEN`); the first deploy creates or links the site |
+| AWS Lambda | the build, then `sam deploy` with the app's `template.yaml` | the [AWS SAM CLI](https://docs.aws.amazon.com/serverless-application-model/latest/developerguide/install-sam-cli.html) and AWS credentials; the first time, `npm run deploy -- --guided` |
+
+Node, Bun and Deno get a `start` script for the built server, which any host that runs a long-lived
+process can use. `npm run preview:cloudflare` runs a Workers build on Cloudflare's own runtime
+locally, with its Durable Objects, before you deploy.
+
+Vercel runs cron jobs only on production deployments, so the deploy is `--prod`; set `CRON_SECRET`
+there so only Vercel can call them. The Lambda template gives the function Node.js 22, a five-minute
+timeout (Lambda's default is three seconds) and a public function URL, printed as `Url` after the
+deploy; each variable in `.env.example` is a deploy parameter.
 
 ### One config for every host
 
