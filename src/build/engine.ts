@@ -48,7 +48,7 @@ export function resolveStorage(project: LoadedProject, preset: string, warn: (me
   if (SERVER_PRESETS.test(preset)) return DEFAULT_STORAGE;
   warn(
     `The "${preset}" preset has no durable local disk, so runs would be lost between invocations. ` +
-      `Set \`storage\` in agent-unit.config.ts to a shared driver (redis, upstash, cloudflare-kv-binding, vercel-kv, netlify-blobs, ...). Using memory for now.`,
+      `Set \`storage\` in agent-unit.config.ts to a shared driver (upstash, redis, cloudflare-kv-binding, netlify-blobs, ...). Using memory for now.`,
   );
   return { driver: "memory" };
 }

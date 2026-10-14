@@ -1,7 +1,9 @@
 # The agent-unit contract
 
-Version 1. This folder is the contract every agent-unit server implements and every client, UI and
-service can rely on. It is independent of the agent framework inside and of the host it runs on.
+Version 1. This folder is the contract every server on agent-unit's engine implements and every
+client, UI and service can rely on. It is independent of the agent framework inside and of the host
+it runs on. An app's own server, or a framework's (Mastra's), built by agent-unit without the engine
+keeps its own API; this contract does not apply to it.
 
 | Document | What it defines |
 | --- | --- |

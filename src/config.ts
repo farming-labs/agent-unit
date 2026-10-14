@@ -85,7 +85,7 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
   /**
    * Durable storage for runs (an unstorage driver). Default: the filesystem (`.data/agent-unit`)
    * on servers. Serverless presets need a shared driver such as redis, upstash, cloudflare-kv-binding,
-   * vercel-kv or netlify-blobs, because their filesystem does not survive between invocations.
+   * upstash or netlify-blobs, because their filesystem does not survive between invocations.
    */
   storage?: StorageConfig;
   /** Nitro preset to build for. Default: `node-server`, or the NITRO_PRESET environment variable. */
