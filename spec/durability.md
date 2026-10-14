@@ -58,11 +58,15 @@ Step results are stored as JSON with support for `undefined`, `Date`, `BigInt`, 
 ## Continuation on any host
 
 - **Interrupt:** the run parks; `POST /runs/:id/resume` continues it.
-- **Sleep:** the run parks; a scheduled sweep (every minute, using the host's scheduler) wakes
-  runs whose time has passed. Long-lived servers also wake them with an in-process timer.
+- **Sleep:** the run parks; a scheduled sweep, on the host's own scheduler, wakes runs whose time
+  has passed. It runs every minute unless the app sets another schedule (`sweep`); on a plan whose
+  scheduler runs only daily, sleeps end up to a day late. Long-lived servers also wake them with an
+  in-process timer, and the Durable Objects runtime with each run's own alarm.
 - **Host time limit:** a run configured with a time budget yields before the host's limit, at a step
-  boundary, and continues in a fresh invocation. Nothing is lost because everything completed is
-  in the journal.
+  boundary, and continues in a fresh invocation where the deployment can call its own URL (see
+  [Internal endpoints](./runs.md#internal-endpoints)), otherwise in the same process. Nothing is lost
+  because everything completed is in the journal. The budget is checked between steps, so one long
+  step (a slow model call) can run past it; the host's own timeout has to allow for that.
 - **Crash:** a run left `running` without progress for longer than its lease is picked up by the
   sweep and continued from its journal. A run whose executions crash five times in a row (the
   engine's `maxCrashes`) fails with `RunCrashed` instead of being retried forever.
@@ -77,7 +81,7 @@ entry), `events:<run>:<seq>`, `index:` (runs by recency and status, sleepers by 
 runs by finish time), `state:`, `lease:` and `kv:` (adapter storage). Events are read in seq order
 and a reader stops at a gap until the run settles, so a reader never skips an event that is still
 being written. Any driver works; serverless hosts need a shared one (Redis,
-Upstash, Cloudflare KV, Vercel KV, Netlify Blobs, a database), because their filesystem does not
+Upstash, Cloudflare KV, Netlify Blobs, a database), because their filesystem does not
 survive between invocations. Filesystem drivers write atomically by default, so a crash never leaves
 a torn record, and an execution writes its journal one write at a time.
 

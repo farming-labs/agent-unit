@@ -5,7 +5,7 @@ import refund from "./refund";
 import reminder from "./reminder";
 
 // One agent-unit for the whole app. Runs live in `.data/agent-unit` here; on a serverless
-// target, swap the driver for a shared one (redis, upstash, vercel-kv, ...).
+// target, swap the driver for a shared one (redis, upstash, ...).
 export const agents = createAgentUnit({
   name: "farm-app",
   agents: { refund, reminder },

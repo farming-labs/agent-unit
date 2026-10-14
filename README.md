@@ -258,7 +258,7 @@ npx agent-unit build --preset <preset>
 | Deno | `deno-server` | Filesystem by default | Unlimited | In-process timers + sweep |
 | Cloudflare Workers | `cloudflare-module` with `runtime: "durable-objects"` | One Durable Object per run (no storage to configure) | Yields every 10 min and continues from an alarm | Each run's own alarm |
 | Cloudflare Workers (KV) | `cloudflare-module` | Set `storage` (for example `cloudflare-kv-binding`) | Yields every 25s and continues | Cron Trigger runs the sweep |
-| Vercel | `vercel` | Set `storage` (Redis, Upstash, Vercel KV, …) | Yields every 240s and continues | Vercel Cron runs the sweep (see below for the Hobby plan) |
+| Vercel | `vercel` | Set `storage` (Upstash, Redis, …) | Yields every 240s and continues | Vercel Cron runs the sweep (see below for the Hobby plan) |
 | Netlify | `netlify` | Set `storage` (`netlify-blobs`, Redis, …) | Yields every 20s; finishes in the request | Generated scheduled function (needs `AGENT_UNIT_SECRET`) |
 | AWS Lambda | `aws-lambda` | Set `storage` (Redis, Upstash, a database via db0, …) | Yields every 25s; finishes in the request | Point EventBridge at `POST /__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` |
 
@@ -835,6 +835,10 @@ conditional write, such as a database `UPDATE … WHERE version = ?`.
 - In the Durable Objects runtime, the run list and shared state live in one index object, written when
   a run starts, parks or finishes (not on every step). `agent-unit dev` runs the default runtime
   locally.
+- The time budget is checked between steps, so a step that is already running (a slow model call,
+  with its SDK's retries) finishes before the run yields, and can run past the budget. Give the
+  host's function a timeout above your longest step: the Lambda template `agent-unit init` writes
+  allows five minutes, against Lambda's three-second default.
 - Streamed text and tool-argument deltas that arrive within 50ms of each other are merged into one
   event, so a long answer costs a few writes instead of one per token, and live clients see text up
   to 50ms later. `deltaBatchMs: 0` on `createAgentUnit` keeps every delta its own event.

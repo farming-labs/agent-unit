@@ -82,7 +82,7 @@ function decodeSegment(value: string): string {
 
 /**
  * Persists runs, journals, events, state and leases on any unstorage driver: memory, the
- * filesystem, Redis, Cloudflare KV, Vercel KV, Netlify Blobs, Deno KV, a database, …
+ * filesystem, Redis, Upstash, Cloudflare KV, Netlify Blobs, Deno KV, a database, …
  *
  * Runs are indexed (newest first overall and per status, sleepers by wake time, finished runs by
  * when they finished), so listing, the sweep and retention read what they need instead of every
