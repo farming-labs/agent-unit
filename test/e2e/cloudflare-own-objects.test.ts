@@ -37,7 +37,7 @@ describe.skipIf(!workerd)("Durable Objects runtime with the app's own Durable Ob
       { binding: "DB", database_name: "notes", database_id: "00000000-0000-0000-0000-000000000000" },
     ]);
     const entry = readFileSync(join(out, "server/index.mjs"), "utf8");
-    for (const name of ["AgentUnitRun", "AgentUnitIndex", "NoteStore"]) expect(entry).toMatch(new RegExp(`export \\{[^}]*\\b${name}\\b`));
+    for (const name of ["AgentUnitRun", "AgentUnitIndex", "NoteStore"]) expect(entry).toMatch(new RegExp(`export\\s*\\{[^}]*\\b${name}\\b`));
   });
 
   it("runs agents in agent-unit's objects that use the app's own object", async () => {
@@ -48,7 +48,7 @@ describe.skipIf(!workerd)("Durable Objects runtime with the app's own Durable Ob
   it("takes the app's exports from cloudflare.exports too, and names a missing file", async () => {
     const explicit = tempDir("cf-own-explicit");
     await buildFixture(root, "cloudflare-module", explicit, { NOTES_EXPORTS: "./exports.cloudflare.ts" });
-    expect(readFileSync(join(explicit, "server/index.mjs"), "utf8")).toMatch(/export \{[^}]*\bNoteStore\b/);
+    expect(readFileSync(join(explicit, "server/index.mjs"), "utf8")).toMatch(/export\s*\{[^}]*\bNoteStore\b/);
     cleanup(explicit);
     await expect(buildFixture(root, "cloudflare-module", tempDir("cf-own-missing"), { NOTES_EXPORTS: "./missing.ts" })).rejects.toThrow(
       /Cloudflare exports file "\.\/missing\.ts" does not exist/,

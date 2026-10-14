@@ -31,9 +31,19 @@ const SERVERLESS: InitHost[] = ["vercel", "netlify", "lambda"];
 
 /** Mastra's store on every host but Workers, where it is always D1. */
 export const STORES = {
-  libsql: { label: "LibSQL", hint: "a local file, or Turso in production" },
-  postgres: { label: "Postgres", hint: "any Postgres, such as Neon or Supabase" },
+  libsql: { label: "LibSQL", hint: "a local file, or Turso, on a server you run" },
+  postgres: { label: "Postgres", hint: "any Postgres, such as Neon or Supabase; works on serverless hosts" },
 } as const;
+
+/** Whether any of these hosts is serverless (Vercel, Netlify, AWS Lambda). */
+export const hasServerless = (hosts: InitHost[]): boolean => hosts.some((host) => SERVERLESS.includes(host));
+
+/**
+ * Mastra's store when none is chosen. LibSQL loads a native binary when it is imported, and a build
+ * carries the binary of the machine that made it (a Mac's, say), which a Linux function cannot load;
+ * its default local file cannot be written there either. Postgres is plain JavaScript over the network.
+ */
+export const defaultStore = (hosts: InitHost[]): InitStore => (hasServerless(hosts) ? "postgres" : "libsql");
 
 export const PROVIDERS = {
   openai: { label: "OpenAI", package: "@ai-sdk/openai", create: "createOpenAI", langchain: "@langchain/openai", chat: "ChatOpenAI", key: "OPENAI_API_KEY", model: "gpt-5-mini" },
@@ -147,7 +157,7 @@ export function normalizeAnswers(answers: InitAnswers): Required<InitAnswers> {
     framework: answers.framework,
     runner,
     hosts: [...new Set(answers.hosts)],
-    store: answers.store ?? "libsql",
+    store: answers.store ?? defaultStore(answers.hosts),
     provider: answers.framework === "openai-agents" ? "openai" : (answers.provider ?? "openai"),
     extras: [...new Set(answers.extras ?? [])].filter((extra) => allowed.includes(extra)),
   };

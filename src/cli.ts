@@ -57,7 +57,7 @@ const build = defineCommand({
     root,
     preset: { type: "string", description: "Nitro preset: node-server, bun, deno-server, cloudflare-module, vercel, netlify, aws-lambda, ..." },
     out: { type: "string", description: "Output directory (default: the preset's own)" },
-    minify: { type: "boolean", description: "Minify the server bundle", default: false },
+    minify: { type: "boolean", description: "Minify the server bundle (default: on for Cloudflare, whose upload size is limited; --no-minify turns it off)" },
   },
   async run({ args }) {
     const { build: buildApp } = await import("./build/nitro");

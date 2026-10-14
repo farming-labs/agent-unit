@@ -6,6 +6,8 @@ import {
   asksRunner,
   asksStore,
   defaultRunner,
+  defaultStore,
+  hasServerless,
   detectFramework,
   EXTRAS,
   extrasFor,
@@ -149,7 +151,13 @@ export async function init(options: InitOptions): Promise<InitResult> {
     if (options.store) store = pick(STORES, options.store, "store");
     else if (offStoreHosts.length) {
       const where = normalizedHosts.includes("cloudflare") ? " (Workers use D1)" : "";
-      store = await ask({ message: `Mastra storage${where}`, type: "select", options: choicesOf(STORES), initial: "libsql" }, "libsql", "--store");
+      const initial = defaultStore(normalizedHosts);
+      store = await ask({ message: `Mastra storage${where}`, type: "select", options: choicesOf(STORES), initial }, initial, "--store");
+    }
+    if (store === "libsql" && hasServerless(normalizedHosts)) {
+      logger.warn(
+        "  LibSQL on Vercel, Netlify or AWS Lambda needs a hosted database (Turso) and a build made on Linux: it loads a native binary, and a build made on a Mac or Windows carries theirs. Let the host build from your repository, or choose --store postgres.",
+      );
     }
   }
   let provider: InitProvider | undefined;

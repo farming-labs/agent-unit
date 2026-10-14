@@ -357,6 +357,16 @@ describe("agent-unit init: agents on agent-unit's engine, one config for every h
     }
   });
 
+  it("says which variables are missing when Upstash has no credentials where it runs", async () => {
+    const dir = out();
+    await buildFixture(root, "vercel", dir, {});
+    delete process.env.UPSTASH_REDIS_REST_URL;
+    delete process.env.UPSTASH_REDIS_REST_TOKEN;
+    await expect(import(pathToFileURL(join(dir, vercel.entry)).href)).rejects.toThrow(
+      "runs are kept in Upstash here, but UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are not set",
+    );
+  });
+
   for (const framework of ["ai-sdk", "mastra", "langgraph", "openai-agents"] as const) {
     it(`serves its ${framework} agent on Node and on Workers`, async () => {
       // LangGraph on Anthropic, whose chat model checks its key when created: the app has to start without one.
