@@ -254,9 +254,9 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     preset,
     builder: "rolldown",
     compatibilityDate: "2025-07-01",
-    // Workers limit a Worker's compressed size (3 MiB on the free plan), and an agent SDK's bundle comes
-    // close: minified by default there. Elsewhere readable stack traces matter more.
-    minify: options.minify ?? cloudflare,
+    // Readable output by default, on Workers too: Cloudflare limits a Worker's uncompressed size (64 MiB),
+    // not its compressed size, and minifying did not shorten a Mastra Worker's startup.
+    minify: options.minify ?? false,
     buildDir: join(genDir, "nitro"),
     ...(options.outDir ? { output: { dir: resolve(project.root, options.outDir) } } : {}),
     serverEntry: { handler: entry, format: "web" },
