@@ -1,7 +1,7 @@
 {
   "name": "agent-unit",
   "version": "0.2.0",
-  "description": "Durable runs, pauses and state for any agent framework, on any host.",
+  "description": "Build any agent server for any host: your own server, Mastra's, or durable runs for any agent framework.",
   "keywords": [
     "agents",
     "ai",

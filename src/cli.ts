@@ -123,7 +123,7 @@ const manifest = defineCommand({
 
 void runMain(
   defineCommand({
-    meta: { name: "agent-unit", version, description: "Durable runs for any agent framework, on any host" },
+    meta: { name: "agent-unit", version, description: "Build any agent server for any host, with durable runs when you want them" },
     subCommands: { init, dev, build, add, task, manifest },
   }),
 );

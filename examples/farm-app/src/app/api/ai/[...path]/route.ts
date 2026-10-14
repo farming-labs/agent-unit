@@ -11,3 +11,5 @@ async function handle(request: Request): Promise<Response> {
 
 export const GET = handle;
 export const POST = handle;
+// DELETE /api/ai/runs/:id removes a finished run and its history.
+export const DELETE = handle;
