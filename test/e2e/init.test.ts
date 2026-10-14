@@ -357,6 +357,28 @@ describe("agent-unit init: agents on agent-unit's engine, one config for every h
     }
   });
 
+  it.skipIf(!redisAvailable)("keeps runs in Upstash from the variables Vercel's Marketplace sets", async () => {
+    const upstash = await startUpstash("kv-token");
+    const dir = out();
+    // A database added to a Vercel project from its Marketplace comes as KV_REST_API_URL and _TOKEN.
+    const env = { KV_REST_API_URL: upstash.url, KV_REST_API_TOKEN: "kv-token", API_TOKEN: "secret" };
+    try {
+      await buildFixture(root, "vercel", dir, env);
+      Object.assign(process.env, env);
+      const module = (await import(pathToFileURL(join(dir, vercel.entry)).href)) as Record<string, any>;
+      const pending: Promise<unknown>[] = [];
+      const runId = await refund("https://app.example.com", async (input, init) => {
+        const response = await vercel.invoke(module, new Request(input, init), (promise) => pending.push(promise));
+        await Promise.all(pending.splice(0));
+        return response;
+      });
+      expect(await upstash.redis.keys(`*${runId}*`)).not.toEqual([]);
+    } finally {
+      for (const key of Object.keys(env)) delete process.env[key];
+      await upstash.stop();
+    }
+  });
+
   it("says which variables are missing when Upstash has no credentials where it runs", async () => {
     const dir = out();
     await buildFixture(root, "vercel", dir, {});

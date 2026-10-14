@@ -92,10 +92,13 @@ if (storageConfig?.driver !== ${JSON.stringify(name)}) {
 const { driver: _driver, ...storageOptions } = storageConfig;
 ${
       name === "upstash"
-        ? `// Without these the first run fails deep in a request ("Failed to parse URL from /pipeline"); say what is missing.
+        ? `// Upstash's own names, or the ones Vercel gives an Upstash database from its Marketplace (as
+// Upstash's SDK reads them). Without either, the first run fails deep in a request; say what is missing.
 const upstashEnv = globalThis.process?.env ?? {};
-if (!(storageOptions.url || upstashEnv.UPSTASH_REDIS_REST_URL) || !(storageOptions.token || upstashEnv.UPSTASH_REDIS_REST_TOKEN)) {
-  throw new Error("agent-unit: runs are kept in Upstash here, but UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are not set. Set both in the host's environment (or url and token in agent-unit.config.ts).");
+storageOptions.url ||= upstashEnv.UPSTASH_REDIS_REST_URL || upstashEnv.KV_REST_API_URL;
+storageOptions.token ||= upstashEnv.UPSTASH_REDIS_REST_TOKEN || upstashEnv.KV_REST_API_TOKEN;
+if (!storageOptions.url || !storageOptions.token) {
+  throw new Error("agent-unit: runs are kept in Upstash here, but UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are not set (nor Vercel's KV_REST_API_URL and KV_REST_API_TOKEN). Set them in the host's environment (or url and token in agent-unit.config.ts).");
 }
 `
         : ""
