@@ -39,8 +39,9 @@ It asks for the framework (Mastra, the AI SDK, LangGraph, the OpenAI Agents SDK,
 runs it (LangGraph and the OpenAI Agents SDK always run on the engine), the hosts to deploy to,
 Mastra's storage, the model provider and extras (a scheduled task, bearer-token auth, background
 work with `waitUntil`, a test that runs offline), and writes an app with one working agent, a
-`build` script per host (with `start` for Node, Bun and Deno and `deploy` for Cloudflare and
-Vercel), and a README with each host's steps.
+`build` script per host (with `start` for Node, Bun and Deno, and `deploy` for Cloudflare, Vercel,
+Netlify and AWS Lambda; see [Deploy in one command](#deploy-in-one-command)), and a README with each
+host's steps.
 
 - **On the engine** (the default for the AI SDK), the agent asks a person before it refunds an
   order, and the run resumes where it stopped. One `agent-unit.config.ts` sets each host's run
