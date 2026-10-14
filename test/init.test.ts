@@ -95,6 +95,9 @@ describe("the files agent-unit init writes", () => {
     expect(env).toEqual(["ANTHROPIC_API_KEY", "UPSTASH_REDIS_REST_URL", "UPSTASH_REDIS_REST_TOKEN", "AGENT_UNIT_SECRET", "CRON_SECRET", "API_TOKEN"]);
     expect(files["README.md"]).toContain(`curl -N -X POST localhost:3000/agents/assistant/runs -H "authorization: Bearer $API_TOKEN"`);
     expect(files["README.md"]).toContain("Each run gets its own Durable Object");
+    // Vercel's Marketplace Redis works as is; Lambda needs the Upstash variables.
+    expect(files["README.md"]).toContain("it sets `KV_REST_API_URL` and `KV_REST_API_TOKEN`, which agent-unit reads");
+    expect(files["README.md"]).toContain("Runs are kept in [Upstash](https://upstash.com) Redis here, from `UPSTASH_REDIS_REST_URL`");
   });
 
   it("keeps runs on disk with no presets when every host is a server, and runs Mastra agents on the engine when asked", () => {

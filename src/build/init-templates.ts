@@ -1114,7 +1114,12 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
       );
       after.push("`template.yaml` describes the function: Node.js 22, the handler `index.handler`, a 5-minute timeout and a public function URL, printed as `Url` when the deploy finishes.");
     }
-    if (engine && (SERVERLESS as string[]).includes(host)) after.push("Runs are kept in [Upstash](https://upstash.com) Redis here, from `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.");
+    if (engine && host === "vercel") {
+      // Vercel's Marketplace sets KV_REST_API_URL and KV_REST_API_TOKEN, which the runtime reads too.
+      after.push(
+        "Runs are kept in [Upstash](https://upstash.com) Redis here. The quickest way to get one is Upstash's Redis in the project's Storage tab on Vercel: it sets `KV_REST_API_URL` and `KV_REST_API_TOKEN`, which agent-unit reads, so the two `UPSTASH_REDIS_REST_` variables need not be added.",
+      );
+    } else if (engine && (SERVERLESS as string[]).includes(host)) after.push("Runs are kept in [Upstash](https://upstash.com) Redis here, from `UPSTASH_REDIS_REST_URL` and `UPSTASH_REDIS_REST_TOKEN`.");
     lines.push(`**${label}** (\`${preset}\`)`, "");
     for (const line of before) lines.push(line, "");
     lines.push("```sh");
