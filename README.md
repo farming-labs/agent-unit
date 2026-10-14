@@ -314,7 +314,8 @@ export default defineConfig({
   retention: "30d",
   presets: {
     "cloudflare-module": { runtime: "durable-objects" },
-    // Reads UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN when it runs.
+    // Reads UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN when it runs, or KV_REST_API_URL and
+    // KV_REST_API_TOKEN, the names a Redis database from Vercel's Marketplace gets.
     vercel: { storage: { driver: "upstash" } },
   },
 });

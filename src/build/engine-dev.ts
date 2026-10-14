@@ -22,6 +22,11 @@ async function loadDriver(root: string, config: StorageConfig): Promise<Driver> 
   if (typeof module.default !== "function") throw new Error(`agent-unit: the storage driver "${driver}" must export default a driver factory.`);
   // Relative fs paths resolve against the app root, matching the built server's working directory.
   if (typeof options.base === "string" && /^(fs|fs-lite)$/.test(driver)) options.base = resolve(root, options.base);
+  // Upstash reads its own names; Vercel gives an Upstash database KV_REST_API_*, as the build accepts too.
+  if (driver === "upstash") {
+    options.url ||= process.env.UPSTASH_REDIS_REST_URL || process.env.KV_REST_API_URL;
+    options.token ||= process.env.UPSTASH_REDIS_REST_TOKEN || process.env.KV_REST_API_TOKEN;
+  }
   return module.default(options);
 }
 
