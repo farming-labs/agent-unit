@@ -169,6 +169,22 @@ describe("the files agent-unit init writes", () => {
     expect(initFiles({ name: "m", framework: "mastra", hosts: ["node"], extras: ["background", "test"] }, "0.1.16").files).not.toHaveProperty("test/server.test.ts");
   });
 
+  it("gives Mastra Postgres when it goes to a serverless host, and LibSQL on servers", async () => {
+    const serverless = initFiles({ name: "m", framework: "mastra", runner: "server", hosts: ["node", "vercel"] }, "0.1.16").files;
+    expect(serverless).toHaveProperty("src/storage.postgres.ts");
+    expect(JSON.parse(serverless["package.json"]!).dependencies).toHaveProperty("@mastra/pg");
+    expect(initFiles({ name: "m", framework: "mastra", runner: "server", hosts: ["node", "cloudflare"] }, "0.1.16").files).toHaveProperty("src/storage.libsql.ts");
+
+    const warnings: string[] = [];
+    const root = mkdtempSync(join(tmpdir(), "agent-unit-init-"));
+    try {
+      await init({ dir: join(root, "m"), framework: "mastra", runner: "server", hosts: "lambda", store: "libsql", yes: true, install: false, version: "0.1.16", logger: { info() {}, warn: (message) => warnings.push(message) } });
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+    expect(warnings.join("\n")).toContain("LibSQL on Vercel, Netlify or AWS Lambda needs a hosted database (Turso) and a build made on Linux");
+  });
+
   it("puts each host's steps where a newcomer needs them", () => {
     const mastra = initFiles({ name: "desk", framework: "mastra", runner: "server", hosts: ["node", "cloudflare"], store: "libsql" }, "0.1.16");
     const readme = mastra.files["README.md"]!;

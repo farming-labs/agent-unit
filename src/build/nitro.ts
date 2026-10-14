@@ -3,6 +3,7 @@ import { join, relative, resolve } from "node:path";
 import type { StorageConfig } from "../config";
 import { configForPreset, loadProject, resolveServer, toImport } from "./load";
 import { prepareTasks } from "./tasks";
+import { foreignNativePackages } from "./native";
 import { dedupeWranglerFile } from "./wrangler";
 
 // The compiler: one Nitro build of the app's server for any preset. The server is the app's own
@@ -197,6 +198,15 @@ export interface BuildResult {
 }
 
 /** Builds the app's server (its own, or agent-unit's engine serving its agents) for the chosen preset. */
+/**
+ * The Vercel function runtime to set, when Nitro's choice (the Node that runs the build) is one Vercel
+ * no longer offers: Node 20, deprecated on 2026-10-01. A runtime the app sets is kept.
+ */
+export function vercelRuntime(configured: string | undefined, nodeVersion: string): string | undefined {
+  if (configured) return undefined;
+  return Number(nodeVersion.split(".")[0]) < 22 ? "nodejs22.x" : undefined;
+}
+
 export async function build(options: BuildOptions = {}): Promise<BuildResult> {
   const logger = options.logger ?? { info: console.log, warn: console.warn };
   const loaded = await loadProject(options.root);
@@ -244,7 +254,9 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     preset,
     builder: "rolldown",
     compatibilityDate: "2025-07-01",
-    minify: options.minify ?? false,
+    // Workers limit a Worker's compressed size (3 MiB on the free plan), and an agent SDK's bundle comes
+    // close: minified by default there. Elsewhere readable stack traces matter more.
+    minify: options.minify ?? cloudflare,
     buildDir: join(genDir, "nitro"),
     ...(options.outDir ? { output: { dir: resolve(project.root, options.outDir) } } : {}),
     serverEntry: { handler: entry, format: "web" },
@@ -260,6 +272,11 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
   if (options.outDir && relative(outDir, nitro.options.output.publicDir).startsWith("..")) {
     nitro.options.output.publicDir = join(outDir, "public");
   }
+  // Nitro gives a Vercel function the runtime of the Node running the build; Vercel no longer offers
+  // Node 20 (deprecated 2026-10-01), so a build on it targets the oldest version Vercel runs.
+  const vercel = nitro.options.vercel as { functions?: { runtime?: string } } | undefined;
+  const runtime = /^vercel/.test(preset) && !("Bun" in globalThis) ? vercelRuntime(vercel?.functions?.runtime, process.versions.node) : undefined;
+  if (runtime) nitro.options.vercel = { ...vercel, functions: { ...vercel?.functions, runtime } } as typeof nitro.options.vercel;
   try {
     await prepare(nitro);
     await copyPublicAssets(nitro);
@@ -269,6 +286,16 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     await nitro.close();
   }
   await engine?.finish({ outDir, serverDir: nitro.options.output.serverDir }, logger.warn);
+  // A host that runs Linux cannot load the native binaries of the machine that built for it. Servers
+  // you start yourself (Node, Bun, Deno) usually run where they were built, so only the others warn.
+  if (process.platform !== "linux" && !/^(node|bun|deno-server)/.test(preset)) {
+    const foreign = foreignNativePackages(nitro.options.output.serverDir);
+    if (foreign.length) {
+      logger.warn(
+        `agent-unit: this ${preset} build includes native packages for ${process.platform} (${foreign.join(", ")}), and ${preset} runs on Linux, where they cannot load. Build on Linux (in CI, or let the host build from your repository), or use a dependency without a native binary (for Mastra on a serverless host, its Postgres store).`,
+      );
+    }
+  }
 
   const where = relative(process.cwd(), outDir) || ".";
   if (!engine) {

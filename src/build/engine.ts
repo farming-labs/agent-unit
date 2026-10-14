@@ -90,7 +90,16 @@ if (storageConfig?.driver !== ${JSON.stringify(name)}) {
   throw new Error(\`agent-unit: this build keeps runs in ${JSON.stringify(name)} storage, but agent-unit.config.ts chooses "\${storageConfig?.driver}" where it runs. Give the build and the server the same environment, or set storage per host with presets.\`);
 }
 const { driver: _driver, ...storageOptions } = storageConfig;
-// Mounted once: a dev server that loads this module again keeps the mount it has.
+${
+      name === "upstash"
+        ? `// Without these the first run fails deep in a request ("Failed to parse URL from /pipeline"); say what is missing.
+const upstashEnv = globalThis.process?.env ?? {};
+if (!(storageOptions.url || upstashEnv.UPSTASH_REDIS_REST_URL) || !(storageOptions.token || upstashEnv.UPSTASH_REDIS_REST_TOKEN)) {
+  throw new Error("agent-unit: runs are kept in Upstash here, but UPSTASH_REDIS_REST_URL and UPSTASH_REDIS_REST_TOKEN are not set. Set both in the host's environment (or url and token in agent-unit.config.ts).");
+}
+`
+        : ""
+    }// Mounted once: a dev server that loads this module again keeps the mount it has.
 if (useStorage().getMount("agent-unit:").base !== "agent-unit:") {
   useStorage().mount("agent-unit", storageDriver({ ${defaults}${libs.join("")}...storageOptions }));
 }
