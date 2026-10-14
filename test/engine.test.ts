@@ -181,6 +181,21 @@ describe("durable run engine", () => {
     expect(types(await collect(engine.events(run.id))).at(-1)).toBe("RUN_CANCELLED");
   });
 
+  it("cancels a run whose cancel arrives while it is parking", async () => {
+    const engine = createEngine({ waiter: defineAgent(async (_input, run) => run.interrupt("approve")) });
+    // The cancel is sent the moment the run reports it has parked, before its execution has finished.
+    let cancelled: Promise<{ status: string }> | undefined;
+    const publish = engine.publish.bind(engine);
+    engine.publish = (event) => {
+      publish(event);
+      if (event.type === "RUN_INTERRUPTED") cancelled ??= engine.cancel(event.runId);
+    };
+    const { run, done } = await engine.start("waiter");
+    await done;
+    expect(await cancelled).toMatchObject({ status: "cancelled" });
+    expect(await engine.getRun(run.id)).toMatchObject({ status: "cancelled" });
+  });
+
   it("cancels a running run through its abort signal", async () => {
     const engine = createEngine({
       slow: defineAgent(async (_input, run) => {
