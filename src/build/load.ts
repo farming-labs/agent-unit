@@ -1,4 +1,5 @@
-import { existsSync, mkdirSync, readdirSync, readFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync } from "node:fs";
+import { createRequire } from "node:module";
 import { basename, dirname, extname, join, relative, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { parseEnv } from "node:util";
@@ -117,6 +118,19 @@ export function distEntry(entry: string): string {
   if (!existsSync(file)) throw new Error(`agent-unit is not built: ${file} is missing. Run the package build first.`);
   return file;
 }
+
+/** How a generated file imports Nitro's runtime: `nitro`, `nitro/storage` or `nitro/task`. */
+export type NitroImport = (specifier: "nitro" | "nitro/storage" | "nitro/task") => string;
+
+/** The app's Nitro, by name: for files an app's own Nitro builds (the agent-unit/nitro module). */
+export const appNitro: NitroImport = (specifier) => JSON.stringify(specifier);
+
+/**
+ * agent-unit's own Nitro, by path: for files `agent-unit build` builds with it. Under pnpm the app
+ * cannot import Nitro by name, because only agent-unit depends on it. The real path keeps it one
+ * module with the copy Nitro's own runtime imports.
+ */
+export const ownNitro: NitroImport = (specifier) => JSON.stringify(realpathSync(createRequire(import.meta.url).resolve(specifier)));
 
 /** A relative import specifier from `from` (a directory) to `file`, with forward slashes. */
 export const toImport = (from: string, file: string) => {
