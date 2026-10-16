@@ -103,7 +103,9 @@ export function eventStream(events: AsyncIterable<AgentEvent>, signal: AbortSign
           controller.enqueue(encoder.encode(`id: ${event.seq}\nevent: ${event.type}\ndata: ${JSON.stringify(event)}\n\n`));
         }
       } catch (error) {
-        const message = error instanceof Error ? error.message : String(error);
+        // As on the JSON routes: an internal error (a storage URL with its password) stays in the log.
+        if (!(error instanceof AgentUnitError)) console.error("[agent-unit]", error);
+        const message = error instanceof AgentUnitError ? error.message : "Internal error.";
         controller.enqueue(encoder.encode(`event: error\ndata: ${JSON.stringify({ message })}\n\n`));
       } finally {
         clearInterval(heartbeat);
