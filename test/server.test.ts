@@ -126,6 +126,24 @@ describe("HTTP handler", () => {
     expect(tail.map((event) => event.seq)).toEqual([3, 4]);
   });
 
+  it("reads the event cursor as a whole number, and takes the later of after and Last-Event-ID", async () => {
+    const { handle, pending } = setup();
+    const run = await (await handle("/agents/echo/runs", post({ input: { text: "x" } }))).json();
+    await Promise.all(pending);
+    const seqs = async (query: string, headers: Record<string, string> = {}) =>
+      (await sse(await handle(`/runs/${run.id}/events${query}`, { headers }))).map((event) => event.seq);
+    const all = await seqs("");
+    expect(all.length).toBeGreaterThan(1);
+    // A negative cursor read storage once per number below the first event; a fractional one never
+    // matched a stored event, so the stream of a finished run never closed.
+    expect(await seqs("?after=-1000000000")).toEqual(all);
+    expect(await seqs("?after=0.5")).toEqual(all);
+    expect(await seqs("", { "last-event-id": "1.5" })).toEqual(all);
+    // EventSource reconnects to the URL it opened, adding Last-Event-ID: the later cursor wins.
+    expect(await seqs("?after=0", { "last-event-id": "1" })).toEqual(all.slice(1));
+    expect(await seqs("?after=1", { "last-event-id": "0" })).toEqual(all.slice(1));
+  });
+
   it("lists, filters and cancels runs", async () => {
     const { handle, pending } = setup();
     const a = await (await handle("/agents/refund/runs", post({ threadId: "t1" }))).json();
