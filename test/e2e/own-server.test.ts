@@ -137,6 +137,7 @@ for (const host of HOSTS) {
 
     it("reads the host's configuration through agent-unit/env", async () => {
       expect(await (await deployment.fetch("/env")).json()).toEqual({ greeting: GREETING });
+      expect(await (await deployment.fetch("/c-env")).json()).toEqual({ greeting: GREETING });
     });
 
     it("runs work handed to waitUntil after the response, or before it where the host would freeze", async () => {
