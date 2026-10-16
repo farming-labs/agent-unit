@@ -49,7 +49,9 @@ what the request does: `action` (`manifest`, `list`, `start`, `read`, `events`, 
 `delete`, `mcp`) and, where they apply, `agent`, `runId` and `threadId`. For a request about an
 existing run, `agent` and `threadId` come from the stored run, never from the request, so an app can
 check that the caller owns the thread. A caller that is not authorized gets 401 whether or not the run
-exists. Each MCP `tools/call` is authorized like a `start`.
+exists. A list is checked twice: once with its filters, then each run in it as a `read` with its
+stored agent and thread, so a list without a `threadId` holds only the runs the caller may read
+(among the newest `limit`). Each MCP `tools/call` is authorized like a `start`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
