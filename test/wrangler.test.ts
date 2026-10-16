@@ -16,6 +16,17 @@ describe("dedupeWrangler", () => {
     expect(dedupeWrangler(config)).toBe(false);
   });
 
+  it("places a migration where a bare { tag } of the app's wrangler file lists it", () => {
+    const ours = { tag: "agent-unit-v1", new_sqlite_classes: ["AgentUnitRun"] };
+    // Nitro joins agent-unit's settings and the app's file: agent-unit's migration comes first.
+    const config = { migrations: [ours, { tag: "v1", new_classes: ["Notes"] }, { tag: "agent-unit-v1" }, { tag: "v2" }] };
+    expect(dedupeWrangler(config)).toBe(true);
+    expect(config.migrations).toEqual([{ tag: "v1", new_classes: ["Notes"] }, ours, { tag: "v2" }]);
+    // Without a placement, agent-unit's stays first.
+    const unplaced = { migrations: [ours, { tag: "v1", new_classes: ["Notes"] }] };
+    expect(dedupeWrangler(unplaced)).toBe(false);
+  });
+
   it("refuses one binding name with two different settings", () => {
     const config = { kv_namespaces: [{ binding: "CACHE", id: "a" }, { binding: "CACHE", id: "b" }] };
     expect(() => dedupeWrangler(config)).toThrow(/kv_namespaces "CACHE" is declared twice with different settings/);
