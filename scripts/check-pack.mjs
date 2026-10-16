@@ -1,9 +1,9 @@
 // Packs agent-unit, @agent-unit/runtime and create-agent-unit as they would be published, installs the
 // tarballs into an empty app with npm, and checks what a user gets: matching versions, no workspace:
 // ranges, one copy of the runtime behind every agent-unit import path, a working CLI, and
-// `npm create agent-unit` writing an app.
+// `npm create agent-unit` writing an app. Then installs an app with pnpm, builds it and starts it.
 // Usage: node scripts/check-pack.mjs (after pnpm build)
-import { execFileSync } from "node:child_process";
+import { execFileSync, spawn } from "node:child_process";
 import { mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
@@ -84,7 +84,30 @@ console.log(JSON.stringify({
   run("npx", ["--no-install", "create-agent-unit", "created", "--framework", "agent-unit", "--hosts", "node", "--yes", "--no-install"], app);
   const created = JSON.parse(readFileSync(join(app, "created/package.json"), "utf8"));
   if (created.dependencies?.["agent-unit"] !== `^${rootVersion}`) fail(`create-agent-unit wrote an app depending on agent-unit "${created.dependencies?.["agent-unit"]}"`);
-  if (!process.exitCode) console.log(`check-pack: agent-unit ${rootVersion} and @agent-unit/runtime ${runtimeVersion} install and resolve to one runtime; create-agent-unit writes an app`);
+
+  // pnpm gives an app only the packages it names, so a build that imports one of agent-unit's own
+  // dependencies (Nitro) by name crashes there on start, although npm's flat node_modules hides it.
+  // Outside `app`, whose node_modules would hide it too.
+  const pnpmApp = join(work, "pnpm-app");
+  run("npx", ["--no-install", "create-agent-unit", pnpmApp, "--framework", "agent-unit", "--hosts", "node", "--yes", "--no-install"], app);
+  const manifest = JSON.parse(readFileSync(join(pnpmApp, "package.json"), "utf8"));
+  manifest.dependencies["agent-unit"] = `file:${rootTgz}`;
+  writeFileSync(join(pnpmApp, "package.json"), JSON.stringify(manifest));
+  writeFileSync(join(pnpmApp, "pnpm-workspace.yaml"), `packages: []\noverrides:\n  "@agent-unit/runtime": ${JSON.stringify(`file:${runtimeTgz}`)}\n`);
+  run("pnpm", ["install", "--reporter=silent"], pnpmApp);
+  run("pnpm", ["exec", "agent-unit", "build", "--preset", "node-server"], pnpmApp);
+  const started = await new Promise((done) => {
+    const server = spawn("node", [".output/server/index.mjs"], { cwd: pnpmApp, env: { ...process.env, PORT: "0" }, stdio: ["ignore", "pipe", "pipe"] });
+    let output = "";
+    const finish = (result) => (server.kill("SIGKILL"), done(result));
+    const read = (chunk) => ((output += chunk), output.includes("Listening") && finish(true));
+    server.stdout.on("data", read);
+    server.stderr.on("data", read);
+    server.on("exit", () => done(output));
+    setTimeout(() => finish(output || "no output in 20s"), 20_000);
+  });
+  if (started !== true) fail(`an app installed with pnpm builds, but its server does not start:\n${started}`);
+  if (!process.exitCode) console.log(`check-pack: agent-unit ${rootVersion} and @agent-unit/runtime ${runtimeVersion} install and resolve to one runtime; create-agent-unit writes an app; a pnpm app builds and starts`);
 } finally {
   rmSync(work, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
