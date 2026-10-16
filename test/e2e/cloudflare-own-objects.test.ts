@@ -63,3 +63,17 @@ describe.skipIf(!workerd)("Durable Objects runtime with the app's own Durable Ob
     cleanup(conflict);
   });
 });
+
+describe("the app's own wrangler file", () => {
+  it("keeps its compatibility date, and places agent-unit's migration where it lists the bare tag", async () => {
+    const out = tempDir("cf-wrangler-file");
+    await buildFixture(prepareFixture("cloudflare-wrangler-file"), "cloudflare-module", out);
+    const wrangler = JSON.parse(readFileSync(join(out, "server/wrangler.json"), "utf8"));
+    expect(wrangler.compatibility_date).toBe("2026-06-01");
+    expect(wrangler.migrations).toEqual([
+      { tag: "v1", new_sqlite_classes: ["Notes"] },
+      { tag: "agent-unit-v1", new_sqlite_classes: ["AgentUnitRun", "AgentUnitIndex"] },
+    ]);
+    cleanup(out);
+  });
+});

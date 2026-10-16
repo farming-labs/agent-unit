@@ -1,0 +1,9 @@
+{
+  // A Worker that applied its own migration before it took agent-unit's runtime.
+  "compatibility_date": "2026-06-01",
+  "migrations": [
+    { "tag": "v1", "new_sqlite_classes": ["Notes"] },
+    // agent-unit's migration goes here, after the one this Worker already applied.
+    { "tag": "agent-unit-v1" }
+  ]
+}
