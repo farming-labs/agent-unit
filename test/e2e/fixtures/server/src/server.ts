@@ -9,6 +9,8 @@ app.get("/", (c) => c.text("hello from hono"));
 app.post("/echo/:id", async (c) => c.json({ id: c.req.param("id"), body: await c.req.json(), query: c.req.query("q") ?? null }));
 
 app.get("/env", (c) => c.json({ greeting: env.GREETING ?? null }));
+// Hono's own c.env: the Worker's env on Workers, process.env elsewhere, the same as agent-unit/env.
+app.get("/c-env", (c) => c.json({ greeting: (c.env as Record<string, string | undefined> | undefined)?.GREETING ?? null }));
 
 app.get("/stream", (c) =>
   stream(c, async (out) => {
