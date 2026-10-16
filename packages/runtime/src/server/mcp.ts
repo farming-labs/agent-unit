@@ -1,6 +1,6 @@
 import type { RunService } from "./service";
 import { AgentUnitError } from "../runtime/engine";
-import { readBody } from "./body";
+import { readBody, THREAD_ID } from "./body";
 import type { RequestContext } from "./handler";
 
 // MCP over streamable HTTP with JSON responses (spec/manifest.md): each agent is one tool.
@@ -36,7 +36,11 @@ async function callTool(engine: RunService, params: Record<string, unknown>, con
   const name = String(params.name ?? "");
   const args = (params.arguments ?? {}) as { message?: unknown; threadId?: unknown };
   if (typeof args.message !== "string") return { content: [{ type: "text", text: "`message` must be a string." }], isError: true };
-  const threadId = typeof args.threadId === "string" ? args.threadId : undefined;
+  // The same rule as a start over HTTP: thread ids name shared state.
+  if (args.threadId !== undefined && (typeof args.threadId !== "string" || !THREAD_ID.test(args.threadId))) {
+    return { content: [{ type: "text", text: "`threadId` must be a string of 1 to 256 printable characters." }], isError: true };
+  }
+  const threadId = args.threadId;
   if (limits.authorizeStart && !(await limits.authorizeStart(name, threadId))) {
     return { content: [{ type: "text", text: "Not allowed to run this agent on this thread." }], isError: true };
   }
