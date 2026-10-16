@@ -1,6 +1,7 @@
 import { join } from "node:path";
 import type { NitroModule } from "nitro/types";
 import { configForPreset, loadProject } from "./build/load";
+import { checkSchedule } from "./build/schedule";
 import { prepareTasks } from "./build/tasks";
 import { generateEntry, resolveBudget, resolveStorage } from "./build/engine";
 
@@ -62,6 +63,7 @@ export function agentUnit(options: AgentUnitNitroOptions = {}): NitroModule {
         nitro.options.experimental.tasks = true;
         nitro.options.tasks["agent-unit:sweep"] = { handler: join(dir, "sweep.mjs"), description: "Wake due runs and recover stalled ones." };
         const cron = project.config.sweep ?? "* * * * *";
+        checkSchedule(cron, "the sweep", preset);
         const existing = nitro.options.scheduledTasks[cron];
         nitro.options.scheduledTasks[cron] = [...(existing ? [existing].flat() : []), "agent-unit:sweep"];
       }

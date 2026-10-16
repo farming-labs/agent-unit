@@ -126,7 +126,8 @@ app.post("/orders", async (c) => {
 
 `tasks` runs work on a schedule with the host's own scheduler: in-process cron on Node, Bun and
 Deno, Cron Triggers on Workers, Vercel Cron Jobs on Vercel. Other presets build with a warning, and
-the task runs only when you trigger it there.
+the task runs only when you trigger it there. The build checks each schedule: servers also take a
+seconds field and nicknames such as `@daily`; Workers and Vercel take the five fields only.
 
 ```ts
 export default defineConfig({
