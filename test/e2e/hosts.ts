@@ -145,6 +145,12 @@ export async function startMiniflare(out: string, persist: string) {
     fetch,
     /** Fires the Worker's scheduled handler for `cron`, as a Cron Trigger would. */
     scheduled: (cron: string) => fetch(`/cdn-cgi/handler/scheduled?cron=${encodeURIComponent(cron)}`),
+    /** Delivers a batch to the Worker's queue handler, as a queue consumer would. */
+    async queue(queue: string, bodies: unknown[]) {
+      const worker = await miniflare.getWorker();
+      const messages = bodies.map((body, index) => ({ id: `m${index}`, timestamp: new Date(), body, attempts: 1 }));
+      return worker.queue(queue, messages);
+    },
     async restart() {
       await miniflare.dispose();
       miniflare = await start();
