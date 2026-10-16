@@ -64,6 +64,8 @@ export default ({ name }: { name: string }) => {
     expect(await prepare("*/30 * * * * *", "cloudflare-module")).toThrow(/needs five fields \(minute hour day month weekday\) on the "cloudflare-module" preset/);
     expect(await prepare("@daily", "vercel")).toThrow(/needs five fields/);
     expect(await prepare("0 8 * * MON-FRI", "vercel")).not.toThrow();
+    // Where Nitro runs no scheduler the schedule is unused, so it only warns that the task will not run.
+    expect(await prepare("every day", "aws-lambda")).not.toThrow();
   });
 
   it("rejects a sweep schedule the host could not run", async () => {
@@ -75,6 +77,9 @@ export default ({ name }: { name: string }) => {
     expect(engine("every minute", "node-server")).toThrow(/the schedule of the sweep, "every minute", is not a cron expression/);
     expect(engine("*/30 * * * * *", "vercel")).toThrow(/needs five fields/);
     expect(engine("*/5 * * * *", "vercel")).not.toThrow();
+    // Netlify runs the sweep from a scheduled function the build writes; Lambda has no scheduler at all.
+    expect(engine("every minute", "netlify")).toThrow(/the schedule of the sweep/);
+    expect(engine("every minute", "aws-lambda")).not.toThrow();
   });
 
   it("groups tasks by schedule", async () => {

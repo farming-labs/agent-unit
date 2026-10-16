@@ -3,13 +3,11 @@ import { join, resolve } from "node:path";
 import { createJiti } from "jiti";
 import { runInScope } from "../env/scope";
 import { toImport, type LoadedProject } from "./load";
-import { checkSchedule } from "./schedule";
+import { checkSchedule, SCHEDULING_PRESETS } from "./schedule";
 
 // The app's scheduled tasks (`tasks` in agent-unit.config.ts), run by each host's own scheduler
 // through Nitro: in-process cron on servers, Cron Triggers on Workers, Vercel Cron Jobs on Vercel.
 
-/** Presets where Nitro runs scheduled tasks itself. */
-const SCHEDULING_PRESETS = /^(node|node-server|node-cluster|node-middleware|bun|deno-server|cloudflare-module|cloudflare-pages|vercel)$/;
 
 const TASK_NAME = /^[a-zA-Z0-9][\w:-]*$/;
 
@@ -30,7 +28,8 @@ function checkTasks(project: LoadedProject, preset?: string) {
       throw new Error(`agent-unit: the task "${name}" needs a \`schedule\` (a cron expression) and a \`handler\` (the path of its module).`);
     }
     if (!existsSync(resolve(project.root, task.handler))) throw new Error(`agent-unit: the handler of task "${name}", "${task.handler}", does not exist.`);
-    if (preset !== undefined) checkSchedule(task.schedule, `task "${name}"`, preset);
+    // Where Nitro runs no scheduler the schedule is unused: the build only warns that the task will not run.
+    if (preset !== undefined && SCHEDULING_PRESETS.test(preset)) checkSchedule(task.schedule, `task "${name}"`, preset);
   }
   return tasks;
 }
