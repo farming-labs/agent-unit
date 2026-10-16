@@ -151,6 +151,11 @@ export function packageName(input: string): string {
   return name || "my-agent";
 }
 
+/** A Worker name from the app's name: lowercase letters, digits and dashes, at most 63 characters. */
+export function workerName(name: string): string {
+  return name.replace(/[^a-z0-9-]+/g, "-").replace(/^-+|-+$/g, "").slice(0, 63).replace(/-+$/, "") || "my-agent";
+}
+
 /** Fills in defaults and drops answers that do not apply, so `files()` sees one shape. */
 export function normalizeAnswers(answers: InitAnswers): Required<InitAnswers> {
   if (!answers.hosts.length) throw new Error("Choose at least one host.");
@@ -402,14 +407,24 @@ export function initFiles(input: InitAnswers, agentUnitVersion: string, app: Exi
       `  authorize: (request) => !!env.API_TOKEN && request.headers.get("authorization") === \`Bearer \${env.API_TOKEN}\`,`,
     );
   }
-  if (workers && framework === "mastra" && !engine && !ownMastra) {
-    config.push(
-      `  // Mastra's D1 store on Workers. Create the database with \`npx wrangler d1 create ${answers.name}\``,
-      `  // and put the id it prints here.`,
-      `  cloudflare: {`,
-      `    wrangler: { d1_databases: [{ binding: "DB", database_name: "${answers.name}", database_id: "00000000-0000-0000-0000-000000000000" }] },`,
-      `  },`,
-    );
+  if (workers) {
+    // Named here: without a name, the Worker is named after the git remote once there is one, and the
+    // next deploy makes a new Worker, without the secrets and runs of the first.
+    const name = `name: ${JSON.stringify(workerName(answers.name))}`;
+    if (framework === "mastra" && !engine && !ownMastra) {
+      config.push(
+        `  // Mastra's D1 store on Workers. Create the database with \`npx wrangler d1 create ${answers.name}\``,
+        `  // and put the id it prints here.`,
+        `  cloudflare: {`,
+        `    wrangler: {`,
+        `      ${name},`,
+        `      d1_databases: [{ binding: "DB", database_name: "${answers.name}", database_id: "00000000-0000-0000-0000-000000000000" }],`,
+        `    },`,
+        `  },`,
+      );
+    } else {
+      config.push(`  cloudflare: { wrangler: { ${name} } },`);
+    }
   }
   if (task) config.push(`  tasks: { "daily-summary": { schedule: "0 8 * * *", handler: "./src/tasks/daily-summary.ts" } },`);
   if (engine && (workers || serverless.length)) {
@@ -1093,7 +1108,7 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
       if (framework === "mastra" && !engine) {
         before.push(`Create the D1 database before the first deploy, with \`npx wrangler@4 d1 create ${answers.name}\`, and put the id it prints in \`agent-unit.config.ts\`.`);
       }
-      if (vars) before.push(`Set${vars} as a secret: \`npx wrangler@4 secret put <NAME>\`.`);
+      if (vars) before.push(`Set${vars} as a secret: \`npx wrangler@4 secret put <NAME> --name ${workerName(answers.name)}\`.`);
       after.push(`\`npm run preview${suffix}\` runs the build on Cloudflare's runtime on your machine first.`);
       if (engine) after.push("Each run gets its own Durable Object; the build writes their bindings into `wrangler.json`.");
     }
