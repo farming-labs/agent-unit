@@ -101,6 +101,10 @@ const task = defineCommand({
       console.error(`agent-unit task ${args.name}: ${error instanceof Error ? error.message : String(error)}`);
       process.exitCode = 1;
     }
+    // The task is done, but a client or timer it opened (a database, Redis) keeps the process alive,
+    // and cron jobs and CI wait for the exit. Exit once the output is written.
+    await Promise.all([process.stdout, process.stderr].map((stream) => new Promise((done) => stream.write("", done))));
+    process.exit(process.exitCode ?? 0);
   },
 });
 
