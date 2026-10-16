@@ -2,6 +2,12 @@ import { AgentUnitError } from "../runtime/engine";
 
 const DEFAULT_MAX_BODY = 1024 * 1024;
 
+/** Run ids as the engine makes them. Anything else names no run: storage keys cut at `?` and `:`. */
+export const RUN_ID = /^run_[a-z0-9]{8,64}$/;
+
+/** Thread ids name shared state, so they are plain text of a sensible length. */
+export const THREAD_ID = /^[^\u0000-\u001f\u007f]{1,256}$/;
+
 /**
  * A request body as text, refused when it is too large or not JSON. Requiring a JSON content type
  * also means a cross-site HTML form (which can only send form encodings or text/plain) can never

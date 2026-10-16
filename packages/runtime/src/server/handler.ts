@@ -1,7 +1,7 @@
 import { AgentUnitError, RunEngine } from "../runtime/engine";
 import type { AgentEvent, RunInput, RunRecord, RunStatus } from "../types";
 import { agentCardDocument } from "./a2a";
-import { readBody } from "./body";
+import { readBody, RUN_ID, THREAD_ID } from "./body";
 import { handleMcp } from "./mcp";
 import type { RunService } from "./service";
 
@@ -51,8 +51,6 @@ export interface AuthorizeContext {
   threadId?: string;
 }
 
-/** Thread ids name shared state, so they are plain text of a sensible length. */
-const THREAD_ID = /^[^\u0000-\u001f\u007f]{1,256}$/;
 
 export interface RequestContext {
   /** Keeps work alive after the response (serverless `waitUntil`). */
@@ -198,7 +196,8 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
     const guardRun = async (action: AuthorizeContext["action"], id: string) => {
       let record: RunRecord | undefined;
       try {
-        record = await engine.getRun(id);
+        // An id the engine could not have made is no run; looking it up could read another key.
+        if (RUN_ID.test(id)) record = await engine.getRun(id);
       } catch (error) {
         if (!(error instanceof AgentUnitError) || error.status !== 404) throw error;
       }
