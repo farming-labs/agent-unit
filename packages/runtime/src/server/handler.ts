@@ -293,7 +293,11 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
             threadId: url.searchParams.get("threadId") ?? undefined,
             limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 500) : 50,
           });
-          return json({ runs });
+          // The filters are the caller's to choose, so each run is also checked as a read of that run:
+          // a list without a threadId must not hold other callers' runs.
+          if (!options.authorize) return json({ runs });
+          const readable = await Promise.all(runs.map(async (run) => !(await guard({ action: "read", runId: run.id, agent: run.agent, threadId: run.threadId }))));
+          return json({ runs: runs.filter((_, index) => readable[index]) });
         }
         if (id && method === "GET" && segments.length === 2) {
           const checked = await guardRun("read", id);

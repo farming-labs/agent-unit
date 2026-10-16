@@ -692,9 +692,13 @@ const unit = createAgentUnit({
   storage,                       // any unstorage instance
   basePath: "/api/agents",
   // Second argument: what the request does, with the run's agent and thread taken from storage.
+  // Here each user's runs are on threads named "<user id>:…", so a run must be started with one.
   authorize: async (request, { action, threadId }) => {
     const session = await getSession(request);
-    return session !== null && (threadId === undefined || threadId.startsWith(`${session.userId}:`));
+    if (session === null) return false;
+    // Listing without a thread is fine: the list keeps only the runs this check lets the caller read.
+    if (action === "manifest" || action === "mcp" || (action === "list" && threadId === undefined)) return true;
+    return threadId?.startsWith(`${session.userId}:`) === true;
   },
   budget: "60s",
 });

@@ -222,6 +222,10 @@ describe("HTTP handler", () => {
     expect((await handle("/runs/run_doesnotexist000000")).status).toBe(401);
     expect((await handle("/runs/run_doesnotexist000000", as("bob"))).status).toBe(404);
     expect((await handle("/runs?threadId=bob:1", as("alice"))).status).toBe(401);
+    // A list with no filter holds only the runs the caller may read, each judged by its stored thread.
+    const listed = async (user: string) => ((await (await handle("/runs", as(user))).json()) as { runs: { id: string }[] }).runs.map((run) => run.id);
+    expect(await listed("alice")).toEqual([]);
+    expect(await listed("bob")).toEqual([bobs.id]);
 
     const mcp = await (
       await handle("/mcp", as("alice", post({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "echo", arguments: { message: "hi", threadId: "bob:2" } } })))
