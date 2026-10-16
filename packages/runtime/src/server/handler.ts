@@ -1,7 +1,7 @@
 import { AgentUnitError, RunEngine } from "../runtime/engine";
 import type { AgentEvent, RunInput, RunRecord, RunStatus } from "../types";
 import { agentCardDocument } from "./a2a";
-import { readBody } from "./body";
+import { checkPost, readBody } from "./body";
 import { handleMcp } from "./mcp";
 import type { RunService } from "./service";
 
@@ -234,6 +234,7 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
         return problem(404, "not_found", "Not found.");
       }
 
+      if (method === "POST") checkPost(request);
       if (method === "GET" && (path === "/" || path === "/manifest.json")) {
         return (await guard({ action: "manifest" })) ?? json(engine.manifest());
       }
