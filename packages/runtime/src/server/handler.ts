@@ -309,8 +309,11 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
           const checked = await guardRun("resume", id);
           if (checked.denied) return checked.denied;
           const body = await readJson(request, options.maxBodyBytes);
+          if (body.interrupt !== undefined && typeof body.interrupt !== "string") {
+            throw new AgentUnitError(400, "invalid_interrupt", "`interrupt` must be the key of the interrupt being answered.");
+          }
           const before = checked.record.eventCount;
-          const { run, done } = await engine.resume(id, body.answer);
+          const { run, done } = await engine.resume(id, body.answer, { interrupt: body.interrupt });
           if (wantsStream(request)) {
             context.waitUntil?.(done);
             return eventStream(engine.events(id, before, request.signal), request.signal, options.heartbeatMs);

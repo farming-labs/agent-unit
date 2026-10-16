@@ -88,10 +88,13 @@ Accept: text/event-stream
 
 ```http
 POST /runs/run_…/resume
-{ "answer": { "approved": true } }
+{ "answer": { "approved": true }, "interrupt": "interrupt:approve#1" }
 ```
 
-Only valid while the run is `interrupted` (otherwise 409). Responds like the start request: a stream
+Only valid while the run is `interrupted` (otherwise 409). `interrupt` is optional: the `key` of the
+interrupt being answered, from `RUN_INTERRUPTED` or the run's `interrupt`. When the run waits on
+another one (a resume sent again after the run moved on), the answer is refused with 409
+`interrupt_mismatch` instead of answering that one. Responds like the start request: a stream
 with `Accept: text/event-stream`, otherwise `202` (or `200` once settled, on hosts without
 `waitUntil`) with the record.
 

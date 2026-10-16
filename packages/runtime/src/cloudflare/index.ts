@@ -3,7 +3,7 @@ import { createStorage, type Storage } from "unstorage";
 import nullDriver from "unstorage/drivers/null";
 import { validateAdapter, type AgentAdapter } from "../adapter/types";
 import { functionAdapter, resolveAgent } from "../agents";
-import { AgentUnitError, RunEngine, type LoadedAgent } from "../runtime/engine";
+import { AgentUnitError, RunEngine, type LoadedAgent, type ResumeOptions } from "../runtime/engine";
 import { RunStore, type ListRunsFilter } from "../runtime/store";
 import { parseDuration, randomId } from "../runtime/util";
 import { createHandler, type HandlerOptions, type RequestContext } from "../server/handler";
@@ -56,7 +56,7 @@ function unwrap<T>(result: Envelope<T>): T {
 
 interface RunStub {
   start(agent: string, input: RunInput, options: { threadId?: string }, id: string): Promise<Envelope<RunRecord>>;
-  resume(id: string, answer: unknown): Promise<Envelope<RunRecord>>;
+  resume(id: string, answer: unknown, options?: ResumeOptions): Promise<Envelope<RunRecord>>;
   cancel(id: string): Promise<Envelope<RunRecord>>;
   getRun(id: string): Promise<Envelope<RunRecord>>;
   settled(id: string): Promise<Envelope<RunRecord | undefined>>;
@@ -193,9 +193,9 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
       });
     }
 
-    resume(id: string, answer: unknown) {
+    resume(id: string, answer: unknown, options?: ResumeOptions) {
       return envelope(async () => {
-        const { run, done } = await this.engine.resume(id, answer);
+        const { run, done } = await this.engine.resume(id, answer, options);
         this.#track(id, done);
         return run;
       });
@@ -282,9 +282,9 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
       return { run, done: stub.settled(id).then(unwrap) };
     }
 
-    async resume(id: string, answer: unknown) {
+    async resume(id: string, answer: unknown, options?: ResumeOptions) {
       const stub = this.stub(id);
-      const run = unwrap(await stub.resume(id, answer));
+      const run = unwrap(await stub.resume(id, answer, options));
       return { run, done: stub.settled(id).then(unwrap) };
     }
 

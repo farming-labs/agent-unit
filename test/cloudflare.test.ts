@@ -79,7 +79,11 @@ describe("Durable Objects runtime", () => {
     // Redeploy: every object instance is gone, storage stays.
     runs.restart();
     index.restart();
-    const resumed = await sse(await call(`/runs/${run.id}/resume`, post({ answer: { approved: true } }, "text/event-stream")));
+    // The interrupt a resume names reaches the run's object, which refuses another one.
+    const wrong = await call(`/runs/${run.id}/resume`, post({ answer: { approved: true }, interrupt: "interrupt:other#1" }));
+    expect(wrong.status).toBe(409);
+    expect((await wrong.json()).error.code).toBe("interrupt_mismatch");
+    const resumed = await sse(await call(`/runs/${run.id}/resume`, post({ answer: { approved: true }, interrupt: listed.runs[0].interrupt.key }, "text/event-stream")));
     expect(resumed.map((event) => event.type)).toEqual(["STEP_STARTED", "STEP_FINISHED", "RUN_FINISHED"]);
     expect(resumed.at(-1)).toMatchObject({ seq: 7, result: "refunded o_1" });
     expect(effects).toMatchObject({ loads: 1, charges: 1 });
