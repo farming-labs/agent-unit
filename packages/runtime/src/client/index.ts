@@ -170,7 +170,8 @@ export function createAgentClient(options: AgentClientOptions) {
       const query = params.size ? `?${params}` : "";
       return getJson<{ runs: RunRecord[] }>(`/runs${query}`).then((body) => body.runs);
     },
-    cancel: (runId: string) => getJson<RunRecord>(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST" }),
+    // A JSON body, so a page on another site may cancel through CORS (see the server's checkPost).
+    cancel: (runId: string) => getJson<RunRecord>(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", body: "{}" }),
     /** Deletes a finished run with its journal and events. */
     delete: async (runId: string): Promise<void> => {
       await request(`/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });
