@@ -126,6 +126,24 @@ describe("HTTP handler", () => {
     expect(tail.map((event) => event.seq)).toEqual([3, 4]);
   });
 
+  it("reads the event cursor as a whole number, and takes the later of after and Last-Event-ID", async () => {
+    const { handle, pending } = setup();
+    const run = await (await handle("/agents/echo/runs", post({ input: { text: "x" } }))).json();
+    await Promise.all(pending);
+    const seqs = async (query: string, headers: Record<string, string> = {}) =>
+      (await sse(await handle(`/runs/${run.id}/events${query}`, { headers }))).map((event) => event.seq);
+    const all = await seqs("");
+    expect(all.length).toBeGreaterThan(1);
+    // A negative cursor read storage once per number below the first event; a fractional one never
+    // matched a stored event, so the stream of a finished run never closed.
+    expect(await seqs("?after=-1000000000")).toEqual(all);
+    expect(await seqs("?after=0.5")).toEqual(all);
+    expect(await seqs("", { "last-event-id": "1.5" })).toEqual(all);
+    // EventSource reconnects to the URL it opened, adding Last-Event-ID: the later cursor wins.
+    expect(await seqs("?after=0", { "last-event-id": "1" })).toEqual(all.slice(1));
+    expect(await seqs("?after=1", { "last-event-id": "0" })).toEqual(all.slice(1));
+  });
+
   it("lists, filters and cancels runs", async () => {
     const { handle, pending } = setup();
     const a = await (await handle("/agents/refund/runs", post({ threadId: "t1" }))).json();
@@ -222,12 +240,35 @@ describe("HTTP handler", () => {
     expect((await handle("/runs/run_doesnotexist000000")).status).toBe(401);
     expect((await handle("/runs/run_doesnotexist000000", as("bob"))).status).toBe(404);
     expect((await handle("/runs?threadId=bob:1", as("alice"))).status).toBe(401);
+    // A list with no filter holds only the runs the caller may read, each judged by its stored thread.
+    const listed = async (user: string) => ((await (await handle("/runs", as(user))).json()) as { runs: { id: string }[] }).runs.map((run) => run.id);
+    expect(await listed("alice")).toEqual([]);
+    expect(await listed("bob")).toEqual([bobs.id]);
 
     const mcp = await (
       await handle("/mcp", as("alice", post({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "echo", arguments: { message: "hi", threadId: "bob:2" } } })))
     ).json();
     expect(mcp.result.isError).toBe(true);
     expect(new Set(seen)).toEqual(new Set(["start", "read", "resume", "cancel", "events", "list", "mcp"]));
+  });
+
+  it("refuses a POST a page on another site could send, with or without a body", async () => {
+    const { handle, pending } = setup();
+    const form = (type: string, body = "") => ({ method: "POST", headers: { "content-type": type }, body });
+    // An empty HTML form still sends its encoding: it may not start a run.
+    expect((await handle("/agents/echo/runs", form("application/x-www-form-urlencoded"))).status).toBe(415);
+    expect((await handle("/agents/echo/runs", form("multipart/form-data; boundary=x"))).status).toBe(415);
+    const run = await (await handle("/agents/refund/runs", post({}))).json();
+    await Promise.all(pending);
+    expect((await handle(`/runs/${run.id}/resume`, form("text/plain"))).status).toBe(415);
+    expect((await handle(`/runs/${run.id}/cancel`, form("text/plain"))).status).toBe(415);
+    // A body-less fetch from another site sends no type; the browser says where it came from.
+    expect((await handle(`/runs/${run.id}/cancel`, { method: "POST", headers: { "sec-fetch-site": "cross-site" } })).status).toBe(415);
+    expect((await handle("/mcp", { method: "POST", headers: { "sec-fetch-site": "same-site" } })).status).toBe(415);
+    expect((await handle(`/runs/${run.id}`)).status).toBe(200);
+    expect(((await (await handle(`/runs/${run.id}`)).json()) as { status: string }).status).toBe("interrupted");
+    // curl, servers and same-origin pages send no Sec-Fetch-Site, or "same-origin".
+    expect((await handle(`/runs/${run.id}/cancel`, { method: "POST", headers: { "sec-fetch-site": "same-origin" } })).status).toBe(200);
   });
 
   it("rejects malformed thread ids and percent-encoding", async () => {
@@ -434,6 +475,14 @@ describe("client", () => {
     expect(await client.wait(started.id)).toMatchObject({ status: "completed", output: "echo: later" });
 
     await expect(client.agent("ghost")).rejects.toMatchObject({ status: 404, code: "agent_not_found" });
+
+    // From a page on another site (through CORS) the client still cancels: it sends a JSON body.
+    const crossSite = createAgentClient({
+      baseUrl: `${ORIGIN}/`,
+      fetch: ((input: RequestInfo | URL, init?: RequestInit) => fetchImpl(input, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), "sec-fetch-site": "cross-site" } })) as typeof fetch,
+    });
+    const parked = await crossSite.start("refund", { orderId: "o_6" });
+    expect(await crossSite.cancel(parked.id)).toMatchObject({ status: "cancelled" });
   });
 
   it("parses multi-line and CRLF SSE frames and skips comments", async () => {

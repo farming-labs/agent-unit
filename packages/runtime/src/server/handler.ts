@@ -1,7 +1,7 @@
 import { AgentUnitError, RunEngine } from "../runtime/engine";
 import type { AgentEvent, RunInput, RunRecord, RunStatus } from "../types";
 import { agentCardDocument } from "./a2a";
-import { readBody, RUN_ID, THREAD_ID } from "./body";
+import { checkPost, readBody, RUN_ID, THREAD_ID } from "./body";
 import { handleMcp } from "./mcp";
 import type { RunService } from "./service";
 
@@ -51,6 +51,11 @@ export interface AuthorizeContext {
   threadId?: string;
 }
 
+/** An event `seq` to read after: a whole number from 0, or 0 for anything else. */
+function eventCursor(value: string | null): number {
+  const seq = Number(value);
+  return Number.isSafeInteger(seq) && seq > 0 ? seq : 0;
+}
 
 export interface RequestContext {
   /** Keeps work alive after the response (serverless `waitUntil`). */
@@ -233,6 +238,7 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
         return problem(404, "not_found", "Not found.");
       }
 
+      if (method === "POST") checkPost(request);
       if (method === "GET" && (path === "/" || path === "/manifest.json")) {
         return (await guard({ action: "manifest" })) ?? json(engine.manifest());
       }
@@ -292,7 +298,11 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
             threadId: url.searchParams.get("threadId") ?? undefined,
             limit: Number.isFinite(limit) && limit > 0 ? Math.min(limit, 500) : 50,
           });
-          return json({ runs });
+          // The filters are the caller's to choose, so each run is also checked as a read of that run:
+          // a list without a threadId must not hold other callers' runs.
+          if (!options.authorize) return json({ runs });
+          const readable = await Promise.all(runs.map(async (run) => !(await guard({ action: "read", runId: run.id, agent: run.agent, threadId: run.threadId }))));
+          return json({ runs: runs.filter((_, index) => readable[index]) });
         }
         if (id && method === "GET" && segments.length === 2) {
           const checked = await guardRun("read", id);
@@ -301,8 +311,9 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
         if (id && method === "GET" && segments[2] === "events") {
           const checked = await guardRun("events", id);
           if (checked.denied) return checked.denied;
-          const after = Number(url.searchParams.get("after") ?? request.headers.get("last-event-id") ?? 0);
-          return eventStream(engine.events(id, Number.isFinite(after) ? after : 0, request.signal), request.signal, options.heartbeatMs);
+          // EventSource reconnects to the URL it opened and adds Last-Event-ID, so the later cursor wins.
+          const after = Math.max(eventCursor(url.searchParams.get("after")), eventCursor(request.headers.get("last-event-id")));
+          return eventStream(engine.events(id, after, request.signal), request.signal, options.heartbeatMs);
         }
         if (id && method === "POST" && segments[2] === "resume") {
           const checked = await guardRun("resume", id);
