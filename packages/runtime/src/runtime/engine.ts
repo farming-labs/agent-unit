@@ -645,7 +645,9 @@ export class RunEngine {
   /** Events from `after`, then live ones, until the run settles. */
   async *events(id: string, after = 0, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
     await this.getRun(id);
-    let cursor = after;
+    // Events are numbered 1, 2, …: any other cursor would read storage once per number below the
+    // first event, or never match one and so never see the run settle.
+    let cursor = Number.isSafeInteger(after) && after > 0 ? after : 0;
     const queue: AgentEvent[] = [];
     let wake: (() => void) | undefined;
     const listener = (event: AgentEvent) => {

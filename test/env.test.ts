@@ -35,6 +35,29 @@ describe("waitUntil", () => {
     expect(log).toEqual(["first", "second"]);
   });
 
+  it("finishes work queued while a streamed response is written before its body ends", async () => {
+    const log: string[] = [];
+    const encoder = new TextEncoder();
+    const response = await runInScope(undefined, () => {
+      const body = new ReadableStream<Uint8Array>({
+        start(controller) {
+          controller.enqueue(encoder.encode("a"));
+          // Like an AI SDK onFinish: the work starts once the last of the body is written.
+          setTimeout(() => {
+            controller.enqueue(encoder.encode("b"));
+            waitUntil(later(log, "save"));
+            controller.close();
+          }, 5);
+        },
+      });
+      return new Response(body, { status: 201, headers: { "x-run": "1" } });
+    });
+    expect(response.status).toBe(201);
+    expect(response.headers.get("x-run")).toBe("1");
+    expect(await response.text()).toBe("ab");
+    expect(log).toEqual(["save"]);
+  });
+
   it("logs a failure instead of failing the request, and runs outside any request", async () => {
     const errors = vi.spyOn(console, "error").mockImplementation(() => {});
     await runInScope(undefined, () => waitUntil(Promise.reject(new Error("smtp down"))));
