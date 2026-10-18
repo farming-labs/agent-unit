@@ -110,7 +110,8 @@ its next step, emits `RUN_CANCELLED` and records `cancelled`. If it finishes fir
 
 `GET /runs/:id/events?after=12` streams every stored event with `seq > 12`, then live events until
 the run settles. It also honours the SSE `Last-Event-ID` header, so a browser `EventSource` resumes
-where it left off after a dropped connection or a closed tab.
+where it left off after a dropped connection or a closed tab; when both are sent, the later one wins.
+Either is a whole number from 0; anything else reads from the start.
 
 ## Internal endpoints
 

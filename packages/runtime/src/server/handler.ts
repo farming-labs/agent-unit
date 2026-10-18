@@ -51,6 +51,12 @@ export interface AuthorizeContext {
   threadId?: string;
 }
 
+/** An event `seq` to read after: a whole number from 0, or 0 for anything else. */
+function eventCursor(value: string | null): number {
+  const seq = Number(value);
+  return Number.isSafeInteger(seq) && seq > 0 ? seq : 0;
+}
+
 /** Thread ids name shared state, so they are plain text of a sensible length. */
 const THREAD_ID = /^[^\u0000-\u001f\u007f]{1,256}$/;
 
@@ -306,8 +312,9 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
         if (id && method === "GET" && segments[2] === "events") {
           const checked = await guardRun("events", id);
           if (checked.denied) return checked.denied;
-          const after = Number(url.searchParams.get("after") ?? request.headers.get("last-event-id") ?? 0);
-          return eventStream(engine.events(id, Number.isFinite(after) ? after : 0, request.signal), request.signal, options.heartbeatMs);
+          // EventSource reconnects to the URL it opened and adds Last-Event-ID, so the later cursor wins.
+          const after = Math.max(eventCursor(url.searchParams.get("after")), eventCursor(request.headers.get("last-event-id")));
+          return eventStream(engine.events(id, after, request.signal), request.signal, options.heartbeatMs);
         }
         if (id && method === "POST" && segments[2] === "resume") {
           const checked = await guardRun("resume", id);
