@@ -36,10 +36,13 @@ the run uses no compute until it is answered or woken.
 ## HTTP API
 
 All paths are relative to the configured base path (default `/`). Request bodies must be sent as
-`application/json` and are limited to 1 MB by default; an MCP batch holds at most 20 messages.
+`application/json` and are limited to 1 MB by default; an MCP batch holds at most 20 messages. A
+POST with any other content type is refused even without a body, and so is a POST with none that the
+browser marks as sent from another site (`Sec-Fetch-Site`): an HTML form or plain `fetch` from another
+site could otherwise start, resume or cancel a run with the visitor's cookies.
 Errors are `{ "error": { "code": string, "message": string } }` with status 400 (bad input), 404
 (unknown agent or run), 409 (wrong run state, for example resuming a run that is not interrupted, or
-a second resume racing the first), 413 (body too large) or 415 (body not JSON). A path with invalid
+a second resume racing the first), 413 (body too large) or 415 (not JSON). A path with invalid
 percent-encoding gets 400.
 
 ### Authorization
