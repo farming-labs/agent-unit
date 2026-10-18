@@ -111,7 +111,8 @@ reads `.env` (variables already set win). The engine settings (`agents`, `agents
 
 `waitUntil` from `agent-unit/env` keeps work running after the response (an email, a webhook, a
 cache write). It uses the host's own `waitUntil` on Node, Bun, Deno, Workers and Vercel; on Netlify
-and AWS Lambda, which may freeze after a response, the response waits for the work instead. Hono's
+and AWS Lambda, which may freeze after a response, the response waits for the work instead (a
+streamed response ends once work handed over while it streams is done). Hono's
 `c.executionCtx.waitUntil` does the same.
 
 ```ts
