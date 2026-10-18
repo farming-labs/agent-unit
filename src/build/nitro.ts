@@ -213,7 +213,8 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
   const preset = resolvePreset(loaded, options.preset);
   // From here on the config is the one for this preset: its `presets` entry over the top level.
   const project = { ...loaded, config: configForPreset(loaded.config, preset) };
-  const genDir = join(project.root, ".agent-unit");
+  // One folder per preset, as the agent-unit/nitro module has: builds for several hosts run at once.
+  const genDir = join(project.root, ".agent-unit", preset);
   // The engine is imported only when it is the server, so an app's own server builds without it.
   const own = project.config.server ? await resolveServer(project, genDir, preset) : undefined;
   const engine = own ? undefined : (await import("./engine")).prepareEngine(project, preset, genDir, logger.warn);
