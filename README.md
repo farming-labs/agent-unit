@@ -538,6 +538,9 @@ runtime lists a bare `{ tag: "agent-unit-v1" }` after them, and agent-unit's mig
 cloudflare: { wrangler: { migrations: [{ tag: "v1", new_sqlite_classes: ["Notes"] }, { tag: "agent-unit-v1" }] } },
 ```
 
+The same bare tag in the app's own `wrangler.json(c)` or `wrangler.toml` places it too. Settings from
+that file, such as `compatibility_date`, win over agent-unit's defaults.
+
 In a Worker you write yourself:
 
 ```ts

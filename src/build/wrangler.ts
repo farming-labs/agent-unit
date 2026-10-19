@@ -24,9 +24,25 @@ const stable = (value: unknown): string =>
     item && typeof item === "object" && !Array.isArray(item) ? Object.fromEntries(Object.entries(item).sort(([a], [b]) => a.localeCompare(b))) : item,
   );
 
+/**
+ * A bare `{ tag }` in the migrations places the migration of that tag there, as `cloudflare.wrangler`
+ * can (see orderMigrations): the app's wrangler file lists `{ tag: "agent-unit-v1" }` after migrations
+ * its Worker already applied, and agent-unit's migration, which Nitro put first, moves to that spot.
+ */
+function placeMigrations(config: Record<string, any>): boolean {
+  const list = config.migrations;
+  if (!Array.isArray(list)) return false;
+  const isBare = (entry: Record<string, unknown>) => typeof entry?.tag === "string" && Object.keys(entry).length === 1;
+  const full = new Map<string, unknown>(list.filter((entry) => typeof entry?.tag === "string" && !isBare(entry)).map((entry) => [entry.tag, entry]));
+  const placed = new Set(list.filter((entry) => isBare(entry) && full.has(entry.tag)).map((entry) => entry.tag as string));
+  if (!placed.size) return false;
+  config.migrations = list.flatMap((entry) => (!placed.has(entry?.tag) ? [entry] : isBare(entry) ? [full.get(entry.tag)] : []));
+  return true;
+}
+
 /** Removes repeated bindings and flags from a merged wrangler config, in place. Returns whether it changed. */
 export function dedupeWrangler(config: Record<string, any>): boolean {
-  let changed = false;
+  let changed = placeMigrations(config);
   for (const [path, key] of LISTS) {
     const parent = path.slice(0, -1).reduce<Record<string, any> | undefined>((node, part) => node?.[part], config);
     const field = path.at(-1)!;

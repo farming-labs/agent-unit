@@ -121,7 +121,9 @@ export function orderMigrations(ours: { tag: string }[], app: { tag: string }[])
 }
 
 function cloudflareConfig(root: string, genDir: string, durable: boolean, user: CloudflareOptions = {}): CloudflareOptions {
-  const wrangler: Record<string, unknown> = { compatibility_date: "2025-09-15" };
+  // The Worker's compatibility date is a default (Nitro's compatibilityDate.cloudflare, set in build),
+  // so the app's wrangler file and `cloudflare.wrangler` win over it.
+  const wrangler: Record<string, unknown> = {};
   // Framework SDKs import Node modules at load that Workers only provide (as stubs) from compatibility
   // date 2026 on, or with these flags: Mastra imports child_process, readline and worker_threads, the
   // OpenAI Agents SDK imports tty (through \`debug\`). One missing module stops the whole Worker from
@@ -287,7 +289,8 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     dev: false,
     preset,
     builder: "rolldown",
-    compatibilityDate: "2025-07-01",
+    // Workers default to a 2025-09 date; an app's wrangler file or `cloudflare.wrangler` sets its own.
+    compatibilityDate: { default: "2025-07-01", cloudflare: "2025-09-15" },
     // Readable output by default, on Workers too: Cloudflare limits a Worker's uncompressed size (64 MiB),
     // not its compressed size, and minifying did not shorten a Mastra Worker's startup.
     minify: options.minify ?? false,
