@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { init, packageManager } from "../src/build/init";
-import { detectFramework, initFiles, mergeIntoApp, packageName } from "../src/build/init-templates";
+import { detectFramework, initFiles, mergeIntoApp, packageName, workerName } from "../src/build/init-templates";
 
 const manifest = (files: Record<string, string>) => JSON.parse(files["package.json"]!) as Record<string, any>;
 
@@ -27,12 +27,24 @@ describe("the files agent-unit init writes", () => {
     });
     expect(files["agent-unit.config.ts"]).not.toContain("server:");
     expect(files["agent-unit.config.ts"]).toContain(`d1_databases: [{ binding: "DB", database_name: "refund-desk"`);
+    // The Worker's name is pinned, beside the D1 binding: a git remote must not rename it.
+    expect(files["agent-unit.config.ts"]).toContain(`      name: "refund-desk",\n      d1_databases:`);
     expect(files["src/mastra/index.ts"]).toContain(`model: { id: "anthropic/claude-sonnet-4-5", apiKey: env.ANTHROPIC_API_KEY }`);
     expect(files["src/storage.d1.ts"]).toContain("binding: env.DB");
     // `cp .env.example .env` leaves MASTRA_DB_URL empty: that has to fall back to the local file too.
     expect(files["src/storage.libsql.ts"]).toContain(`url: env.MASTRA_DB_URL || "file:./mastra.db"`);
     expect(env).toEqual(["ANTHROPIC_API_KEY", "MASTRA_DB_URL", "MASTRA_DB_AUTH_TOKEN"]);
     expect(files["README.md"]).toContain("npx wrangler@4 d1 create refund-desk");
+  });
+
+  it("names the Worker as Cloudflare allows, and sets secrets on it before the first deploy", () => {
+    expect(workerName("my_bot.v2")).toBe("my-bot-v2");
+    expect(workerName("___")).toBe("my-agent");
+    expect(workerName(`a${"-b".repeat(40)}`)).toHaveLength(63);
+    const { files } = initFiles({ name: "chat_bot", framework: "ai-sdk", runner: "server", hosts: ["cloudflare"], provider: "openai" }, "0.1.16");
+    expect(files["agent-unit.config.ts"]).toContain(`cloudflare: { wrangler: { name: "chat-bot" } }`);
+    // Before the first build there is no wrangler config to say which Worker the secret is for.
+    expect(files["README.md"]).toContain("`npx wrangler@4 secret put <NAME> --name chat-bot`");
   });
 
   it("uses one store and no D1 when Workers is not a host", () => {
@@ -133,6 +145,7 @@ describe("the files agent-unit init writes", () => {
 
   it("writes a defineAgent app with no framework and no model", () => {
     const { files, env } = initFiles({ name: "plain", framework: "agent-unit", runner: "server", hosts: ["cloudflare"], provider: "google" }, "0.1.16");
+    expect(files["agent-unit.config.ts"]).toContain(`  cloudflare: { wrangler: { name: "plain" } },`);
     expect(Object.keys(manifest(files).dependencies)).toEqual(["agent-unit", "zod"]);
     expect(files["agents/refund.ts"]).toContain(`export default defineAgent({`);
     expect(files["agent-unit.config.ts"]).toContain(`"cloudflare-module": { runtime: "durable-objects" }`);
