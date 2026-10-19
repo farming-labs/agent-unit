@@ -3,7 +3,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { init, packageManager } from "../src/build/init";
-import { detectFramework, initFiles, mergeIntoApp, packageName, workerName } from "../src/build/init-templates";
+import { detectFramework, extrasFor, initFiles, mergeIntoApp, packageName, workerName } from "../src/build/init-templates";
 
 const manifest = (files: Record<string, string>) => JSON.parse(files["package.json"]!) as Record<string, any>;
 
@@ -45,6 +45,25 @@ describe("the files agent-unit init writes", () => {
     expect(files["agent-unit.config.ts"]).toContain(`cloudflare: { wrangler: { name: "chat-bot" } }`);
     // Before the first build there is no wrangler config to say which Worker the secret is for.
     expect(files["README.md"]).toContain("`npx wrangler@4 secret put <NAME> --name chat-bot`");
+  });
+
+  it("offers the scheduled task only where a host runs it, and says what to schedule on Lambda", async () => {
+    expect(extrasFor("hono", "server", ["netlify", "lambda"])).not.toContain("task");
+    expect(extrasFor("hono", "server", ["node", "lambda"])).toContain("task");
+    const dir = mkdtempSync(join(tmpdir(), "agent-unit-init-task-"));
+    try {
+      await expect(init({ dir: join(dir, "t"), framework: "hono", hosts: "netlify,lambda", extras: "task", install: false, version: "0.1.16", logger: { info() {}, warn() {} } })).rejects.toThrow(
+        "--extras task needs a host that runs scheduled tasks (Node, Bun, Deno, Cloudflare Workers or Vercel)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // With Node beside Lambda, the task stays and the Lambda steps say it does not run there.
+    const mixed = initFiles({ name: "mix", framework: "hono", hosts: ["node", "lambda"], extras: ["task"] }, "0.1.16").files["README.md"]!;
+    expect(mixed).toContain("The daily task does not run on its own here: AWS Lambda has no scheduler agent-unit drives.");
+    // Runs on agent-unit's engine need the sweep, which nothing schedules on Lambda.
+    const engine = initFiles({ name: "eng", framework: "agent-unit", runner: "engine", hosts: ["lambda"] }, "0.1.16").files["README.md"]!;
+    expect(engine).toContain("schedule `POST <Url>/__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` every minute");
   });
 
   it("uses one store and no D1 when Workers is not a host", () => {
