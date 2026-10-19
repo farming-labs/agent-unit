@@ -36,7 +36,7 @@ export interface ServerPresetEntry {
 export interface ServerPresetContext {
   /** The app's directory. */
   root: string;
-  /** agent-unit's generated-files directory inside the app (`.agent-unit`), for files the preset writes. */
+  /** agent-unit's generated-files directory inside the app (`.agent-unit/<preset>`), for files the preset writes. */
   genDir: string;
   /** The Nitro preset being built for (`node-server`, `cloudflare-module`, ...), or `"dev"`. */
   preset: string;

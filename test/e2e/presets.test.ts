@@ -1,4 +1,4 @@
-import { mkdirSync } from "node:fs";
+import { mkdirSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
@@ -27,6 +27,20 @@ describe("per-preset settings", () => {
     dirs.push(dir);
     return dir;
   };
+
+  it("builds two presets at once, each with its own settings", async () => {
+    // `build:all` scripts start one build per host together; they once shared one generated runtime.
+    const [node, vercelOut] = [out(), out()];
+    await Promise.all([buildFixture(root, "node-server", node), buildFixture(root, "vercel", vercelOut)]);
+    const code = (dir: string) =>
+      (readdirSync(dir, { recursive: true }) as string[])
+        .filter((file) => file.endsWith(".mjs"))
+        .map((file) => readFileSync(join(dir, file), "utf8"))
+        .join("\n");
+    expect(code(node)).toMatch(/\bbudget: false\b/);
+    expect(code(node)).not.toMatch(/\bbudget: (30000|3e4)\b/);
+    expect(code(vercelOut)).toMatch(/\bbudget: (30000|3e4)\b/);
+  });
 
   it("keeps runs on disk on Node, from the top-level settings", async () => {
     const dir = out();
