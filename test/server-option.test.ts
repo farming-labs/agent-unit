@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "nod
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { startDev, type DevServer } from "../src/build/dev";
+import { reloadsOn, startDev, type DevServer } from "../src/build/dev";
 import { loadProject } from "../src/build/load";
 import { build } from "../src/build/nitro";
 import { mastra } from "../src/presets/mastra";
@@ -167,6 +167,56 @@ export default {
     const withInstance = app({ "agents.ts": "export const mastra = {};" });
     expect(() => mastra({ entry: "./agents.ts" }).entry(context(withInstance))).toThrow(/Install @mastra\/hono and hono: npm install @mastra\/hono hono/);
   });
+});
+
+describe("agent-unit dev reloads", () => {
+  it("on source and .env changes, not on run storage, build output or editors' files", () => {
+    for (const file of ["src/server.ts", "agents/refund.mts", "src/data.json", ".env", ".env.local", "agent-unit.config.ts"]) expect(reloadsOn(file), file).toBe(true);
+    const storage = "runs";
+    for (const file of ["runs/runs:run_x.json", ".data/agent-unit/index.json", ".vercel/output/config.json", "dist/index.mjs", "mastra.db", "mastra.db-wal", "src/server.ts~", ".DS_Store", "notes.md"]) {
+      expect(reloadsOn(file, storage), file).toBe(false);
+    }
+  });
+
+  it("applies .env edits on reload, and variables set in the shell still win", async () => {
+    const root = app({
+      "agent-unit.config.mjs": `export default { server: "./server.ts" };`,
+      "server.ts": `export default () => Response.json({ greeting: process.env.DEV_GREETING, shell: process.env.DEV_SHELL });`,
+      ".env": "DEV_GREETING=one\nDEV_SHELL=from .env\n",
+    });
+    process.env.DEV_SHELL = "from the shell";
+    try {
+      const dev = await startDev({ root, port: 0, watch: false, logger: quiet });
+      servers.push(dev);
+      expect(await (await fetch(dev.url)).json()).toEqual({ greeting: "one", shell: "from the shell" });
+      writeFileSync(join(root, ".env"), "DEV_GREETING=two\nDEV_SHELL=from .env\n");
+      await dev.reload();
+      expect(await (await fetch(dev.url)).json()).toEqual({ greeting: "two", shell: "from the shell" });
+    } finally {
+      delete process.env.DEV_GREETING;
+      delete process.env.DEV_SHELL;
+    }
+  });
+
+  it("wakes a run that was sleeping across a reload within seconds", async () => {
+    const root = app({ "agent-unit.config.mjs": "export default {};" });
+    mkdirSync(join(root, "agents"));
+    // What defineAgent returns, without importing agent-unit from a temp directory.
+    writeFileSync(join(root, "agents/napper.mjs"), `export default { [Symbol.for("agent-unit.agent")]: true, run: async (_input, run) => { await run.sleep(2000); return "awake"; } };`);
+    const dev = await startDev({ root, port: 0, watch: false, logger: quiet });
+    servers.push(dev);
+    const started = await (await fetch(`${dev.url}agents/napper/runs`, { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
+    const status = async () => ((await (await fetch(`${dev.url}runs/${started.id}`)).json()) as { status: string }).status;
+    for (const deadline = Date.now() + 5_000; Date.now() < deadline && (await status()) !== "sleeping"; ) await new Promise((resolve) => setTimeout(resolve, 50));
+    // A reload while it sleeps hands the previous engine's timer to the sweep, which once ran every minute.
+    await dev.reload();
+    let current = "";
+    for (const deadline = Date.now() + 12_000; Date.now() < deadline && current !== "completed"; ) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      current = await status();
+    }
+    expect(current).toBe("completed");
+  }, 25_000);
 });
 
 describe("agent-unit dev with a framework's agent", () => {

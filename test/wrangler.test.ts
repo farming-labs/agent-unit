@@ -1,5 +1,8 @@
 import { describe, expect, it } from "vitest";
-import { dedupeWrangler } from "../src/build/wrangler";
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { dedupeWrangler, wranglerFileSets } from "../src/build/wrangler";
 
 // Nitro joins the app's wrangler file and agent-unit's settings end to end; the build keeps each binding once.
 
@@ -49,6 +52,25 @@ describe("agent-unit's Durable Objects migration among the app's", () => {
       `Use another tag, or list a bare { tag: "agent-unit-v1" } to place agent-unit's migration there.`,
     );
     expect(() => orderMigrations([], [{ tag: "agent-unit-v1" }])).toThrow(`only the "durable-objects" runtime has`);
+  });
+});
+
+describe("wranglerFileSets", () => {
+  it("finds a setting in the nearest wrangler.json, .jsonc or .toml, as Nitro finds the file", () => {
+    const root = mkdtempSync(join(tmpdir(), "agent-unit-wrangler-"));
+    try {
+      const app = join(root, "apps/agent");
+      mkdirSync(app, { recursive: true });
+      expect(wranglerFileSets(app, "compatibility_date")).toBe(false);
+      writeFileSync(join(root, "wrangler.toml"), 'name = "agent"\ncompatibility_date = "2026-06-01"\n');
+      expect(wranglerFileSets(app, "compatibility_date")).toBe(true);
+      writeFileSync(join(app, "wrangler.jsonc"), '{\n  // no date here\n  "name": "agent"\n}\n');
+      expect(wranglerFileSets(app, "compatibility_date")).toBe(false);
+      writeFileSync(join(app, "wrangler.jsonc"), '{ "compatibility_date": "2026-06-01" }');
+      expect(wranglerFileSets(app, "compatibility_date")).toBe(true);
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
   });
 });
 
