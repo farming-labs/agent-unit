@@ -1,4 +1,5 @@
-import { readFileSync } from "node:fs";
+import { spawnSync } from "node:child_process";
+import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { buildFixture, cleanup, prepareFixture, ROOT, startServer, tempDir, type RunningServer } from "./helpers";
@@ -102,3 +103,20 @@ describe("scheduled tasks on other hosts", () => {
     expect(warnings).toEqual([expect.stringMatching(/the "netlify" preset has no scheduler .* the tasks "tick" will not run on their own/)]);
   });
 });
+
+describe("agent-unit task", () => {
+  it("exits once the task is done, though the task leaves a client or timer open", () => {
+    const root = tempDir("task-open-handle");
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "task-open-handle", type: "module" }));
+    writeFileSync(join(root, "server.mjs"), "export default () => new Response('ok');");
+    writeFileSync(join(root, "agent-unit.config.mjs"), `export default { server: "./server.mjs", tasks: { digest: { schedule: "0 8 * * *", handler: "./digest.mjs" } } };`);
+    // A database or Redis client a task module opens and never closes keeps a process alive.
+    writeFileSync(join(root, "digest.mjs"), "setInterval(() => {}, 1000);\nexport default () => ({ sent: 3 });");
+    const result = spawnSync(process.execPath, [join(ROOT, "dist/cli.mjs"), "task", "digest", "--root", root], { encoding: "utf8", timeout: 15_000 });
+    cleanup(root);
+    expect(result.signal).toBeNull();
+    expect(result.status).toBe(0);
+    expect(result.stdout).toContain(`agent-unit task digest: done\n{\n  "sent": 3\n}`);
+  });
+});
+
