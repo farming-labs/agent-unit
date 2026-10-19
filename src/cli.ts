@@ -35,12 +35,13 @@ const dev = defineCommand({
   meta: { name: "dev", description: "Serve your server or your agents from source, reloading on change (reads .env)" },
   args: {
     root,
-    port: { type: "string", description: "Port", default: process.env.PORT ?? "3000" },
+    // No default here: PORT is read after .env, which may set it.
+    port: { type: "string", description: "Port (default: PORT, else 3000)" },
     host: { type: "string", description: "Hostname to bind" },
   },
   async run({ args }) {
     const { startDev } = await import("./build/dev");
-    const server = await startDev({ root: args.root, port: Number(args.port), hostname: args.host });
+    const server = await startDev({ root: args.root, port: args.port === undefined ? undefined : Number(args.port), hostname: args.host });
     console.log(`agent-unit dev: ${server.url}\n  ${server.server ? "server" : "agents"}: ${server.describe()}`);
     const stop = async () => {
       await server.close();
