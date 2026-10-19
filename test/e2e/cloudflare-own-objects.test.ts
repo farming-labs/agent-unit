@@ -65,6 +65,21 @@ describe.skipIf(!workerd)("Durable Objects runtime with the app's own Durable Ob
 });
 
 describe("the app's own wrangler file", () => {
+  it("gives Workers the 2025-09-15 compatibility date west of UTC too, which Workers need for node:fs", async () => {
+    // Nitro reads compatibility dates in local time: in California 2025-09-15 once came out as 2025-09-13.
+    const previous = process.env.TZ;
+    process.env.TZ = "America/Los_Angeles";
+    const out = tempDir("cf-date-tz");
+    try {
+      await buildFixture(prepareFixture("server"), "cloudflare-module", out);
+      expect(JSON.parse(readFileSync(join(out, "server/wrangler.json"), "utf8")).compatibility_date).toBe("2025-09-15");
+    } finally {
+      if (previous === undefined) delete process.env.TZ;
+      else process.env.TZ = previous;
+      cleanup(out);
+    }
+  });
+
   it("keeps its compatibility date, and places agent-unit's migration where it lists the bare tag", async () => {
     const out = tempDir("cf-wrangler-file");
     await buildFixture(prepareFixture("cloudflare-wrangler-file"), "cloudflare-module", out);

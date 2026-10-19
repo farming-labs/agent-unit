@@ -4,7 +4,7 @@ import type { StorageConfig } from "../config";
 import { configForPreset, loadProject, ownNitro, resolveServer, toImport } from "./load";
 import { prepareTasks } from "./tasks";
 import { foreignNativePackages } from "./native";
-import { dedupeWranglerFile } from "./wrangler";
+import { dedupeWranglerFile, wranglerFileSets } from "./wrangler";
 
 // The compiler: one Nitro build of the app's server for any preset. The server is the app's own
 // (`server` in agent-unit.config.ts) or, without one, agent-unit's engine from ./engine.
@@ -122,9 +122,10 @@ export function orderMigrations(ours: { tag: string }[], app: { tag: string }[])
 }
 
 function cloudflareConfig(root: string, genDir: string, durable: boolean, user: CloudflareOptions = {}): CloudflareOptions {
-  // The Worker's compatibility date is a default (Nitro's compatibilityDate.cloudflare, set in build),
-  // so the app's wrangler file and `cloudflare.wrangler` win over it.
-  const wrangler: Record<string, unknown> = {};
+  // A default the app's wrangler file and `cloudflare.wrangler` win over. It is set here, not through
+  // Nitro's compatibilityDate, which reads dates in local time: west of UTC each read moves one a day
+  // back, and 2025-09-15 became 2025-09-13, before Workers have node:fs.
+  const wrangler: Record<string, unknown> = wranglerFileSets(root, "compatibility_date") ? {} : { compatibility_date: "2025-09-15" };
   // Framework SDKs import Node modules at load that Workers only provide (as stubs) from compatibility
   // date 2026 on, or with these flags: Mastra imports child_process, readline and worker_threads, the
   // OpenAI Agents SDK imports tty (through \`debug\`). One missing module stops the whole Worker from
@@ -291,8 +292,7 @@ export async function build(options: BuildOptions = {}): Promise<BuildResult> {
     dev: false,
     preset,
     builder: "rolldown",
-    // Workers default to a 2025-09 date; an app's wrangler file or `cloudflare.wrangler` sets its own.
-    compatibilityDate: { default: "2025-07-01", cloudflare: "2025-09-15" },
+    compatibilityDate: "2025-07-01",
     // Readable output by default, on Workers too: Cloudflare limits a Worker's uncompressed size (64 MiB),
     // not its compressed size, and minifying did not shorten a Mastra Worker's startup.
     minify: options.minify ?? false,
