@@ -264,7 +264,11 @@ export interface AppMerge {
  */
 export function mergeIntoApp(plan: Record<string, string>, read: (path: string) => string | undefined): AppMerge {
   const merge: AppMerge = { files: {}, created: [], updated: [], kept: [], renamed: {} };
-  for (const [path, content] of Object.entries(plan)) {
+  // package.json first: the files that name agent-unit's scripts (netlify.toml, template.yaml) need
+  // the names they end up with.
+  const paths = Object.keys(plan).sort((a, b) => Number(b === "package.json") - Number(a === "package.json"));
+  for (const path of paths) {
+    const content = renameScripts(plan[path]!, merge.renamed);
     const current = read(path);
     // The app's README describes the app, and its TypeScript setup is its own: agent-unit builds
     // without one.
@@ -283,6 +287,13 @@ export function mergeIntoApp(plan: Record<string, string>, read: (path: string) 
     }
   }
   return merge;
+}
+
+/** `npm run <script>` in a planned file, for each of agent-unit's scripts the app's own names took. */
+function renameScripts(content: string, renamed: Record<string, string>): string {
+  let next = content;
+  for (const [from, to] of Object.entries(renamed)) next = next.replace(new RegExp(`npm run ${from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w:-])`, "g"), `npm run ${to}`);
+  return next;
 }
 
 function mergeManifest(current: string, planned: string, renamed: Record<string, string>): string {

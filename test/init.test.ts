@@ -406,6 +406,19 @@ describe("agent-unit init in an existing app", () => {
     expect(merge.created).toEqual(["agent-unit.config.ts", ".gitignore"]);
   });
 
+  it("points netlify.toml and template.yaml at agent-unit's scripts when the app's own names took theirs", async () => {
+    const scripts = { dev: "tsx watch src/index.ts", build: "tsc", start: "node dist/index.js", deploy: "echo mine" };
+    const netlify = app({ "package.json": JSON.stringify({ name: "shop", scripts, dependencies: { hono: "^4.0.0" } }), "src/index.ts": "export default { fetch: () => new Response('hi') };" });
+    await init({ dir: netlify, hosts: "netlify", yes: true, install: false, version: "0.1.16", logger: quiet });
+    expect(JSON.parse(read(netlify, "package.json")).scripts).toMatchObject({ build: "tsc", "agent-unit:build": expect.stringContaining("agent-unit build"), "agent-unit:deploy": expect.stringContaining("netlify") });
+    // Netlify runs this command: the app's own build (tsc) would publish its compiled source, no function.
+    expect(read(netlify, "netlify.toml")).toContain(`command = "npm run agent-unit:build"`);
+    expect(read(netlify, "netlify.toml")).toContain("`npm run agent-unit:deploy`");
+    const lambda = app({ "package.json": JSON.stringify({ name: "shop", scripts, dependencies: { hono: "^4.0.0" } }), "src/index.ts": "export default { fetch: () => new Response('hi') };" });
+    await init({ dir: lambda, hosts: "lambda", yes: true, install: false, version: "0.1.16", logger: quiet });
+    expect(read(lambda, "template.yaml")).toContain("`npm run agent-unit:deploy` deploys it");
+  });
+
   it("adds the dev tools an extra needs, but not a TypeScript setup", async () => {
     const root = app({ "package.json": JSON.stringify({ name: "@acme/my-app", scripts: { test: "jest" } }) });
     await init({ dir: root, framework: "ai-sdk", runner: "engine", hosts: "node", extras: "test", yes: true, install: false, version: "0.1.16", logger: quiet });
