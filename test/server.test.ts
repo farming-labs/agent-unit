@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defineAgent } from "../packages/runtime/src/agents";
 import { createAgentClient, parseEventStream } from "../packages/runtime/src/client";
 import { createHandler } from "../packages/runtime/src/server";
@@ -250,6 +250,34 @@ describe("HTTP handler", () => {
     ).json();
     expect(mcp.result.isError).toBe(true);
     expect(new Set(seen)).toEqual(new Set(["start", "read", "resume", "cancel", "events", "list", "mcp"]));
+  });
+
+  it("keeps internal error text out of event streams and MCP replies, as on the JSON routes", async () => {
+    const { engine, handle, pending } = setup();
+    const run = await (await handle("/agents/echo/runs", post({ input: { text: "x" } }))).json();
+    await Promise.all(pending);
+    const secret = "connect ECONNREFUSED redis://default:hunter2@10.0.3.4:6379";
+    // Storage failing after the run was found: its error names the database and its password.
+    const failing = new Proxy(engine, {
+      get(target, key) {
+        if (key === "events") return async function* () { throw new Error(secret); };
+        if (key === "start") return async () => { throw new Error(secret); };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failingHandler = createHandler(failing);
+    const stream = await (await failingHandler(new Request(`${ORIGIN}/runs/${run.id}/events`))).text();
+    expect(stream).toContain(`event: error\ndata: {"message":"Internal error."}`);
+    const mcp = await (
+      await failingHandler(new Request(`${ORIGIN}/mcp`, post({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "echo", arguments: { message: "hi" } } })))
+    ).json();
+    expect(mcp.error).toEqual({ code: -32603, message: "Internal error." });
+    expect(JSON.stringify([stream, mcp])).not.toContain("hunter2");
+    // The real error is logged where the app's operators see it.
+    expect(errors).toHaveBeenCalledWith("[agent-unit]", expect.objectContaining({ message: secret }));
+    errors.mockRestore();
   });
 
   it("refuses a POST a page on another site could send, with or without a body", async () => {

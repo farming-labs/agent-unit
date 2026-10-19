@@ -83,7 +83,10 @@ async function respond(engine: RunService, message: JsonRpcRequest, context: Req
       try {
         return rpcResult(message.id, await callTool(engine, message.params ?? {}, context, limits));
       } catch (error) {
-        return rpcError(message.id, -32602, error instanceof Error ? error.message : String(error));
+        // As on the JSON routes: an internal error (a storage URL with its password) stays in the log.
+        if (error instanceof AgentUnitError) return rpcError(message.id, -32602, error.message);
+        console.error("[agent-unit]", error);
+        return rpcError(message.id, -32603, "Internal error.");
       }
     }
     default:
