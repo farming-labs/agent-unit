@@ -118,6 +118,31 @@ describe("HTTP handler", () => {
     expect(await resumed.json()).toMatchObject({ status: "completed", output: "declined" });
   });
 
+  it("refuses a resume meant for an interrupt the run has moved past", async () => {
+    const engine = createEngine({
+      admin: defineAgent(async (_input, run) => {
+        const refund = await run.interrupt<{ approved: boolean }>("approve", { action: "refund" });
+        const remove = await run.interrupt<{ approved: boolean }>("approve", { action: "delete account" });
+        return { refund: refund.approved, remove: remove.approved };
+      }),
+    });
+    const handler = createHandler(engine);
+    const call = (path: string, init?: RequestInit) => handler(new Request(`${ORIGIN}${path}`, init));
+    const started = await (await call("/agents/admin/runs", post({}))).json();
+    const first = started.interrupt.key as string;
+    const next = await (await call(`/runs/${started.id}/resume`, post({ answer: { approved: false }, interrupt: first }))).json();
+    expect(next).toMatchObject({ status: "interrupted", interrupt: { payload: { action: "delete account" } } });
+    // The same resume again (a retry after a timeout, a double click) once approved the account deletion.
+    const retried = await call(`/runs/${started.id}/resume`, post({ answer: { approved: true }, interrupt: first }));
+    expect(retried.status).toBe(409);
+    expect((await retried.json()).error.code).toBe("interrupt_mismatch");
+    expect((await call(`/runs/${started.id}/resume`, post({ answer: { approved: true }, interrupt: 1 }))).status).toBe(400);
+    expect(await engine.getRun(started.id)).toMatchObject({ status: "interrupted", interrupt: { key: next.interrupt.key } });
+    // Naming the pending interrupt, or none (as before), answers it.
+    const done = await (await call(`/runs/${started.id}/resume`, post({ answer: { approved: false }, interrupt: next.interrupt.key }))).json();
+    expect(done).toMatchObject({ status: "completed", output: { refund: false, remove: false } });
+  });
+
   it("replays from Last-Event-ID", async () => {
     const { handle, pending } = setup();
     const run = await (await handle("/agents/refund/runs", post({}))).json();
@@ -492,8 +517,11 @@ describe("client", () => {
     expect(first.at(-1)?.type).toBe("RUN_INTERRUPTED");
     const runId = first[0]!.runId;
 
+    // An answer for an interrupt the run is not waiting on is refused.
+    const interrupted = first.at(-1) as Extract<AgentEvent, { type: "RUN_INTERRUPTED" }>;
+    await expect(client.resume(runId, { approved: true }, { interrupt: "interrupt:other#1" }).next()).rejects.toMatchObject({ status: 409, code: "interrupt_mismatch" });
     const second: AgentEvent[] = [];
-    for await (const event of client.resume(runId, { approved: true })) second.push(event);
+    for await (const event of client.resume(runId, { approved: true }, { interrupt: interrupted.interrupt.key })) second.push(event);
     expect(types(second)).toEqual(["STEP_STARTED", "STEP_FINISHED", "RUN_FINISHED"]);
 
     expect(await client.get(runId)).toMatchObject({ status: "completed", output: "refunded o_5" });

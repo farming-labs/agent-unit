@@ -151,12 +151,16 @@ export function createAgentClient(options: AgentClientOptions) {
       if (!settled && runId && !init.signal?.aborted) yield* events(runId, { after: cursor, signal: init.signal });
     },
 
-    /** Answers a pending interrupt and streams the events that follow. */
-    async *resume(runId: string, answer: unknown, init: { signal?: AbortSignal } = {}): AsyncGenerator<AgentEvent> {
+    /**
+     * Answers a pending interrupt and streams the events that follow. Pass `interrupt` (the `key` from
+     * `RUN_INTERRUPTED`) so a resume sent again after the run moved on fails instead of answering the
+     * next interrupt.
+     */
+    async *resume(runId: string, answer: unknown, init: { signal?: AbortSignal; interrupt?: string } = {}): AsyncGenerator<AgentEvent> {
       const before = await getJson<RunRecord>(`/runs/${encodeURIComponent(runId)}`, { signal: init.signal });
       await request(`/runs/${encodeURIComponent(runId)}/resume`, {
         method: "POST",
-        body: JSON.stringify({ answer }),
+        body: JSON.stringify({ answer, interrupt: init.interrupt }),
         signal: init.signal,
       });
       yield* events(runId, { after: before.eventCount, signal: init.signal });
