@@ -11,7 +11,7 @@
     "directory": "packages/create-agent-unit"
   },
   "engines": {
-    "node": ">=20.19"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "bin": {
     "create-agent-unit": "./index.mjs"

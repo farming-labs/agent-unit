@@ -6,6 +6,12 @@ import { readFileSync } from "node:fs";
 import { createRequire } from "node:module";
 import { dirname, join } from "node:path";
 
+// Its own version, not a new app called --version.
+if (process.argv.slice(2).some((arg) => arg === "--version" || arg === "-v")) {
+  console.log(JSON.parse(readFileSync(new URL("./package.json", import.meta.url), "utf8")).version);
+  process.exit(0);
+}
+
 const manifest = createRequire(import.meta.url).resolve("agent-unit/package.json");
 const cli = join(dirname(manifest), JSON.parse(readFileSync(manifest, "utf8")).bin["agent-unit"]);
 const result = spawnSync(process.execPath, [cli, "init", ...process.argv.slice(2)], { stdio: "inherit" });
