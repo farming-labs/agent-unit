@@ -48,6 +48,9 @@ export const hasServerless = (hosts: InitHost[]): boolean => hosts.some((host) =
  * its default local file cannot be written there either. Postgres is plain JavaScript over the network.
  */
 export const defaultStore = (hosts: InitHost[]): InitStore => (hasServerless(hosts) ? "postgres" : "libsql");
+/** Hosts whose scheduler Nitro drives, so a task runs on its own there; Netlify and Lambda have none. */
+const SCHEDULING_HOSTS: InitHost[] = ["node", "bun", "deno", "cloudflare", "vercel"];
+export const runsTasks = (hosts: InitHost[]): boolean => hosts.some((host) => SCHEDULING_HOSTS.includes(host));
 
 export const PROVIDERS = {
   openai: { label: "OpenAI", package: "@ai-sdk/openai", create: "createOpenAI", langchain: "@langchain/openai", chat: "ChatOpenAI", key: "OPENAI_API_KEY", model: "gpt-5-mini" },
@@ -105,13 +108,15 @@ export function runnerFor(framework: InitFramework, runner?: InitRunner): InitRu
 export const asksProvider = (framework: InitFramework) => framework === "mastra" || framework === "ai-sdk" || framework === "langgraph";
 const callsModel = (framework: InitFramework) => asksProvider(framework) || framework === "openai-agents";
 export const asksStore = (framework: InitFramework, runner: InitRunner) => framework === "mastra" && runner === "server";
-export function extrasFor(framework: InitFramework, runner: InitRunner): InitExtra[] {
-  if (framework === "mastra" && runner === "server") return ["task"];
+export function extrasFor(framework: InitFramework, runner: InitRunner, hosts?: InitHost[]): InitExtra[] {
+  // A scheduled task only where some host runs it on its own.
+  const task: InitExtra[] = hosts && !runsTasks(hosts) ? [] : ["task"];
+  if (framework === "mastra" && runner === "server") return task;
   // A server agent-unit writes (Hono, or an AI SDK agent on Hono) has routes to add work to and test.
-  if (runner === "server") return ["task", "auth", "background", "test"];
+  if (runner === "server") return [...task, "auth", "background", "test"];
   // Every engine agent has an offline test: defineAgent's runs as it is, and the others take a scripted
   // model in place of the provider's.
-  return ["task", "auth", "test"];
+  return [...task, "auth", "test"];
 }
 
 // Ranges start at the versions agent-unit's own tests run against.
@@ -160,7 +165,7 @@ export function workerName(name: string): string {
 export function normalizeAnswers(answers: InitAnswers): Required<InitAnswers> {
   if (!answers.hosts.length) throw new Error("Choose at least one host.");
   const runner = runnerFor(answers.framework, answers.runner);
-  const allowed = extrasFor(answers.framework, runner);
+  const allowed = extrasFor(answers.framework, runner, answers.hosts);
   return {
     name: packageName(answers.name),
     framework: answers.framework,
@@ -264,7 +269,11 @@ export interface AppMerge {
  */
 export function mergeIntoApp(plan: Record<string, string>, read: (path: string) => string | undefined): AppMerge {
   const merge: AppMerge = { files: {}, created: [], updated: [], kept: [], renamed: {} };
-  for (const [path, content] of Object.entries(plan)) {
+  // package.json first: the files that name agent-unit's scripts (netlify.toml, template.yaml) need
+  // the names they end up with.
+  const paths = Object.keys(plan).sort((a, b) => Number(b === "package.json") - Number(a === "package.json"));
+  for (const path of paths) {
+    const content = renameScripts(plan[path]!, merge.renamed);
     const current = read(path);
     // The app's README describes the app, and its TypeScript setup is its own: agent-unit builds
     // without one.
@@ -283,6 +292,13 @@ export function mergeIntoApp(plan: Record<string, string>, read: (path: string) 
     }
   }
   return merge;
+}
+
+/** `npm run <script>` in a planned file, for each of agent-unit's scripts the app's own names took. */
+function renameScripts(content: string, renamed: Record<string, string>): string {
+  let next = content;
+  for (const [from, to] of Object.entries(renamed)) next = next.replace(new RegExp(`npm run ${from.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}(?![\\w:-])`, "g"), `npm run ${to}`);
+  return next;
 }
 
 function mergeManifest(current: string, planned: string, renamed: Record<string, string>): string {
@@ -1128,6 +1144,15 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
         `The first deploy asks for a stack name, a region${vars ? " and each variable" : ""}, and saves your answers in \`samconfig.toml\`: \`npm run deploy${suffix} -- --guided\`.`,
       );
       after.push("`template.yaml` describes the function: Node.js 22, the handler `index.handler`, a 5-minute timeout and a public function URL, printed as `Url` when the deploy finishes.");
+      // Lambda has no scheduler of its own for the sweep, unlike Workers, Vercel and Netlify here.
+      if (engine) {
+        after.push(
+          "Nothing wakes sleeping runs or recovers stalled ones on Lambda by itself: schedule `POST <Url>/__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` every minute (an EventBridge Scheduler target, or any cron service).",
+        );
+      }
+    }
+    if (answers.extras.includes("task") && (host === "netlify" || host === "lambda")) {
+      after.push(`The daily task does not run on its own here: ${label} has no scheduler agent-unit drives. Run \`npm run task\` from a scheduler of yours, or let a host that runs it take the task.`);
     }
     if (engine && host === "vercel") {
       // Vercel's Marketplace sets KV_REST_API_URL and KV_REST_API_TOKEN, which the runtime reads too.

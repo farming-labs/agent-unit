@@ -1,9 +1,10 @@
 import { existsSync, readFileSync, watch } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, relative, resolve } from "node:path";
 import { createJiti } from "jiti";
 import { serve } from "srvx";
 import { staticMiddleware } from "srvx/static";
 import type { AgentUnit } from "@agent-unit/runtime/server";
+import type { StorageConfig } from "../config";
 import { runInScope, waitUntil as scopedWaitUntil } from "../env/scope";
 import { loadEnvFile, loadProject, resolveServer, type LoadedProject } from "./load";
 
@@ -35,6 +36,8 @@ export interface DevApp {
   close(): void;
   sweep?(): Promise<unknown>;
   unit?: AgentUnit;
+  /** The engine's run storage, so writes to it on disk do not reload the app. */
+  storage?: StorageConfig;
 }
 
 /** The app's own server from source: its default export, called the way the built entry calls it. */
@@ -67,11 +70,37 @@ async function createApp(root: string): Promise<DevApp> {
   return (await import("./engine-dev")).createEngineApp(project);
 }
 
+/** Folders of build output, tools and data: writes there are never source. */
+const NOT_SOURCE = /(^|[\\/])(node_modules|\.git|\.data|\.output|\.agent-unit|\.nitro|\.vercel|\.netlify|\.wrangler|\.aws-sam|dist|coverage)([\\/]|$)/;
+/** Modules, JSON they import, and .env files. */
+const SOURCE = /\.(?:[cm]?[jt]sx?|json)$|(?:^|[\\/])\.env(?:\.[\w.-]+)?$/;
+
+/**
+ * Whether a change to `file` (relative to the root) reloads the app: source and .env files only, so
+ * run storage on disk, build output and editors' temporary files do not restart it with every write.
+ */
+export function reloadsOn(file: string, storage?: string): boolean {
+  if (NOT_SOURCE.test(file) || !SOURCE.test(file)) return false;
+  return !storage || !(file === storage || file.startsWith(`${storage}/`) || file.startsWith(`${storage}\\`));
+}
+
+/** The folder, relative to the root, where the engine keeps runs on disk, if it does. */
+function storageDir(root: string, app: DevApp): string | undefined {
+  const storage = app.storage;
+  if (!storage || !/^fs(-lite)?$/.test(storage.driver) || typeof storage.base !== "string") return undefined;
+  return relative(root, resolve(root, storage.base));
+}
+
 /** Serves the app from source with reload on change: its own server, or its agents on agent-unit's engine. */
 export async function startDev(options: DevOptions = {}): Promise<DevServer> {
   const logger = options.logger ?? { info: console.log, warn: console.warn, error: console.error };
   const root = resolve(options.root ?? process.cwd());
-  loadEnvFile(root);
+  // Variables .env set (not those already in the environment, which win), so an edit to .env applies on reload.
+  let fromEnvFile = loadEnvFile(root);
+  const reloadEnvFile = () => {
+    for (const key of fromEnvFile) delete process.env[key];
+    fromEnvFile = loadEnvFile(root);
+  };
 
   let current = await createApp(root);
   // public/ is served before the app, as Nitro serves it in a build.
@@ -86,14 +115,17 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
   await server.ready();
   const url = (server.url ?? `http://localhost:${options.port ?? 3000}/`).replace(/\/\/(\[::\]|0\.0\.0\.0)/, "//localhost");
 
-  const sweep = setInterval(() => void current.sweep?.().catch((error) => logger.error("agent-unit: sweep failed", error)), 60_000);
+  // Often, unlike a deployed sweep: a reload hands the previous engine's sleep timers to the sweep.
+  const sweep = setInterval(() => void current.sweep?.().catch((error) => logger.error("agent-unit: sweep failed", error)), 5_000);
   sweep.unref();
 
   let reloading: Promise<void> | undefined;
   async function reload() {
     reloading ??= (async () => {
       try {
+        reloadEnvFile();
         const next = await createApp(root);
+        storage = storageDir(root, next);
         const previous = current;
         current = next;
         // In-flight executions keep running on the previous engine; its timers move to storage-driven wakes.
@@ -109,11 +141,12 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
   }
 
   let timer: ReturnType<typeof setTimeout> | undefined;
+  let storage = storageDir(root, current);
   const watcher =
     options.watch === false
       ? undefined
       : watch(root, { recursive: true }, (_event, file) => {
-          if (!file || /(^|[\\/])(node_modules|\.git|\.data|\.output|\.agent-unit)([\\/]|$)/.test(String(file))) return;
+          if (!file || !reloadsOn(String(file), storage)) return;
           clearTimeout(timer);
           timer = setTimeout(() => void reload(), 100);
         });

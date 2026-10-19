@@ -1,9 +1,9 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { init, packageManager } from "../src/build/init";
-import { detectFramework, initFiles, mergeIntoApp, packageName, workerName } from "../src/build/init-templates";
+import { detectFramework, extrasFor, initFiles, mergeIntoApp, packageName, workerName } from "../src/build/init-templates";
 
 const manifest = (files: Record<string, string>) => JSON.parse(files["package.json"]!) as Record<string, any>;
 
@@ -45,6 +45,25 @@ describe("the files agent-unit init writes", () => {
     expect(files["agent-unit.config.ts"]).toContain(`cloudflare: { wrangler: { name: "chat-bot" } }`);
     // Before the first build there is no wrangler config to say which Worker the secret is for.
     expect(files["README.md"]).toContain("`npx wrangler@4 secret put <NAME> --name chat-bot`");
+  });
+
+  it("offers the scheduled task only where a host runs it, and says what to schedule on Lambda", async () => {
+    expect(extrasFor("hono", "server", ["netlify", "lambda"])).not.toContain("task");
+    expect(extrasFor("hono", "server", ["node", "lambda"])).toContain("task");
+    const dir = mkdtempSync(join(tmpdir(), "agent-unit-init-task-"));
+    try {
+      await expect(init({ dir: join(dir, "t"), framework: "hono", hosts: "netlify,lambda", extras: "task", install: false, version: "0.1.16", logger: { info() {}, warn() {} } })).rejects.toThrow(
+        "--extras task needs a host that runs scheduled tasks (Node, Bun, Deno, Cloudflare Workers or Vercel)",
+      );
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+    // With Node beside Lambda, the task stays and the Lambda steps say it does not run there.
+    const mixed = initFiles({ name: "mix", framework: "hono", hosts: ["node", "lambda"], extras: ["task"] }, "0.1.16").files["README.md"]!;
+    expect(mixed).toContain("The daily task does not run on its own here: AWS Lambda has no scheduler agent-unit drives.");
+    // Runs on agent-unit's engine need the sweep, which nothing schedules on Lambda.
+    const engine = initFiles({ name: "eng", framework: "agent-unit", runner: "engine", hosts: ["lambda"] }, "0.1.16").files["README.md"]!;
+    expect(engine).toContain("schedule `POST <Url>/__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` every minute");
   });
 
   it("uses one store and no D1 when Workers is not a host", () => {
@@ -280,6 +299,11 @@ describe("agent-unit init", () => {
     const root = join(temp(), "app");
     await expect(init({ dir: root, install: false, version: "0.1.16", logger: quiet })).rejects.toThrow(`No terminal to ask "Agent framework" in: pass --framework, or --yes for the defaults.`);
     await expect(init({ dir: root, framework: "hono", install: false, version: "0.1.16", logger: quiet })).rejects.toThrow("pass --hosts");
+    // The install question too, before anything is written, so the same command runs again with the flag.
+    const answered = { dir: root, framework: "hono", hosts: "node", extras: "none", version: "0.1.16", logger: quiet };
+    await expect(init(answered)).rejects.toThrow("pass --install or --no-install");
+    expect(existsSync(join(root, "agent-unit.config.ts"))).toBe(false);
+    await expect(init({ ...answered, install: false })).resolves.toMatchObject({ installed: false });
   });
 
   it("refuses unknown values, extras that do not apply, and a directory with files in it", async () => {
@@ -404,6 +428,19 @@ describe("agent-unit init in an existing app", () => {
     expect(JSON.parse(merge.files["package.json"]!).dependencies.ai).toBe("^7.0.0");
     expect(merge.kept).toEqual(["agents/assistant.ts"]);
     expect(merge.created).toEqual(["agent-unit.config.ts", ".gitignore"]);
+  });
+
+  it("points netlify.toml and template.yaml at agent-unit's scripts when the app's own names took theirs", async () => {
+    const scripts = { dev: "tsx watch src/index.ts", build: "tsc", start: "node dist/index.js", deploy: "echo mine" };
+    const netlify = app({ "package.json": JSON.stringify({ name: "shop", scripts, dependencies: { hono: "^4.0.0" } }), "src/index.ts": "export default { fetch: () => new Response('hi') };" });
+    await init({ dir: netlify, hosts: "netlify", yes: true, install: false, version: "0.1.16", logger: quiet });
+    expect(JSON.parse(read(netlify, "package.json")).scripts).toMatchObject({ build: "tsc", "agent-unit:build": expect.stringContaining("agent-unit build"), "agent-unit:deploy": expect.stringContaining("netlify") });
+    // Netlify runs this command: the app's own build (tsc) would publish its compiled source, no function.
+    expect(read(netlify, "netlify.toml")).toContain(`command = "npm run agent-unit:build"`);
+    expect(read(netlify, "netlify.toml")).toContain("`npm run agent-unit:deploy`");
+    const lambda = app({ "package.json": JSON.stringify({ name: "shop", scripts, dependencies: { hono: "^4.0.0" } }), "src/index.ts": "export default { fetch: () => new Response('hi') };" });
+    await init({ dir: lambda, hosts: "lambda", yes: true, install: false, version: "0.1.16", logger: quiet });
+    expect(read(lambda, "template.yaml")).toContain("`npm run agent-unit:deploy` deploys it");
   });
 
   it("adds the dev tools an extra needs, but not a TypeScript setup", async () => {

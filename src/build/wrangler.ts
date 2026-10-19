@@ -1,4 +1,5 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
+import { dirname, join, resolve } from "node:path";
 
 // Nitro merges the app's own wrangler.json(c)/toml with the settings agent-unit and the app's config
 // generate, and joins lists end to end: a binding declared in both places appears twice, which wrangler
@@ -84,3 +85,22 @@ export function dedupeWranglerFile(file: string): void {
   const config = JSON.parse(readFileSync(file, "utf8")) as Record<string, any>;
   if (dedupeWrangler(config)) writeFileSync(file, JSON.stringify(config, null, 2));
 }
+
+/** The app's own wrangler file, as Nitro finds it: the nearest wrangler.json, .jsonc or .toml from `root` up. */
+export function findWranglerFile(root: string): string | undefined {
+  for (let dir = resolve(root); ; dir = dirname(dir)) {
+    for (const name of ["wrangler.json", "wrangler.jsonc", "wrangler.toml"]) {
+      if (existsSync(join(dir, name))) return join(dir, name);
+    }
+    if (dirname(dir) === dir) return undefined;
+  }
+}
+
+/** Whether the app's wrangler file sets `key`. */
+export function wranglerFileSets(root: string, key: string): boolean {
+  const file = findWranglerFile(root);
+  if (!file) return false;
+  const text = readFileSync(file, "utf8");
+  return file.endsWith(".toml") ? new RegExp(`^\\s*${key}\\s*=`, "m").test(text) : new RegExp(`"${key}"\\s*:`).test(text);
+}
+
