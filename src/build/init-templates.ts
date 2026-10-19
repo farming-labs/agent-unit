@@ -178,7 +178,8 @@ export function normalizeAnswers(answers: InitAnswers): Required<InitAnswers> {
  */
 function samTemplate(name: string, env: string[], script: string): string {
   const parameter = (key: string) => key.toLowerCase().replace(/(^|_)([a-z0-9])/g, (_match, _sep, char: string) => char.toUpperCase());
-  const secret = (key: string) => /KEY|TOKEN|SECRET|PASSWORD|AUTH/.test(key);
+  // A database URL carries its password.
+  const secret = (key: string) => /KEY|TOKEN|SECRET|PASSWORD|AUTH|DATABASE_URL/.test(key);
   const lines = [
     `# AWS SAM template for this app's Lambda build. \`npm run ${script}\` deploys it; the first time, add -- --guided.`,
     `AWSTemplateFormatVersion: "2010-09-09"`,
@@ -312,7 +313,7 @@ function mergeManifest(current: string, planned: string, renamed: Record<string,
   return `${JSON.stringify(app, null, indent)}\n`;
 }
 
-function mergeLines(current: string, planned: string): string {
+export function mergeLines(current: string, planned: string): string {
   const have = new Set(current.split(/\r?\n/).map((line) => line.trim()));
   const missing = planned.split("\n").filter((line) => line.trim() && !have.has(line.trim()));
   return missing.length ? `${current.replace(/\n*$/, "\n")}\n# agent-unit\n${missing.join("\n")}\n` : current;

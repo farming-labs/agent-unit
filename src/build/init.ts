@@ -15,6 +15,7 @@ import {
   HOSTS,
   initFiles,
   mergeIntoApp,
+  mergeLines,
   PROVIDERS,
   RUNNERS,
   runnerFor,
@@ -68,15 +69,34 @@ const list = (value: string | string[] | undefined) =>
   value === undefined ? undefined : (Array.isArray(value) ? value : [value]).flatMap((part) => part.split(",")).map((part) => part.trim()).filter(Boolean);
 
 function pick<K extends string>(choices: Choices<K>, value: string, flag: string): K {
-  if (value in choices) return value as K;
+  // Own keys only: `in` also takes an object's inherited names (toString, constructor).
+  if (Object.hasOwn(choices, value)) return value as K;
   throw new Error(`--${flag} ${value} is not one of: ${Object.keys(choices).join(", ")}.`);
 }
 
-/** The package manager that ran us (`npx`, `pnpm dlx`, `bunx`, ...), so install and the next steps use it. */
-export function packageManager(userAgent = process.env.npm_config_user_agent ?? ""): string {
+/** Lockfiles, and the package manager that writes each. */
+const LOCKFILES: [string, string][] = [
+  ["pnpm-lock.yaml", "pnpm"],
+  ["yarn.lock", "yarn"],
+  ["bun.lock", "bun"],
+  ["bun.lockb", "bun"],
+  ["package-lock.json", "npm"],
+];
+
+/**
+ * The package manager for install and the next steps: in an existing app the one its lockfile is
+ * for (npm would fail on pnpm's workspace: ranges, or add a second lockfile), otherwise the one that
+ * ran us (`npx`, `pnpm dlx`, `bunx`, ...).
+ */
+export function packageManager(userAgent = process.env.npm_config_user_agent ?? "", appRoot?: string): string {
+  const locked = appRoot && LOCKFILES.find(([file]) => existsSync(join(appRoot, file)));
+  if (locked) return locked[1];
   const name = userAgent.split("/")[0];
   return name === "pnpm" || name === "yarn" || name === "bun" ? name : "npm";
 }
+
+/** What a new repository starts with: a directory holding only these is still new. */
+const NEW_REPO_FILES = /^(\.git|\.gitignore|\.gitattributes|\.DS_Store|Thumbs\.db|\.vscode|\.idea|README(\.md)?|LICENSE(\.md|\.txt)?)$/i;
 
 /** Writes a new app. Throws with a message for the user when the answers or the directory do not work. */
 export async function init(options: InitOptions): Promise<InitResult> {
@@ -111,7 +131,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
   if (manifest) {
     const config = readdirSync(root).find((entry) => /^agent-unit\.config\.[cm]?[jt]s$/.test(entry));
     if (config) throw new Error(`${shown} already has ${config}.`);
-  } else if (existsSync(root) && readdirSync(root).some((entry) => entry !== ".git")) {
+  } else if (existsSync(root) && readdirSync(root).some((entry) => !NEW_REPO_FILES.test(entry))) {
     throw new Error(`${shown} is not empty. Choose a new directory, or run init in an app with a package.json to add agent-unit to it.`);
   }
 
@@ -202,7 +222,9 @@ export async function init(options: InitOptions): Promise<InitResult> {
   for (const [path, content] of Object.entries(written)) {
     const file = join(root, path);
     mkdirSync(dirname(file), { recursive: true });
-    writeFileSync(file, content);
+    // A new repository's own README and .gitignore stay, with agent-unit's added.
+    const theirs = !merge && existsSync(file) ? readFileSync(file, "utf8") : undefined;
+    writeFileSync(file, theirs === undefined ? content : path === ".gitignore" ? mergeLines(theirs, content) : `${theirs.trimEnd()}\n\n${content}`);
   }
   const named = framework === "agent-unit" ? "defineAgent" : framework === "hono" ? "Hono server" : FRAMEWORKS[framework].label;
   const what = runner === "engine" && framework !== "agent-unit" ? `${named} on agent-unit's engine` : named;
@@ -228,7 +250,7 @@ export async function init(options: InitOptions): Promise<InitResult> {
     logger.info(`Created ${shown} (${what} for ${forHosts}).`);
   }
 
-  const manager = packageManager();
+  const manager = packageManager(undefined, merge ? root : undefined);
   const install = options.install ?? (await ask({ message: `Install dependencies with ${manager}?`, type: "confirm", initial: true }, true, "--install or --no-install"));
   let installed = false;
   if (install) {
@@ -238,7 +260,8 @@ export async function init(options: InitOptions): Promise<InitResult> {
 
   const run = manager === "npm" ? "npm run" : manager;
   const steps = [
-    ...(shown === "." ? [] : [`cd ${shown}`]),
+    // Quoted when a shell would split or expand it: "My Agent".
+    ...(shown === "." ? [] : [`cd ${/^[\w./-]+$/.test(shown) ? shown : `"${shown.replace(/(["\\$`])/g, "\\$1")}"`}`]),
     ...(installed ? [] : [`${manager} install`]),
     ...(plan.env.length ? [`${merge ? "add the new variables in .env.example to .env" : "cp .env.example .env   # then fill it in"}`] : []),
     `${run} ${merge?.renamed.dev ?? "dev"}`,

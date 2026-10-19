@@ -433,3 +433,68 @@ describe("agent-unit init in an existing app", () => {
   });
 });
 
+
+describe("agent-unit init edge cases", () => {
+  const dirs: string[] = [];
+  afterEach(() => {
+    for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+  });
+  const temp = () => {
+    const dir = mkdtempSync(join(tmpdir(), "agent-unit-init-edge-"));
+    dirs.push(dir);
+    return dir;
+  };
+  const quiet = { info() {}, warn() {} };
+  const base = { framework: "hono", hosts: "node", extras: "none", install: false, version: "0.1.16" } as const;
+
+  it("takes only the listed values for a flag, not an object's inherited names", async () => {
+    await expect(init({ ...base, dir: join(temp(), "a"), hosts: "toString", logger: quiet })).rejects.toThrow("--hosts toString is not one of");
+    await expect(init({ ...base, dir: join(temp(), "b"), framework: "constructor", logger: quiet })).rejects.toThrow("--framework constructor is not one of");
+  });
+
+  it("starts in a new repository's clone, keeping its README and .gitignore", async () => {
+    const root = join(temp(), "clone");
+    mkdirSync(root);
+    writeFileSync(join(root, "README.md"), "# support-bot\n");
+    writeFileSync(join(root, "LICENSE"), "MIT\n");
+    writeFileSync(join(root, ".gitignore"), "coverage\n");
+    await init({ ...base, dir: root, logger: quiet });
+    expect(readFileSync(join(root, "README.md"), "utf8")).toMatch(/^# support-bot\n\n# /);
+    expect(readFileSync(join(root, ".gitignore"), "utf8")).toMatch(/^coverage\n[\s\S]*node_modules/);
+    expect(readFileSync(join(root, "LICENSE"), "utf8")).toBe("MIT\n");
+    // Anything else is still someone's work.
+    const busy = join(temp(), "busy");
+    mkdirSync(busy);
+    writeFileSync(join(busy, "notes.txt"), "mine");
+    await expect(init({ ...base, dir: busy, logger: quiet })).rejects.toThrow("is not empty");
+  });
+
+  it("installs with the app's own package manager, from its lockfile", async () => {
+    const root = temp();
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "shop", dependencies: { hono: "^4.0.0" } }));
+    writeFileSync(join(root, "pnpm-lock.yaml"), "lockfileVersion: '9.0'\n");
+    writeFileSync(join(root, "src.ts"), "");
+    expect(packageManager("npm/10.9.0 node/v22", root)).toBe("pnpm");
+    expect(packageManager("npm/10.9.0 node/v22")).toBe("npm");
+    const result = await init({ ...base, dir: root, logger: quiet });
+    expect(result.packageManager).toBe("pnpm");
+  });
+
+  it("quotes the directory in the next steps when a shell would split it", async () => {
+    const parent = temp();
+    const said: string[] = [];
+    const previous = process.cwd();
+    process.chdir(parent);
+    try {
+      await init({ ...base, dir: "My Agent", logger: { info: (message) => said.push(message), warn() {} } });
+    } finally {
+      process.chdir(previous);
+    }
+    expect(said.join("\n")).toContain(`cd "My Agent"`);
+  });
+
+  it("hides a database URL, which holds its password, in the Lambda template", () => {
+    const { files } = initFiles({ name: "m", framework: "mastra", runner: "server", store: "postgres", hosts: ["lambda"] }, "0.1.16");
+    expect(files["template.yaml"]).toContain("  DatabaseUrl:\n    Type: String\n    NoEcho: true");
+  });
+});
