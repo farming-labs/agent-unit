@@ -188,7 +188,8 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
       return work;
     };
     const url = new URL(request.url);
-    if (base && !url.pathname.startsWith(base)) return problem(404, "not_found", "Not found.");
+    // Whole segments only: /api/agentsruns is not under /api/agents.
+    if (base && url.pathname !== base && !url.pathname.startsWith(`${base}/`)) return problem(404, "not_found", "Not found.");
     const path = url.pathname.slice(base.length).replace(/\/+$/, "") || "/";
     const method = request.method.toUpperCase();
 

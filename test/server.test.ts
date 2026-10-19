@@ -362,6 +362,11 @@ describe("HTTP handler", () => {
     // Discovery stays public.
     const card = await (await handle("/api/agents/.well-known/agent.json")).json();
     expect(card.url).toBe(`${ORIGIN}/api/agents`);
+    // Whole segments: a path that only starts with the same letters is not under basePath.
+    const auth = { headers: { authorization: "Bearer ok" } };
+    expect((await handle("/api/agentsruns", auth)).status).toBe(404);
+    expect((await handle("/api/agents/runs", auth)).status).toBe(200);
+    expect((await handle("/api/agents", auth)).status).toBe(200);
   });
 
   it("guards the internal endpoints with the secret and sweeps sleepers", async () => {
