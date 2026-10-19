@@ -192,6 +192,11 @@ export async function init(options: InitOptions): Promise<InitResult> {
         )
       ).map((extra) => (typeof extra === "object" ? extra.value : extra));
 
+  // Asked with the other questions, before anything is written: without a terminal to answer it, init
+  // stops here instead of after writing the app, which a second run would then refuse to touch.
+  const manager = packageManager();
+  const install = options.install ?? (await ask({ message: `Install dependencies with ${manager}?`, type: "confirm", initial: true }, true, "--install or --no-install"));
+
   const name = typeof manifest?.name === "string" ? manifest.name.replace(/^@[^/]+\//, "") : basename(root);
   const answers: InitAnswers = { name, framework, runner, hosts: normalizedHosts, store, provider, extras };
   const plan = initFiles(answers, options.version, { mastra: ownMastra, server: ownServer && `./${ownServer}` });
@@ -228,8 +233,6 @@ export async function init(options: InitOptions): Promise<InitResult> {
     logger.info(`Created ${shown} (${what} for ${forHosts}).`);
   }
 
-  const manager = packageManager();
-  const install = options.install ?? (await ask({ message: `Install dependencies with ${manager}?`, type: "confirm", initial: true }, true, "--install or --no-install"));
   let installed = false;
   if (install) {
     installed = spawnSync(manager, ["install"], { cwd: root, stdio: "inherit", shell: process.platform === "win32" }).status === 0;
