@@ -130,7 +130,10 @@ describe("the app's own nitro options beside agent-unit's", () => {
       tasks: { "agent-unit:sweep": { handler: "sweep.mjs" }, digest: { handler: "digest.mjs" }, cleanup: { handler: "cleanup.mjs" } },
       scheduledTasks: { "* * * * *": ["agent-unit:sweep"], "0 8 * * *": ["digest", "cleanup"], "0 3 * * *": ["cleanup"] },
       alias: { ws: "ws.mjs", typescript: "typescript" },
+      plugins: [],
     });
+    // The app's Nitro plugins run after agent-unit's.
+    expect(withUserNitro({ ...ours, plugins: ["worker-events.mjs"] }, { plugins: ["app.mjs"] }).plugins).toEqual(["worker-events.mjs", "app.mjs"]);
     // An app that turns tasks on itself keeps them on with nothing of agent-unit's scheduled.
     expect(withUserNitro({ ...ours, experimental: { tasks: false } }, { experimental: { tasks: true } }).experimental).toEqual({ tasks: true });
   });
