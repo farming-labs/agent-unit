@@ -304,6 +304,26 @@ describe("HTTP handler", () => {
     expect((await handle("/agents/echo/runs", post({ threadId: "bad\u0000id" }))).status).toBe(400);
     expect((await handle("/agents/echo/runs", post({ threadId: 42 }))).status).toBe(400);
     expect((await handle("/runs/%E0%A4%A")).status).toBe(400);
+    // MCP starts runs too, under the same rule.
+    for (const threadId of ["a\nb", 42, "x".repeat(257)]) {
+      const reply = await (await handle("/mcp", post({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "echo", arguments: { message: "hi", threadId } } }))).json();
+      expect(reply.result).toMatchObject({ isError: true, content: [{ text: "`threadId` must be a string of 1 to 256 printable characters." }] });
+    }
+  });
+
+  it("finds no run behind an id the engine could not have made", async () => {
+    const { handle, pending, engine } = setup();
+    const run = await (await handle("/agents/refund/runs", post({}))).json();
+    await Promise.all(pending);
+    // Storage keys stop at "?", so "<id>?" once read and wrote the real run's keys: an answer landed
+    // under a stray key and the run stayed interrupted.
+    for (const alias of [`${run.id}%3F`, `${run.id}%3Fx`, `${run.id}%3Ax`]) {
+      expect((await handle(`/runs/${alias}`)).status).toBe(404);
+      expect((await handle(`/runs/${alias}/resume`, post({ answer: { approved: true } }))).status).toBe(404);
+    }
+    expect((await engine.getRun(run.id)).status).toBe("interrupted");
+    // The real id still resumes (202: it continues in the background here).
+    expect((await handle(`/runs/${run.id}/resume`, post({ answer: { approved: true } }))).status).toBe(202);
   });
 
   it("honours basePath and authorize", async () => {

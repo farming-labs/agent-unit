@@ -3,6 +3,12 @@ import { AgentUnitError } from "../runtime/engine";
 const DEFAULT_MAX_BODY = 1024 * 1024;
 const JSON_TYPE = /^application\/([\w.+-]+\+)?json\b/i;
 
+/** Run ids as the engine makes them. Anything else names no run: storage keys cut at `?` and `:`. */
+export const RUN_ID = /^run_[a-z0-9]{8,64}$/;
+
+/** Thread ids name shared state, so they are plain text of a sensible length. */
+export const THREAD_ID = /^[^\u0000-\u001f\u007f]{1,256}$/;
+
 /**
  * Refuses a POST that a page on another site could send without the browser asking first: an HTML
  * form or a plain `fetch` can only send form encodings, text/plain or no content type, with the
