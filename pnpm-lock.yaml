@@ -20,9 +20,6 @@ importers:
       croner:
         specifier: 10.0.1
         version: 10.0.1
-      h3:
-        specifier: 2.0.1-rc.32
-        version: 2.0.1-rc.32(crossws@0.4.12(srvx@1.0.5))(ocache@0.3.0)
       jiti:
         specifier: 2.7.0
         version: 2.7.0

@@ -24,7 +24,7 @@
   "type": "module",
   "sideEffects": false,
   "engines": {
-    "node": ">=20.19"
+    "node": "^20.19.0 || >=22.12.0"
   },
   "bin": {
     "agent-unit": "./dist/cli.mjs"
@@ -36,57 +36,57 @@
   "exports": {
     ".": {
       "types": "./dist/index.d.mts",
-      "import": "./dist/index.mjs"
+      "default": "./dist/index.mjs"
     },
     "./runtime": {
       "types": "./dist/runtime.d.mts",
-      "import": "./dist/runtime.mjs"
+      "default": "./dist/runtime.mjs"
     },
     "./adapter": {
       "types": "./dist/adapter.d.mts",
-      "import": "./dist/adapter.mjs"
+      "default": "./dist/adapter.mjs"
     },
     "./server": {
       "types": "./dist/server.d.mts",
-      "import": "./dist/server.mjs"
+      "default": "./dist/server.mjs"
     },
     "./build": {
       "types": "./dist/build.d.mts",
-      "import": "./dist/build.mjs"
+      "default": "./dist/build.mjs"
     },
     "./nitro": {
       "types": "./dist/nitro.d.mts",
-      "import": "./dist/nitro.mjs"
+      "default": "./dist/nitro.mjs"
     },
     "./cloudflare": {
       "types": "./dist/cloudflare.d.mts",
-      "import": "./dist/cloudflare.mjs"
+      "default": "./dist/cloudflare.mjs"
     },
     "./redis": {
       "types": "./dist/redis.d.mts",
-      "import": "./dist/redis.mjs"
+      "default": "./dist/redis.mjs"
     },
     "./env": {
       "types": "./dist/env.d.mts",
       "workerd": "./dist/env.workerd.mjs",
       "worker": "./dist/env.workerd.mjs",
-      "import": "./dist/env.mjs"
+      "default": "./dist/env.mjs"
     },
     "./presets/mastra": {
       "types": "./dist/presets/mastra.d.mts",
-      "import": "./dist/presets/mastra.mjs"
+      "default": "./dist/presets/mastra.mjs"
     },
     "./client": {
       "types": "./dist/client.d.mts",
-      "import": "./dist/client.mjs"
+      "default": "./dist/client.mjs"
     },
     "./testing": {
       "types": "./dist/testing.d.mts",
-      "import": "./dist/testing.mjs"
+      "default": "./dist/testing.mjs"
     },
     "./adapters/*": {
       "types": "./dist/adapters/*.d.mts",
-      "import": "./dist/adapters/*.mjs"
+      "default": "./dist/adapters/*.mjs"
     },
     "./package.json": "./package.json"
   },
@@ -105,7 +105,6 @@
     "citty": "0.2.2",
     "consola": "3.4.2",
     "croner": "10.0.1",
-    "h3": "2.0.1-rc.32",
     "jiti": "2.7.0",
     "nitro": "3.0.260903-beta",
     "srvx": "1.0.5",

@@ -76,6 +76,11 @@ console.log(JSON.stringify({
   }
   const version = run("npx", ["--no-install", "agent-unit", "--version"], app).trim();
   if (!version.includes(rootVersion)) fail(`agent-unit --version printed "${version}"`);
+  const createVersion = run("npx", ["--no-install", "create-agent-unit", "--version"], app).trim();
+  if (createVersion !== rootVersion) fail(`create-agent-unit --version printed "${createVersion}"`);
+  // Node 20.19+ can require() an ES module; the exports must let it (a "default" condition, not only "import").
+  const required = run("node", ["-e", `console.log(typeof require("agent-unit/server").createAgentUnit, typeof require("@agent-unit/runtime").defineAgent)`], app).trim();
+  if (required !== "function function") fail(`require() of agent-unit's entries gave "${required}"`);
 
   // `npm create agent-unit` runs create-agent-unit's bin, which runs agent-unit init.
   const create = JSON.parse(readFileSync(join(app, "node_modules/create-agent-unit/package.json"), "utf8"));
