@@ -1,7 +1,8 @@
-import { watch } from "node:fs";
-import { relative, resolve } from "node:path";
+import { existsSync, readFileSync, watch } from "node:fs";
+import { join, relative, resolve } from "node:path";
 import { createJiti } from "jiti";
 import { serve } from "srvx";
+import { staticMiddleware } from "srvx/static";
 import type { AgentUnit } from "@agent-unit/runtime/server";
 import type { StorageConfig } from "../config";
 import { runInScope, waitUntil as scopedWaitUntil } from "../env/scope";
@@ -43,6 +44,11 @@ export interface DevApp {
 async function createServerApp(project: LoadedProject): Promise<DevApp> {
   const { file, label: server, alias } = await resolveServer(project, resolve(project.root, ".agent-unit"), "dev");
   const jiti = createJiti(resolve(project.root, "package.json"), { moduleCache: false, fsCache: false, ...(alias ? { alias } : {}) });
+  // The default export only, as the build takes it: a module with only named exports fails here too.
+  // jiti hands back the module's namespace when it has no default export, so its source tells.
+  if (!/export\s+default\b|export\s*\{[^}]*\bdefault\b|module\.exports\b/.test(readFileSync(file, "utf8"))) {
+    throw new Error(`agent-unit: ${server} must export default a fetch handler: a function (request) => Response, or an object with a fetch method (a Hono app, { fetch }).`);
+  }
   const module = (await jiti.import(file)) as { default?: unknown };
   const app = (module.default ?? module) as { fetch?: (...args: unknown[]) => Response | Promise<Response> } | ((...args: unknown[]) => Response | Promise<Response>);
   const handle = typeof app === "function" ? app : typeof app?.fetch === "function" ? app.fetch.bind(app) : undefined;
@@ -97,10 +103,13 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
   };
 
   let current = await createApp(root);
+  // public/ is served before the app, as Nitro serves it in a build.
+  const publicDir = join(root, "public");
   const server = serve({
     port: options.port ?? Number(process.env.PORT ?? 3000),
     hostname: options.hostname,
     silent: true,
+    middleware: existsSync(publicDir) ? [staticMiddleware({ dir: publicDir })] : [],
     fetch: (request) => current.fetch(request, (promise) => server.waitUntil?.(promise)),
   });
   await server.ready();

@@ -2,7 +2,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSyn
 import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { addAdapters, addToConfigSource, adapterIdentifier } from "../src/build/add";
+import { addAdapters, addToConfigSource, adapterIdentifier, importedName } from "../src/build/add";
 import { buildManifest } from "../src/build/agents";
 import { loadProject } from "../src/build/load";
 
@@ -66,6 +66,20 @@ describe("agent-unit add", () => {
 export default function tinyAdapter() {
   return { name: "tiny-agents", apiVersion: 1, match: (value) => value instanceof TinyAgent, run: (agent, ctx) => ctx.durable.step("call", () => agent.fn()) };
 }`;
+
+  it("uses the name the config already imports the package under", async () => {
+    const root = app(adapterPackage);
+    writeFileSync(join(root, "agent-unit.config.ts"), `import tiny from "agent-unit-adapter-tiny";\n\nexport default {};\n`);
+    const result = await addAdapters({ root, packages: ["agent-unit-adapter-tiny"], yes: true, install: false, logger: quiet });
+    expect(result.added[0]?.entry).toBe("tiny()");
+    expect(readFileSync(join(root, "agent-unit.config.ts"), "utf8")).toContain("adapters: [tiny()]");
+    // It once wrote tinyAdapter(), which nothing defined: the config then failed to load.
+    const manifest = await buildManifest(await loadProject(root));
+    expect(manifest.agents).toEqual([{ name: "hello", framework: "tiny-agents", tools: [] }]);
+    expect(importedName(`import { tinyAdapter as ta } from "pkg";`, "pkg", "tinyAdapter")).toBe("ta");
+    expect(importedName(`import d, { tinyAdapter } from "pkg";`, "pkg", "tinyAdapter")).toBe("tinyAdapter");
+    expect(importedName(`import other from "elsewhere";`, "pkg", "default")).toBeUndefined();
+  });
 
   it("registers an installed adapter package in a new config, and the build then uses it", async () => {
     const root = app(adapterPackage);
