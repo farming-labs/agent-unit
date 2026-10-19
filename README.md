@@ -102,7 +102,8 @@ export default app;
 The default export handles web requests: a Hono app, `export default { fetch }`, or a function
 `(request, env, ctx) => Response`. On Workers it receives the Worker's `env` and `ctx`, and its
 `scheduled`, `queue`, `email` and `tail` methods, if it has them, receive those events as in a Worker
-of your own; elsewhere `ctx` has `waitUntil` where the host keeps work alive after the response. `agent-unit/env` reads
+of your own; elsewhere `env` is `process.env` (so Hono's `c.env` works on every host) and `ctx` has
+`waitUntil` where the host keeps work alive after the response. `agent-unit/env` reads
 configuration the same way on every host. `agent-unit dev` serves it with reload on change and
 reads `.env` (variables already set win). The engine settings (`agents`, `agentsDir`, `storage`,
 `runtime`, `budget`, `sweep`, `retention`, `basePath`, `authorize`, `origin`, `maxBodyBytes`,

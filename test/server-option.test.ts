@@ -67,6 +67,21 @@ describe("the server option", () => {
     expect(await (await fetch(dev.url)).text()).toBe("reloaded GET");
   });
 
+  it("passes process.env as the server's env in dev, as a build does off Workers", async () => {
+    const root = app({
+      "agent-unit.config.mjs": `export default { server: "./server.ts" };`,
+      "server.ts": `export default { fetch: (request, env) => Response.json({ key: env?.ENV_ARG_TEST ?? null }) };`,
+    });
+    process.env.ENV_ARG_TEST = "from the env argument";
+    try {
+      const dev = await startDev({ root, port: 0, watch: false, logger: quiet });
+      servers.push(dev);
+      expect(await (await fetch(dev.url)).json()).toEqual({ key: "from the env argument" });
+    } finally {
+      delete process.env.ENV_ARG_TEST;
+    }
+  });
+
   it("reads the app's .env in dev, without overriding variables already set", async () => {
     const root = app({
       "agent-unit.config.mjs": `export default { server: "./server.ts" };`,

@@ -47,7 +47,8 @@ async function createServerApp(project: LoadedProject): Promise<DevApp> {
     throw new Error(`agent-unit: ${server} must export default a fetch handler: a function (request) => Response, or an object with a fetch method (a Hono app, { fetch }).`);
   }
   return {
-    fetch: (request, waitUntil) => runInScope(waitUntil, () => handle(request, undefined, { waitUntil: scopedWaitUntil, passThroughOnException() {} })),
+    // process.env as the env, as a build passes it off Workers (Hono's c.env).
+    fetch: (request, waitUntil) => runInScope(waitUntil, () => handle(request, process.env, { waitUntil: scopedWaitUntil, passThroughOnException() {} })),
     describe: () => server,
     close() {},
   };
