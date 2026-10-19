@@ -1,4 +1,4 @@
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
@@ -280,6 +280,11 @@ describe("agent-unit init", () => {
     const root = join(temp(), "app");
     await expect(init({ dir: root, install: false, version: "0.1.16", logger: quiet })).rejects.toThrow(`No terminal to ask "Agent framework" in: pass --framework, or --yes for the defaults.`);
     await expect(init({ dir: root, framework: "hono", install: false, version: "0.1.16", logger: quiet })).rejects.toThrow("pass --hosts");
+    // The install question too, before anything is written, so the same command runs again with the flag.
+    const answered = { dir: root, framework: "hono", hosts: "node", extras: "none", version: "0.1.16", logger: quiet };
+    await expect(init(answered)).rejects.toThrow("pass --install or --no-install");
+    expect(existsSync(join(root, "agent-unit.config.ts"))).toBe(false);
+    await expect(init({ ...answered, install: false })).resolves.toMatchObject({ installed: false });
   });
 
   it("refuses unknown values, extras that do not apply, and a directory with files in it", async () => {
