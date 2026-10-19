@@ -169,6 +169,28 @@ export default {
   });
 });
 
+describe("agent-unit dev and build agree", () => {
+  it("takes only the server's default export, and serves public/ before it", async () => {
+    const named = app({ "agent-unit.config.mjs": `export default { server: "./server.ts" };`, "server.ts": `export function fetch() { return new Response("named"); }` });
+    // The build fails on a module without a default export, so dev does too.
+    await expect(startDev({ root: named, port: 0, watch: false, logger: quiet })).rejects.toThrow("must export default a fetch handler");
+    const root = app({ "agent-unit.config.mjs": `export default { server: "./server.ts" };`, "server.ts": `export default () => new Response("app");` });
+    mkdirSync(join(root, "public"));
+    writeFileSync(join(root, "public/hello.txt"), "static hello");
+    const dev = await startDev({ root, port: 0, watch: false, logger: quiet });
+    servers.push(dev);
+    expect(await (await fetch(new URL("/hello.txt", dev.url))).text()).toBe("static hello");
+    expect(await (await fetch(new URL("/other", dev.url))).text()).toBe("app");
+  });
+
+  it("names a config file without a default export", async () => {
+    const named = app({ "agent-unit.config.mjs": `export const config = { server: "./server.ts" };`, "server.ts": `export default () => new Response("x");` });
+    await expect(loadProject(named)).rejects.toThrow("agent-unit.config.mjs has no default export: export default defineConfig({ ... }).");
+    const empty = app({ "agent-unit.config.mjs": "" });
+    await expect(loadProject(empty)).rejects.toThrow("agent-unit.config.mjs has no default export");
+  });
+});
+
 describe("agent-unit dev with a framework's agent", () => {
   it("runs an AI SDK agent exported as the default, as the build does", async () => {
     const dev = await startDev({ root: join(import.meta.dirname, "fixtures/dev-ai-sdk"), port: 0, watch: false, logger: quiet });

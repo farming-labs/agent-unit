@@ -183,6 +183,12 @@ export async function loadProject(rootDir = process.cwd()): Promise<LoadedProjec
   let config: AgentUnitConfig = {};
   if (configFile) {
     const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false });
+    // A config without a default export (a named one, or an empty file) once read as an empty config,
+    // which then failed somewhere unrelated: name the file instead.
+    const source = readFileSync(configFile, "utf8");
+    if (!/export\s+default\b|export\s*\{[^}]*\bas\s+default\b|module\.exports\b/.test(source)) {
+      throw new Error(`${relative(root, configFile) || configFile} has no default export: export default defineConfig({ ... }).`);
+    }
     const loaded = await jiti.import<AgentUnitConfig | { default: AgentUnitConfig }>(configFile);
     config = ((loaded as { default?: AgentUnitConfig }).default ?? loaded) as AgentUnitConfig;
     if (!config || typeof config !== "object") throw new Error(`${configFile} must export a config object (export default defineConfig({ ... })).`);

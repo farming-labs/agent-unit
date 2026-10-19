@@ -98,6 +98,18 @@ async function loadAdapter(root: string, pkg: string): Promise<{ name: string; e
 
 const IMPORT = /^import\s[^;]*?["'][^"'\n]+["'];?[^\S\n]*$/gm;
 
+/** The name `source` already imports `exportName` of `pkg` under, if it does. */
+export function importedName(source: string, pkg: string, exportName: string): string | undefined {
+  const from = `\\s*from\\s+["']${pkg.replace(/[.*+?^${}()|[\]\\/]/g, "\\$&")}["']`;
+  if (exportName === "default") return new RegExp(`import\\s+([A-Za-z_$][\\w$]*)\\s*(?:,\\s*\\{[^}]*\\})?${from}`).exec(source)?.[1];
+  const named = new RegExp(`import\\s*(?:[A-Za-z_$][\\w$]*\\s*,\\s*)?\\{([^}]*)\\}${from}`).exec(source)?.[1];
+  for (const part of named?.split(",") ?? []) {
+    const [imported, alias] = part.trim().split(/\s+as\s+/);
+    if (imported === exportName) return alias ?? imported;
+  }
+  return undefined;
+}
+
 /**
  * Adds an import and an `adapters` entry to a config file's source. Returns undefined when the
  * config has a shape it cannot edit safely (the caller then prints the lines to add by hand).
@@ -185,7 +197,8 @@ export async function addAdapters(options: AddOptions): Promise<AddResult> {
       }
       throw error;
     }
-    let local = adapterIdentifier(pkg);
+    // An import of the package already in the config keeps its name: the entry must use that one.
+    let local = importedName(source, pkg, found.exportName) ?? adapterIdentifier(pkg);
     for (let n = 2; new RegExp(`\\b${local}\\b`).test(source) && !source.includes(`from "${pkg}"`); n++) local = `${adapterIdentifier(pkg)}${n}`;
     const importLine =
       found.exportName === "default"
