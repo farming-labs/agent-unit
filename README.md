@@ -100,9 +100,10 @@ export default app;
 ```
 
 The default export handles web requests: a Hono app, `export default { fetch }`, or a function
-`(request, env, ctx) => Response`. On Workers it receives the Worker's `env` and `ctx`; elsewhere `env`
-is `process.env` (so Hono's `c.env` works on every host) and `ctx` has `waitUntil` where the host keeps
-work alive after the response. `agent-unit/env` reads
+`(request, env, ctx) => Response`. On Workers it receives the Worker's `env` and `ctx`, and its
+`scheduled`, `queue`, `email` and `tail` methods, if it has them, receive those events as in a Worker
+of your own; elsewhere `env` is `process.env` (so Hono's `c.env` works on every host) and `ctx` has
+`waitUntil` where the host keeps work alive after the response. `agent-unit/env` reads
 configuration the same way on every host. `agent-unit dev` serves it with reload on change and
 reads `.env` (variables already set win). The engine settings (`agents`, `agentsDir`, `storage`,
 `runtime`, `budget`, `sweep`, `retention`, `basePath`, `authorize`, `origin`, `maxBodyBytes`,
@@ -112,7 +113,8 @@ reads `.env` (variables already set win). The engine settings (`agents`, `agents
 
 `waitUntil` from `agent-unit/env` keeps work running after the response (an email, a webhook, a
 cache write). It uses the host's own `waitUntil` on Node, Bun, Deno, Workers and Vercel; on Netlify
-and AWS Lambda, which may freeze after a response, the response waits for the work instead. Hono's
+and AWS Lambda, which may freeze after a response, the response waits for the work instead (a
+streamed response ends once work handed over while it streams is done). Hono's
 `c.executionCtx.waitUntil` does the same.
 
 ```ts
@@ -127,7 +129,8 @@ app.post("/orders", async (c) => {
 
 `tasks` runs work on a schedule with the host's own scheduler: in-process cron on Node, Bun and
 Deno, Cron Triggers on Workers, Vercel Cron Jobs on Vercel. Other presets build with a warning, and
-the task runs only when you trigger it there.
+the task runs only when you trigger it there. The build checks each schedule: servers also take a
+seconds field and nicknames such as `@daily`; Workers and Vercel take the five fields only.
 
 ```ts
 export default defineConfig({
@@ -536,6 +539,9 @@ runtime lists a bare `{ tag: "agent-unit-v1" }` after them, and agent-unit's mig
 cloudflare: { wrangler: { migrations: [{ tag: "v1", new_sqlite_classes: ["Notes"] }, { tag: "agent-unit-v1" }] } },
 ```
 
+The same bare tag in the app's own `wrangler.json(c)` or `wrangler.toml` places it too. Settings from
+that file, such as `compatibility_date`, win over agent-unit's defaults.
+
 In a Worker you write yourself:
 
 ```ts
@@ -693,9 +699,13 @@ const unit = createAgentUnit({
   storage,                       // any unstorage instance
   basePath: "/api/agents",
   // Second argument: what the request does, with the run's agent and thread taken from storage.
+  // Here each user's runs are on threads named "<user id>:…", so a run must be started with one.
   authorize: async (request, { action, threadId }) => {
     const session = await getSession(request);
-    return session !== null && (threadId === undefined || threadId.startsWith(`${session.userId}:`));
+    if (session === null) return false;
+    // Listing without a thread is fine: the list keeps only the runs this check lets the caller read.
+    if (action === "manifest" || action === "mcp" || (action === "list" && threadId === undefined)) return true;
+    return threadId?.startsWith(`${session.userId}:`) === true;
   },
   budget: "60s",
 });

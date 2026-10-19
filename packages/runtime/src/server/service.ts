@@ -1,3 +1,4 @@
+import type { ResumeOptions } from "../runtime/engine";
 import type { ListRunsFilter } from "../runtime/store";
 import type { AgentCard, AgentEvent, Manifest, RunInput, RunRecord } from "../types";
 
@@ -9,7 +10,8 @@ export interface RunService {
   manifest(): Manifest;
   agentCard(name: string): AgentCard;
   start(agent: string, input?: RunInput, options?: { threadId?: string; id?: string }): Promise<{ run: RunRecord; done: Promise<RunRecord | undefined> }>;
-  resume(id: string, answer: unknown): Promise<{ run: RunRecord; done: Promise<RunRecord | undefined> }>;
+  /** `options.interrupt`: the key of the interrupt being answered; another one pending is a 409. */
+  resume(id: string, answer: unknown, options?: ResumeOptions): Promise<{ run: RunRecord; done: Promise<RunRecord | undefined> }>;
   cancel(id: string): Promise<RunRecord>;
   getRun(id: string): Promise<RunRecord>;
   listRuns(filter?: ListRunsFilter): Promise<RunRecord[]>;

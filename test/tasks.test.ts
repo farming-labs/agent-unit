@@ -52,6 +52,36 @@ export default ({ name }: { name: string }) => {
     expect(await check(`{ nightly: { schedule: "0 3 * * *", handler: "./missing.ts" } }`)).toThrow(/the handler of task "nightly", "\.\/missing\.ts", does not exist/);
   });
 
+  it("rejects a schedule the host could not run, before one bad cron stops every task", async () => {
+    const prepare = async (schedule: string, preset: string) => {
+      const app = await project(`{ tick: { schedule: "* * * * *", handler: "./server.mjs" }, digest: { schedule: ${JSON.stringify(schedule)}, handler: "./server.mjs" } }`);
+      return () => prepareTasks(app, join(app.root, ".agent-unit"), preset, () => {});
+    };
+    expect(await prepare("0 8 * * * * * *", "node-server")).toThrow(/the schedule of task "digest", "0 8 \* \* \* \* \* \*", is not a cron expression/);
+    expect(await prepare("61 * * * *", "node-server")).toThrow(/Invalid value for minute: 61/);
+    // Seconds and nicknames run on a server's scheduler, but Workers and Vercel take five fields only.
+    expect(await prepare("*/30 * * * * *", "node-server")).not.toThrow();
+    expect(await prepare("*/30 * * * * *", "cloudflare-module")).toThrow(/needs five fields \(minute hour day month weekday\) on the "cloudflare-module" preset/);
+    expect(await prepare("@daily", "vercel")).toThrow(/needs five fields/);
+    expect(await prepare("0 8 * * MON-FRI", "vercel")).not.toThrow();
+    // Where Nitro runs no scheduler the schedule is unused, so it only warns that the task will not run.
+    expect(await prepare("every day", "aws-lambda")).not.toThrow();
+  });
+
+  it("rejects a sweep schedule the host could not run", async () => {
+    const { prepareEngine } = await import("../src/build/engine");
+    const root = mkdtempSync(join(tmpdir(), "agent-unit-sweep-"));
+    dirs.push(root);
+    writeFileSync(join(root, "package.json"), JSON.stringify({ name: "sweep", type: "module" }));
+    const engine = (sweep: string, preset: string) => () => prepareEngine({ root, name: "sweep", config: { sweep }, agentFiles: {} }, preset, join(root, ".agent-unit"), () => {});
+    expect(engine("every minute", "node-server")).toThrow(/the schedule of the sweep, "every minute", is not a cron expression/);
+    expect(engine("*/30 * * * * *", "vercel")).toThrow(/needs five fields/);
+    expect(engine("*/5 * * * *", "vercel")).not.toThrow();
+    // Netlify runs the sweep from a scheduled function the build writes; Lambda has no scheduler at all.
+    expect(engine("every minute", "netlify")).toThrow(/the schedule of the sweep/);
+    expect(engine("every minute", "aws-lambda")).not.toThrow();
+  });
+
   it("groups tasks by schedule", async () => {
     const app = await project(`{ a: { schedule: "0 * * * *", handler: "./server.mjs" }, b: { schedule: "0 * * * *", handler: "./server.mjs" }, c: { schedule: "0 3 * * *", handler: "./server.mjs" } }`);
     const { tasks, scheduledTasks } = prepareTasks(app, join(app.root, ".agent-unit"), "node-server", () => {});
@@ -100,7 +130,10 @@ describe("the app's own nitro options beside agent-unit's", () => {
       tasks: { "agent-unit:sweep": { handler: "sweep.mjs" }, digest: { handler: "digest.mjs" }, cleanup: { handler: "cleanup.mjs" } },
       scheduledTasks: { "* * * * *": ["agent-unit:sweep"], "0 8 * * *": ["digest", "cleanup"], "0 3 * * *": ["cleanup"] },
       alias: { ws: "ws.mjs", typescript: "typescript" },
+      plugins: [],
     });
+    // The app's Nitro plugins run after agent-unit's.
+    expect(withUserNitro({ ...ours, plugins: ["worker-events.mjs"] }, { plugins: ["app.mjs"] }).plugins).toEqual(["worker-events.mjs", "app.mjs"]);
     // An app that turns tasks on itself keeps them on with nothing of agent-unit's scheduled.
     expect(withUserNitro({ ...ours, experimental: { tasks: false } }, { experimental: { tasks: true } }).experimental).toEqual({ tasks: true });
   });

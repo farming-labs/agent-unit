@@ -65,6 +65,11 @@ export interface EngineOptions {
   deltaBatchMs?: number;
 }
 
+export interface ResumeOptions {
+  /** The `key` of the interrupt the answer is for (from `RUN_INTERRUPTED` or the run's `interrupt`). */
+  interrupt?: string;
+}
+
 export class AgentUnitError extends Error {
   constructor(
     readonly status: 400 | 404 | 409 | 413 | 415,
@@ -471,12 +476,19 @@ export class RunEngine {
     return { run, done: this.schedule(id) };
   }
 
-  /** Answers a parked interrupt and continues the run. */
-  async resume(id: string, answer: unknown) {
+  /**
+   * Answers a parked interrupt and continues the run. With `options.interrupt` (the `key` of the
+   * interrupt the answer is for), a resume that arrives after the run moved on to another interrupt
+   * (a retried request) is refused instead of answering that one.
+   */
+  async resume(id: string, answer: unknown, options: ResumeOptions = {}) {
     return this.locked(id, async () => {
       const run = await this.getRun(id);
       if (run.status !== "interrupted" || !run.interrupt) {
         throw new AgentUnitError(409, "run_not_interrupted", `Run "${id}" is ${run.status}, not interrupted.`);
+      }
+      if (options.interrupt !== undefined && options.interrupt !== run.interrupt.key) {
+        throw new AgentUnitError(409, "interrupt_mismatch", `Run "${id}" is waiting on interrupt "${run.interrupt.key}", not "${options.interrupt}".`);
       }
       const previous = structuredClone(run);
       const key = run.interrupt.key;
@@ -645,7 +657,9 @@ export class RunEngine {
   /** Events from `after`, then live ones, until the run settles. */
   async *events(id: string, after = 0, signal?: AbortSignal): AsyncGenerator<AgentEvent> {
     await this.getRun(id);
-    let cursor = after;
+    // Events are numbered 1, 2, …: any other cursor would read storage once per number below the
+    // first event, or never match one and so never see the run settle.
+    let cursor = Number.isSafeInteger(after) && after > 0 ? after : 0;
     const queue: AgentEvent[] = [];
     let wake: (() => void) | undefined;
     const listener = (event: AgentEvent) => {

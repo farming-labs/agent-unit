@@ -7,6 +7,7 @@ import type { StorageConfig } from "../config";
 import { buildManifest } from "./agents";
 import { detectAdapters } from "./adapters";
 import { appNitro, distEntry, ownNitro, presetEntryKey, toImport, type LoadedProject, type NitroImport } from "./load";
+import { checkSchedule, sweepScheduled } from "./schedule";
 
 // agent-unit's own engine as the server: the agents/ folder, the /runs API, run storage, the sweep and
 // the Durable Objects runtime. Loaded only when the app does not bring its own `server`.
@@ -336,6 +337,7 @@ export function prepareEngine(project: LoadedProject, preset: string, genDir: st
   const cron = project.config.sweep === false || durable ? undefined : (project.config.sweep ?? "* * * * *");
   const sweep = cron !== undefined;
   if (sweep) {
+    if (sweepScheduled(preset)) checkSchedule(cron, "the sweep", preset);
     tasks["agent-unit:sweep"] = { handler: join(genDir, "sweep.mjs"), description: "Wake due runs and recover stalled ones." };
     scheduledTasks[cron] = "agent-unit:sweep";
   }

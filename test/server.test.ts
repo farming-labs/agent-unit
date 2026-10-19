@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { defineAgent } from "../packages/runtime/src/agents";
 import { createAgentClient, parseEventStream } from "../packages/runtime/src/client";
 import { createHandler } from "../packages/runtime/src/server";
@@ -118,12 +118,55 @@ describe("HTTP handler", () => {
     expect(await resumed.json()).toMatchObject({ status: "completed", output: "declined" });
   });
 
+  it("refuses a resume meant for an interrupt the run has moved past", async () => {
+    const engine = createEngine({
+      admin: defineAgent(async (_input, run) => {
+        const refund = await run.interrupt<{ approved: boolean }>("approve", { action: "refund" });
+        const remove = await run.interrupt<{ approved: boolean }>("approve", { action: "delete account" });
+        return { refund: refund.approved, remove: remove.approved };
+      }),
+    });
+    const handler = createHandler(engine);
+    const call = (path: string, init?: RequestInit) => handler(new Request(`${ORIGIN}${path}`, init));
+    const started = await (await call("/agents/admin/runs", post({}))).json();
+    const first = started.interrupt.key as string;
+    const next = await (await call(`/runs/${started.id}/resume`, post({ answer: { approved: false }, interrupt: first }))).json();
+    expect(next).toMatchObject({ status: "interrupted", interrupt: { payload: { action: "delete account" } } });
+    // The same resume again (a retry after a timeout, a double click) once approved the account deletion.
+    const retried = await call(`/runs/${started.id}/resume`, post({ answer: { approved: true }, interrupt: first }));
+    expect(retried.status).toBe(409);
+    expect((await retried.json()).error.code).toBe("interrupt_mismatch");
+    expect((await call(`/runs/${started.id}/resume`, post({ answer: { approved: true }, interrupt: 1 }))).status).toBe(400);
+    expect(await engine.getRun(started.id)).toMatchObject({ status: "interrupted", interrupt: { key: next.interrupt.key } });
+    // Naming the pending interrupt, or none (as before), answers it.
+    const done = await (await call(`/runs/${started.id}/resume`, post({ answer: { approved: false }, interrupt: next.interrupt.key }))).json();
+    expect(done).toMatchObject({ status: "completed", output: { refund: false, remove: false } });
+  });
+
   it("replays from Last-Event-ID", async () => {
     const { handle, pending } = setup();
     const run = await (await handle("/agents/refund/runs", post({}))).json();
     await Promise.all(pending);
     const tail = await sse(await handle(`/runs/${run.id}/events`, { headers: { "last-event-id": "2" } }));
     expect(tail.map((event) => event.seq)).toEqual([3, 4]);
+  });
+
+  it("reads the event cursor as a whole number, and takes the later of after and Last-Event-ID", async () => {
+    const { handle, pending } = setup();
+    const run = await (await handle("/agents/echo/runs", post({ input: { text: "x" } }))).json();
+    await Promise.all(pending);
+    const seqs = async (query: string, headers: Record<string, string> = {}) =>
+      (await sse(await handle(`/runs/${run.id}/events${query}`, { headers }))).map((event) => event.seq);
+    const all = await seqs("");
+    expect(all.length).toBeGreaterThan(1);
+    // A negative cursor read storage once per number below the first event; a fractional one never
+    // matched a stored event, so the stream of a finished run never closed.
+    expect(await seqs("?after=-1000000000")).toEqual(all);
+    expect(await seqs("?after=0.5")).toEqual(all);
+    expect(await seqs("", { "last-event-id": "1.5" })).toEqual(all);
+    // EventSource reconnects to the URL it opened, adding Last-Event-ID: the later cursor wins.
+    expect(await seqs("?after=0", { "last-event-id": "1" })).toEqual(all.slice(1));
+    expect(await seqs("?after=1", { "last-event-id": "0" })).toEqual(all.slice(1));
   });
 
   it("lists, filters and cancels runs", async () => {
@@ -222,6 +265,10 @@ describe("HTTP handler", () => {
     expect((await handle("/runs/run_doesnotexist000000")).status).toBe(401);
     expect((await handle("/runs/run_doesnotexist000000", as("bob"))).status).toBe(404);
     expect((await handle("/runs?threadId=bob:1", as("alice"))).status).toBe(401);
+    // A list with no filter holds only the runs the caller may read, each judged by its stored thread.
+    const listed = async (user: string) => ((await (await handle("/runs", as(user))).json()) as { runs: { id: string }[] }).runs.map((run) => run.id);
+    expect(await listed("alice")).toEqual([]);
+    expect(await listed("bob")).toEqual([bobs.id]);
 
     const mcp = await (
       await handle("/mcp", as("alice", post({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "echo", arguments: { message: "hi", threadId: "bob:2" } } })))
@@ -230,11 +277,78 @@ describe("HTTP handler", () => {
     expect(new Set(seen)).toEqual(new Set(["start", "read", "resume", "cancel", "events", "list", "mcp"]));
   });
 
+  it("keeps internal error text out of event streams and MCP replies, as on the JSON routes", async () => {
+    const { engine, handle, pending } = setup();
+    const run = await (await handle("/agents/echo/runs", post({ input: { text: "x" } }))).json();
+    await Promise.all(pending);
+    const secret = "connect ECONNREFUSED redis://default:hunter2@10.0.3.4:6379";
+    // Storage failing after the run was found: its error names the database and its password.
+    const failing = new Proxy(engine, {
+      get(target, key) {
+        if (key === "events") return async function* () { throw new Error(secret); };
+        if (key === "start") return async () => { throw new Error(secret); };
+        const value = Reflect.get(target, key);
+        return typeof value === "function" ? value.bind(target) : value;
+      },
+    });
+    const errors = vi.spyOn(console, "error").mockImplementation(() => {});
+    const failingHandler = createHandler(failing);
+    const stream = await (await failingHandler(new Request(`${ORIGIN}/runs/${run.id}/events`))).text();
+    expect(stream).toContain(`event: error\ndata: {"message":"Internal error."}`);
+    const mcp = await (
+      await failingHandler(new Request(`${ORIGIN}/mcp`, post({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "echo", arguments: { message: "hi" } } })))
+    ).json();
+    expect(mcp.error).toEqual({ code: -32603, message: "Internal error." });
+    expect(JSON.stringify([stream, mcp])).not.toContain("hunter2");
+    // The real error is logged where the app's operators see it.
+    expect(errors).toHaveBeenCalledWith("[agent-unit]", expect.objectContaining({ message: secret }));
+    errors.mockRestore();
+  });
+
+  it("refuses a POST a page on another site could send, with or without a body", async () => {
+    const { handle, pending } = setup();
+    const form = (type: string, body = "") => ({ method: "POST", headers: { "content-type": type }, body });
+    // An empty HTML form still sends its encoding: it may not start a run.
+    expect((await handle("/agents/echo/runs", form("application/x-www-form-urlencoded"))).status).toBe(415);
+    expect((await handle("/agents/echo/runs", form("multipart/form-data; boundary=x"))).status).toBe(415);
+    const run = await (await handle("/agents/refund/runs", post({}))).json();
+    await Promise.all(pending);
+    expect((await handle(`/runs/${run.id}/resume`, form("text/plain"))).status).toBe(415);
+    expect((await handle(`/runs/${run.id}/cancel`, form("text/plain"))).status).toBe(415);
+    // A body-less fetch from another site sends no type; the browser says where it came from.
+    expect((await handle(`/runs/${run.id}/cancel`, { method: "POST", headers: { "sec-fetch-site": "cross-site" } })).status).toBe(415);
+    expect((await handle("/mcp", { method: "POST", headers: { "sec-fetch-site": "same-site" } })).status).toBe(415);
+    expect((await handle(`/runs/${run.id}`)).status).toBe(200);
+    expect(((await (await handle(`/runs/${run.id}`)).json()) as { status: string }).status).toBe("interrupted");
+    // curl, servers and same-origin pages send no Sec-Fetch-Site, or "same-origin".
+    expect((await handle(`/runs/${run.id}/cancel`, { method: "POST", headers: { "sec-fetch-site": "same-origin" } })).status).toBe(200);
+  });
+
   it("rejects malformed thread ids and percent-encoding", async () => {
     const { handle } = setup();
     expect((await handle("/agents/echo/runs", post({ threadId: "bad\u0000id" }))).status).toBe(400);
     expect((await handle("/agents/echo/runs", post({ threadId: 42 }))).status).toBe(400);
     expect((await handle("/runs/%E0%A4%A")).status).toBe(400);
+    // MCP starts runs too, under the same rule.
+    for (const threadId of ["a\nb", 42, "x".repeat(257)]) {
+      const reply = await (await handle("/mcp", post({ jsonrpc: "2.0", id: 1, method: "tools/call", params: { name: "echo", arguments: { message: "hi", threadId } } }))).json();
+      expect(reply.result).toMatchObject({ isError: true, content: [{ text: "`threadId` must be a string of 1 to 256 printable characters." }] });
+    }
+  });
+
+  it("finds no run behind an id the engine could not have made", async () => {
+    const { handle, pending, engine } = setup();
+    const run = await (await handle("/agents/refund/runs", post({}))).json();
+    await Promise.all(pending);
+    // Storage keys stop at "?", so "<id>?" once read and wrote the real run's keys: an answer landed
+    // under a stray key and the run stayed interrupted.
+    for (const alias of [`${run.id}%3F`, `${run.id}%3Fx`, `${run.id}%3Ax`]) {
+      expect((await handle(`/runs/${alias}`)).status).toBe(404);
+      expect((await handle(`/runs/${alias}/resume`, post({ answer: { approved: true } }))).status).toBe(404);
+    }
+    expect((await engine.getRun(run.id)).status).toBe("interrupted");
+    // The real id still resumes (202: it continues in the background here).
+    expect((await handle(`/runs/${run.id}/resume`, post({ answer: { approved: true } }))).status).toBe(202);
   });
 
   it("honours basePath and authorize", async () => {
@@ -403,8 +517,11 @@ describe("client", () => {
     expect(first.at(-1)?.type).toBe("RUN_INTERRUPTED");
     const runId = first[0]!.runId;
 
+    // An answer for an interrupt the run is not waiting on is refused.
+    const interrupted = first.at(-1) as Extract<AgentEvent, { type: "RUN_INTERRUPTED" }>;
+    await expect(client.resume(runId, { approved: true }, { interrupt: "interrupt:other#1" }).next()).rejects.toMatchObject({ status: 409, code: "interrupt_mismatch" });
     const second: AgentEvent[] = [];
-    for await (const event of client.resume(runId, { approved: true })) second.push(event);
+    for await (const event of client.resume(runId, { approved: true }, { interrupt: interrupted.interrupt.key })) second.push(event);
     expect(types(second)).toEqual(["STEP_STARTED", "STEP_FINISHED", "RUN_FINISHED"]);
 
     expect(await client.get(runId)).toMatchObject({ status: "completed", output: "refunded o_5" });
@@ -414,6 +531,14 @@ describe("client", () => {
     expect(await client.wait(started.id)).toMatchObject({ status: "completed", output: "echo: later" });
 
     await expect(client.agent("ghost")).rejects.toMatchObject({ status: 404, code: "agent_not_found" });
+
+    // From a page on another site (through CORS) the client still cancels: it sends a JSON body.
+    const crossSite = createAgentClient({
+      baseUrl: `${ORIGIN}/`,
+      fetch: ((input: RequestInfo | URL, init?: RequestInit) => fetchImpl(input, { ...init, headers: { ...Object.fromEntries(new Headers(init?.headers)), "sec-fetch-site": "cross-site" } })) as typeof fetch,
+    });
+    const parked = await crossSite.start("refund", { orderId: "o_6" });
+    expect(await crossSite.cancel(parked.id)).toMatchObject({ status: "cancelled" });
   });
 
   it("parses multi-line and CRLF SSE frames and skips comments", async () => {

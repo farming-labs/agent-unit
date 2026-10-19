@@ -3,12 +3,11 @@ import { join, resolve } from "node:path";
 import { createJiti } from "jiti";
 import { runInScope } from "../env/scope";
 import { appNitro, toImport, type LoadedProject, type NitroImport } from "./load";
+import { checkSchedule, SCHEDULING_PRESETS } from "./schedule";
 
 // The app's scheduled tasks (`tasks` in agent-unit.config.ts), run by each host's own scheduler
 // through Nitro: in-process cron on servers, Cron Triggers on Workers, Vercel Cron Jobs on Vercel.
 
-/** Presets where Nitro runs scheduled tasks itself. */
-const SCHEDULING_PRESETS = /^(node|node-server|node-cluster|node-middleware|bun|deno-server|cloudflare-module|cloudflare-pages|vercel)$/;
 
 const TASK_NAME = /^[a-zA-Z0-9][\w:-]*$/;
 
@@ -19,7 +18,7 @@ export interface TaskOptions {
   scheduledTasks: Record<string, string[]>;
 }
 
-function checkTasks(project: LoadedProject) {
+function checkTasks(project: LoadedProject, preset?: string) {
   const tasks = project.config.tasks ?? {};
   for (const [name, task] of Object.entries(tasks)) {
     if (!TASK_NAME.test(name) || name.startsWith("agent-unit:")) {
@@ -29,13 +28,15 @@ function checkTasks(project: LoadedProject) {
       throw new Error(`agent-unit: the task "${name}" needs a \`schedule\` (a cron expression) and a \`handler\` (the path of its module).`);
     }
     if (!existsSync(resolve(project.root, task.handler))) throw new Error(`agent-unit: the handler of task "${name}", "${task.handler}", does not exist.`);
+    // Where Nitro runs no scheduler the schedule is unused: the build only warns that the task will not run.
+    if (preset !== undefined && SCHEDULING_PRESETS.test(preset)) checkSchedule(task.schedule, `task "${name}"`, preset);
   }
   return tasks;
 }
 
 /** Writes a Nitro task for each of the app's tasks into `genDir/tasks`, and the schedules that run them. */
 export function prepareTasks(project: LoadedProject, genDir: string, preset: string, warn: (message: string) => void, nitro: NitroImport = appNitro): TaskOptions {
-  const tasks = checkTasks(project);
+  const tasks = checkTasks(project, preset);
   const names = Object.keys(tasks);
   if (!names.length) return { tasks: {}, scheduledTasks: {} };
   if (!SCHEDULING_PRESETS.test(preset)) {

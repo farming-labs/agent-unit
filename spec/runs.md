@@ -36,10 +36,13 @@ the run uses no compute until it is answered or woken.
 ## HTTP API
 
 All paths are relative to the configured base path (default `/`). Request bodies must be sent as
-`application/json` and are limited to 1 MB by default; an MCP batch holds at most 20 messages.
+`application/json` and are limited to 1 MB by default; an MCP batch holds at most 20 messages. A
+POST with any other content type is refused even without a body, and so is a POST with none that the
+browser marks as sent from another site (`Sec-Fetch-Site`): an HTML form or plain `fetch` from another
+site could otherwise start, resume or cancel a run with the visitor's cookies.
 Errors are `{ "error": { "code": string, "message": string } }` with status 400 (bad input), 404
 (unknown agent or run), 409 (wrong run state, for example resuming a run that is not interrupted, or
-a second resume racing the first), 413 (body too large) or 415 (body not JSON). A path with invalid
+a second resume racing the first), 413 (body too large) or 415 (not JSON). A path with invalid
 percent-encoding gets 400.
 
 ### Authorization
@@ -49,7 +52,9 @@ what the request does: `action` (`manifest`, `list`, `start`, `read`, `events`, 
 `delete`, `mcp`) and, where they apply, `agent`, `runId` and `threadId`. For a request about an
 existing run, `agent` and `threadId` come from the stored run, never from the request, so an app can
 check that the caller owns the thread. A caller that is not authorized gets 401 whether or not the run
-exists. Each MCP `tools/call` is authorized like a `start`.
+exists. A list is checked twice: once with its filters, then each run in it as a `read` with its
+stored agent and thread, so a list without a `threadId` holds only the runs the caller may read
+(among the newest `limit`). Each MCP `tools/call` is authorized like a `start`.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
@@ -88,10 +93,13 @@ Accept: text/event-stream
 
 ```http
 POST /runs/run_…/resume
-{ "answer": { "approved": true } }
+{ "answer": { "approved": true }, "interrupt": "interrupt:approve#1" }
 ```
 
-Only valid while the run is `interrupted` (otherwise 409). Responds like the start request: a stream
+Only valid while the run is `interrupted` (otherwise 409). `interrupt` is optional: the `key` of the
+interrupt being answered, from `RUN_INTERRUPTED` or the run's `interrupt`. When the run waits on
+another one (a resume sent again after the run moved on), the answer is refused with 409
+`interrupt_mismatch` instead of answering that one. Responds like the start request: a stream
 with `Accept: text/event-stream`, otherwise `202` (or `200` once settled, on hosts without
 `waitUntil`) with the record.
 
@@ -108,7 +116,8 @@ its next step, emits `RUN_CANCELLED` and records `cancelled`. If it finishes fir
 
 `GET /runs/:id/events?after=12` streams every stored event with `seq > 12`, then live events until
 the run settles. It also honours the SSE `Last-Event-ID` header, so a browser `EventSource` resumes
-where it left off after a dropped connection or a closed tab.
+where it left off after a dropped connection or a closed tab; when both are sent, the later one wins.
+Either is a whole number from 0; anything else reads from the start.
 
 ## Internal endpoints
 
