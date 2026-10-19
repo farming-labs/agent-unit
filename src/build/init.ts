@@ -11,6 +11,7 @@ import {
   detectFramework,
   EXTRAS,
   extrasFor,
+  runsTasks,
   FRAMEWORKS,
   HOSTS,
   initFiles,
@@ -170,12 +171,15 @@ export async function init(options: InitOptions): Promise<InitResult> {
   }
   // Auth, background work and the test are written into agent-unit's server, not into one the app has.
   const serverExtras: InitExtra[] = ["auth", "background", "test"];
-  const allowed = extrasFor(framework, runner).filter((extra) => !(keepsServer && serverExtras.includes(extra)));
+  const allowed = extrasFor(framework, runner, normalizedHosts).filter((extra) => !(keepsServer && serverExtras.includes(extra)));
   const extraFlag = list(options.extras);
   const extras: InitExtra[] = extraFlag
     ? extraFlag.filter((extra) => extra !== "none").map((extra) => {
         const value = pick(EXTRAS, extra, "extras");
         if (keepsServer && serverExtras.includes(value)) throw new Error(`--extras ${value} does not apply to your own server (${ownServer}): agent-unit builds it as it is.`);
+        if (value === "task" && !runsTasks(normalizedHosts)) {
+          throw new Error("--extras task needs a host that runs scheduled tasks (Node, Bun, Deno, Cloudflare Workers or Vercel): Netlify and AWS Lambda do not run them on their own.");
+        }
         if (!allowed.includes(value)) throw new Error(`--extras ${value} does not apply to ${FRAMEWORKS[framework].label} apps${asksRunner(framework) ? ` on ${runner === "engine" ? "agent-unit's engine" : "their own server"}` : ""}.`);
         return value;
       })
