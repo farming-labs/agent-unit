@@ -13,15 +13,18 @@ const sleep = (ms) => new Promise((done) => setTimeout(done, ms));
 
 /** Starts a built server as its own process and waits until it answers. */
 async function serve(command, args, port) {
+  // Something else answering on the port would stand in for this server.
+  if (await fetch(`http://127.0.0.1:${port}/`).then(() => true, () => false)) throw new Error(`port ${port} is already in use`);
   const child = spawn(command, args, { env: { ...process.env, PORT: String(port), NITRO_PORT: String(port) }, stdio: "ignore" });
+  const exited = () => child.exitCode !== null || child.signalCode !== null;
   for (let i = 0; i < 200; i++) {
-    if (child.exitCode !== null) throw new Error(`${command} exited early`);
+    if (exited()) throw new Error(`${command} exited early`);
     if (await fetch(`http://127.0.0.1:${port}/manifest.json`).then((r) => r.ok, () => false)) break;
     await sleep(50);
   }
   return {
     call: (path, init) => fetch(`http://127.0.0.1:${port}${path}`, init),
-    stop: () => new Promise((done) => (child.once("exit", done), child.kill("SIGKILL"))),
+    stop: () => (exited() ? Promise.resolve() : new Promise((done) => (child.once("exit", done), child.kill("SIGKILL")))),
   };
 }
 
@@ -48,10 +51,13 @@ async function flow(host) {
 }
 
 /** The Cloudflare build in workerd, the open-source Workers runtime, when it is installed. */
-function workerd() {
+async function workerd() {
+  // The runtime binary itself, not the package's Node launcher: killing the launcher would leave
+  // workerd running on the port after the run.
   let binary;
   try {
-    binary = createRequire(import.meta.url).resolve("workerd/bin/workerd");
+    const module = await import(pathToFileURL(createRequire(import.meta.url).resolve("workerd")).href);
+    binary = typeof module.default === "string" ? module.default : module.default.default;
   } catch {
     return undefined;
   }
@@ -131,7 +137,7 @@ const RUNNERS = {
   "node-server": has("node") && server("node", ["dist/node/server/index.mjs"], 4401),
   bun: has("bun") && server("bun", ["dist/bun/server/index.mjs"], 4402),
   "deno-server": has("deno") && server("deno", ["run", "-A", "dist/deno/server/index.mjs"], 4403),
-  "cloudflare-module": workerd(),
+  "cloudflare-module": await workerd(),
   vercel: fn("dist/vercel/functions/__server.func/index.mjs", (m, request, waitUntil) => m.default.fetch(request, { waitUntil })),
   netlify: fn("dist/netlify/server/server.mjs", (m, request) => m.default(request, {})),
   "aws-lambda": fn("dist/lambda/server/index.mjs", async (m, request) => {
