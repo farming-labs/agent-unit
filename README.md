@@ -402,6 +402,10 @@ agent-unit recognises agents from these frameworks when your `package.json` depe
 | [LangGraph](https://langchain-ai.github.io/langgraphjs/) | `graph.compile()` | LangGraph checkpoints, stored in agent-unit storage | `interrupt()` in a node, resumed with `Command({ resume })` |
 | Plain TypeScript | `defineAgent(…)` | `run.step(…)` | `run.interrupt()`, `run.sleep()` |
 
+To serve one framework only, name it in the config: `framework: "mastra"` (or `"ai-sdk"`,
+`"langgraph"`, `"openai-agents"`). The build then uses only that adapter, and fails with the install
+command when the framework's package is missing from `package.json`.
+
 Every framework is tested on every host below (Node, Bun, Deno, Cloudflare Workers with Durable
 Objects, Vercel, Netlify and AWS Lambda): a run pauses for approval, the host restarts, and the
 resume repeats no model call or side effect.
@@ -634,6 +638,31 @@ import { agentUnit } from "agent-unit/nitro";
 export default defineConfig({
   modules: [agentUnit({ basePath: "/api/agents" })],
 });
+```
+
+A framework that keeps settings in its own config can point the module at a module that exports
+the agent-unit config, instead of `agent-unit.config.ts`. The module is bundled and evaluated
+where the server runs, like the config file:
+
+```ts
+modules: [agentUnit({ basePath: "/api/agents", configFile: ".farm/agent-unit.config.ts" })],
+```
+
+The module may export a function that returns the config instead. The server calls it when the
+engine is first used, so a framework that evaluates its own config as its server starts can hand the
+settings over then. Pass the already-evaluated config as `config` too, and the build reads it instead
+of evaluating the module.
+
+In development, `createDevHandler` from `agent-unit/build` serves the same agents from source as a
+Fetch handler, for a framework's own dev server. It reloads agents and `.env` when they change and
+runs the sweep:
+
+```ts
+import { createDevHandler } from "agent-unit/build";
+
+const agents = await createDevHandler({ root, config }); // or configFile, as for the module
+// in the dev server: if (url.pathname.startsWith("/api/agents")) return agents.fetch(request);
+// on shutdown: agents.close();
 ```
 
 In a [Farm](https://farmjs.dev) app, mount it with one catch-all API route, which works in
@@ -883,6 +912,7 @@ export default defineConfig({
   maxBodyBytes: 1_000_000,                           // largest accepted request body (default 1 MB)
   // server: "./src/server.ts",                      // your own server instead (see "Your own server")
   // agents: { support },                            // instead of the agents/ directory
+  // framework: "mastra",                           // serve only this framework's agents
   // adapters: [myAdapter],                          // extra framework adapters
   // nitro: { … },                                   // passed through to Nitro
   // presets: { vercel: { … } },                     // settings per host (see "One config for every host")

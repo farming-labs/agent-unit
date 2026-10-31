@@ -177,11 +177,28 @@ function scanAgents(dir: string): Record<string, string> {
 }
 
 /** Loads `agent-unit.config.*` and discovers agents. Always re-evaluates, so dev reloads and repeated builds see edits and env. */
-export async function loadProject(rootDir = process.cwd()): Promise<LoadedProject> {
+export interface LoadProjectOptions {
+  /**
+   * A module whose default export is the config, used instead of `agent-unit.config.*`. The built
+   * server imports the same module, so its settings still evaluate where the server runs. For tools
+   * that hold agent-unit's settings in their own config, such as a framework integration.
+   */
+  configFile?: string;
+  /**
+   * The config itself, for a tool that has already evaluated it in this process (a framework). It is
+   * read instead of evaluating a file; with `configFile` too, the built server still imports that
+   * module, so the settings it runs with evaluate where it runs. A build needs `configFile`.
+   */
+  config?: AgentUnitConfig;
+}
+
+export async function loadProject(rootDir = process.cwd(), options: LoadProjectOptions = {}): Promise<LoadedProject> {
   const root = resolve(rootDir);
-  const configFile = findConfigFile(root);
-  let config: AgentUnitConfig = {};
-  if (configFile) {
+  const configFile = options.configFile ? resolve(root, options.configFile) : options.config ? undefined : findConfigFile(root);
+  if (options.configFile && !existsSync(configFile!)) throw new Error(`agent-unit: the config module ${configFile} does not exist.`);
+  let config: AgentUnitConfig = options.config ?? {};
+  if (options.config && typeof options.config !== "object") throw new Error("agent-unit: `config` must be a config object.");
+  if (configFile && !options.config) {
     const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false });
     // A config without a default export (a named one, or an empty file) once read as an empty config,
     // which then failed somewhere unrelated: name the file instead.
@@ -191,6 +208,8 @@ export async function loadProject(rootDir = process.cwd()): Promise<LoadedProjec
     }
     const loaded = await jiti.import<AgentUnitConfig | { default: AgentUnitConfig }>(configFile);
     config = ((loaded as { default?: AgentUnitConfig }).default ?? loaded) as AgentUnitConfig;
+    // A function is called for the settings, as the built server calls it when its engine is first used.
+    if (typeof config === "function") config = (config as () => AgentUnitConfig)();
     if (!config || typeof config !== "object") throw new Error(`${configFile} must export a config object (export default defineConfig({ ... })).`);
   }
   checkPresets(config, configFile);

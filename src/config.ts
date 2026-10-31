@@ -50,6 +50,9 @@ export interface TaskConfig {
   description?: string;
 }
 
+/** Agent frameworks agent-unit's engine has a built-in adapter for. */
+export type AgentFramework = "ai-sdk" | "mastra" | "langgraph" | "openai-agents";
+
 export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "authorize" | "origin" | "maxBodyBytes"> {
   /**
    * Your own server, to build for any host instead of agent-unit's engine: the path of a module whose
@@ -82,6 +85,12 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
   agentsDir?: string;
   /** Extra adapters, tried before the built-in ones. */
   adapters?: AgentAdapter<any>[];
+  /**
+   * The agent framework the engine serves, instead of every built-in adapter the app's package.json
+   * declares: `"ai-sdk"`, `"mastra"`, `"langgraph"` or `"openai-agents"`. `defineAgent` agents and
+   * plain functions always work. The framework must be installed.
+   */
+  framework?: AgentFramework;
   /**
    * Durable storage for runs (an unstorage driver). Default: the filesystem (`.data/agent-unit`)
    * on servers. Serverless presets need a shared driver such as redis, upstash, cloudflare-kv-binding,

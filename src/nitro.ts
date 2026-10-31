@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { NitroModule } from "nitro/types";
+import type { AgentUnitConfig } from "./config";
 import { configForPreset, loadProject } from "./build/load";
 import { checkSchedule, sweepScheduled } from "./build/schedule";
 import { prepareTasks } from "./build/tasks";
@@ -10,6 +11,17 @@ export interface AgentUnitNitroOptions {
   root?: string;
   /** Where the agent API is mounted in the app. Default `/agents`. */
   basePath?: string;
+  /**
+   * A module whose default export is agent-unit's config, used instead of `agent-unit.config.*`. The
+   * server imports it too, so settings such as storage URLs still evaluate where it runs. Lets a
+   * framework keep agent-unit's settings in its own config.
+   */
+  configFile?: string;
+  /**
+   * The config itself, when the framework has already evaluated it, read at build time instead of
+   * evaluating `configFile` again. The server still imports `configFile`.
+   */
+  config?: AgentUnitConfig;
 }
 
 /**
@@ -27,8 +39,12 @@ export function agentUnit(options: AgentUnitNitroOptions = {}): NitroModule {
     name: "agent-unit",
     async setup(nitro) {
       const preset = nitro.options.preset;
-      const loaded = await loadProject(options.root ?? nitro.options.rootDir);
+      const loaded = await loadProject(options.root ?? nitro.options.rootDir, { configFile: options.configFile, config: options.config });
       const project = { ...loaded, config: configForPreset(loaded.config, preset) };
+      // The module mounts agent-unit's engine; an app's own agent server is built by agent-unit build.
+      if (project.config.server !== undefined) {
+        throw new Error("agent-unit: the agent-unit/nitro module serves agents on agent-unit's engine, so `server` does not apply here. Remove it to serve your agents, or build your own server with agent-unit build.");
+      }
       const basePath = (options.basePath ?? project.config.basePath ?? "/agents").replace(/\/+$/, "");
       const warn = (message: string) => nitro.logger.warn(message);
       // The Durable Objects runtime needs agent-unit's own Worker entry and exports, which the app's

@@ -4,7 +4,7 @@ import { createJiti } from "jiti";
 import { serve } from "srvx";
 import { staticMiddleware } from "srvx/static";
 import type { AgentUnit } from "@agent-unit/runtime/server";
-import type { StorageConfig } from "../config";
+import type { AgentUnitConfig, StorageConfig } from "../config";
 import { runInScope, waitUntil as scopedWaitUntil } from "../env/scope";
 import { loadEnvFile, loadProject, resolveServer, type LoadedProject } from "./load";
 
@@ -63,8 +63,8 @@ async function createServerApp(project: LoadedProject): Promise<DevApp> {
   };
 }
 
-async function createApp(root: string): Promise<DevApp> {
-  const project = await loadProject(root);
+async function createApp(root: string, configFile?: string, config?: AgentUnitConfig): Promise<DevApp> {
+  const project = await loadProject(root, { configFile, config });
   if (project.config.server) return createServerApp(project);
   // The engine is imported only when it is the server.
   return (await import("./engine-dev")).createEngineApp(project);
@@ -92,7 +92,34 @@ function storageDir(root: string, app: DevApp): string | undefined {
 }
 
 /** Serves the app from source with reload on change: its own server, or its agents on agent-unit's engine. */
-export async function startDev(options: DevOptions = {}): Promise<DevServer> {
+export interface DevHandlerOptions {
+  root?: string;
+  /** A module whose default export is the config, instead of `agent-unit.config.*`. */
+  configFile?: string;
+  /** The config itself, already evaluated in this process, instead of a file. */
+  config?: AgentUnitConfig;
+  /** Reload when files change. Default true. */
+  watch?: boolean;
+  logger?: DevOptions["logger"];
+}
+
+/**
+ * The app's agents (or its own server) served from source as a Fetch handler, with reloads, `.env`
+ * and the sweep, for mounting in another dev server, such as a framework's. `startDev` wraps it in
+ * an HTTP server.
+ */
+export interface DevHandler {
+  fetch(request: Request, waitUntil?: (promise: Promise<unknown>) => void): Promise<Response>;
+  /** agent-unit's engine. Throws when the app brings its own `server`. */
+  unit(): AgentUnit;
+  /** The app's own server file, when it has one. */
+  server(): string | undefined;
+  describe(): string;
+  reload(): Promise<void>;
+  close(): void;
+}
+
+export async function createDevHandler(options: DevHandlerOptions = {}): Promise<DevHandler> {
   const logger = options.logger ?? { info: console.log, warn: console.warn, error: console.error };
   const root = resolve(options.root ?? process.cwd());
   // Variables .env set (not those already in the environment, which win), so an edit to .env applies on reload.
@@ -102,18 +129,7 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
     fromEnvFile = loadEnvFile(root);
   };
 
-  let current = await createApp(root);
-  // public/ is served before the app, as Nitro serves it in a build.
-  const publicDir = join(root, "public");
-  const server = serve({
-    port: options.port ?? Number(process.env.PORT ?? 3000),
-    hostname: options.hostname,
-    silent: true,
-    middleware: existsSync(publicDir) ? [staticMiddleware({ dir: publicDir })] : [],
-    fetch: (request) => current.fetch(request, (promise) => server.waitUntil?.(promise)),
-  });
-  await server.ready();
-  const url = (server.url ?? `http://localhost:${options.port ?? 3000}/`).replace(/\/\/(\[::\]|0\.0\.0\.0)/, "//localhost");
+  let current = await createApp(root, options.configFile, options.config);
 
   // Often, unlike a deployed sweep: a reload hands the previous engine's sleep timers to the sweep.
   const sweep = setInterval(() => void current.sweep?.().catch((error) => logger.error("agent-unit: sweep failed", error)), 5_000);
@@ -124,7 +140,7 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
     reloading ??= (async () => {
       try {
         reloadEnvFile();
-        const next = await createApp(root);
+        const next = await createApp(root, options.configFile, options.config);
         storage = storageDir(root, next);
         const previous = current;
         current = next;
@@ -151,20 +167,50 @@ export async function startDev(options: DevOptions = {}): Promise<DevServer> {
           timer = setTimeout(() => void reload(), 100);
         });
 
+  // Without a host waitUntil, background work still runs to completion in this long-lived process.
+  const keepAlive = (promise: Promise<unknown>) => void promise.catch((error) => logger.error("agent-unit: background work failed", error));
+
   return {
-    url,
-    server: current.unit ? undefined : current.describe(),
+    fetch: async (request, waitUntil) => current.fetch(request, waitUntil ?? keepAlive),
     unit() {
       if (!current.unit) throw new Error("agent-unit: this app brings its own `server`, so agent-unit's engine is not running.");
       return current.unit;
     },
+    server: () => (current.unit ? undefined : current.describe()),
     describe: () => current.describe(),
     reload,
-    async close() {
+    close() {
       clearInterval(sweep);
       clearTimeout(timer);
       watcher?.close();
       current.close();
+    },
+  };
+}
+
+export async function startDev(options: DevOptions = {}): Promise<DevServer> {
+  const root = resolve(options.root ?? process.cwd());
+  const handler = await createDevHandler({ root, watch: options.watch, logger: options.logger });
+  // public/ is served before the app, as Nitro serves it in a build.
+  const publicDir = join(root, "public");
+  const server = serve({
+    port: options.port ?? Number(process.env.PORT ?? 3000),
+    hostname: options.hostname,
+    silent: true,
+    middleware: existsSync(publicDir) ? [staticMiddleware({ dir: publicDir })] : [],
+    fetch: (request) => handler.fetch(request, (promise) => server.waitUntil?.(promise)),
+  });
+  await server.ready();
+  const url = (server.url ?? `http://localhost:${options.port ?? 3000}/`).replace(/\/\/(\[::\]|0\.0\.0\.0)/, "//localhost");
+
+  return {
+    url,
+    server: handler.server(),
+    unit: () => handler.unit(),
+    describe: () => handler.describe(),
+    reload: () => handler.reload(),
+    async close() {
+      handler.close();
       await server.close(true);
     },
   };
