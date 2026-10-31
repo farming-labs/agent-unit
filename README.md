@@ -655,7 +655,7 @@ runs the sweep:
 ```ts
 import { createDevHandler } from "agent-unit/build";
 
-const agents = await createDevHandler({ root, configFile: ".farm/agent-unit.config.ts" });
+const agents = await createDevHandler({ root, config }); // or configFile, as for the module
 // in the dev server: if (url.pathname.startsWith("/api/agents")) return agents.fetch(request);
 // on shutdown: agents.close();
 ```

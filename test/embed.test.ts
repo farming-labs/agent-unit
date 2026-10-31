@@ -100,4 +100,16 @@ describe("createDevHandler", () => {
       handler.close();
     }
   });
+
+  it("takes the config itself from a host that has already evaluated it", async () => {
+    const root = app({ "agents/approver.mjs": APPROVER });
+    const handler = await createDevHandler({ root, config: { name: "inline", basePath: "/api/agent", storage: { driver: "memory" } }, watch: false, logger: { info() {}, warn() {}, error() {} } });
+    try {
+      const manifest = await (await handler.fetch(new Request("http://localhost/api/agent/manifest.json"))).json();
+      expect(manifest).toMatchObject({ name: "inline", agents: [{ name: "approver" }] });
+    } finally {
+      handler.close();
+    }
+    await expect(loadProject(root, { config: {}, configFile: "x.mjs" })).rejects.toThrow(/not both/);
+  });
 });

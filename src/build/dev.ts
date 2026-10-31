@@ -4,7 +4,7 @@ import { createJiti } from "jiti";
 import { serve } from "srvx";
 import { staticMiddleware } from "srvx/static";
 import type { AgentUnit } from "@agent-unit/runtime/server";
-import type { StorageConfig } from "../config";
+import type { AgentUnitConfig, StorageConfig } from "../config";
 import { runInScope, waitUntil as scopedWaitUntil } from "../env/scope";
 import { loadEnvFile, loadProject, resolveServer, type LoadedProject } from "./load";
 
@@ -63,8 +63,8 @@ async function createServerApp(project: LoadedProject): Promise<DevApp> {
   };
 }
 
-async function createApp(root: string, configFile?: string): Promise<DevApp> {
-  const project = await loadProject(root, { configFile });
+async function createApp(root: string, configFile?: string, config?: AgentUnitConfig): Promise<DevApp> {
+  const project = await loadProject(root, { configFile, config });
   if (project.config.server) return createServerApp(project);
   // The engine is imported only when it is the server.
   return (await import("./engine-dev")).createEngineApp(project);
@@ -96,6 +96,8 @@ export interface DevHandlerOptions {
   root?: string;
   /** A module whose default export is the config, instead of `agent-unit.config.*`. */
   configFile?: string;
+  /** The config itself, already evaluated in this process, instead of a file. */
+  config?: AgentUnitConfig;
   /** Reload when files change. Default true. */
   watch?: boolean;
   logger?: DevOptions["logger"];
@@ -127,7 +129,7 @@ export async function createDevHandler(options: DevHandlerOptions = {}): Promise
     fromEnvFile = loadEnvFile(root);
   };
 
-  let current = await createApp(root, options.configFile);
+  let current = await createApp(root, options.configFile, options.config);
 
   // Often, unlike a deployed sweep: a reload hands the previous engine's sleep timers to the sweep.
   const sweep = setInterval(() => void current.sweep?.().catch((error) => logger.error("agent-unit: sweep failed", error)), 5_000);
@@ -138,7 +140,7 @@ export async function createDevHandler(options: DevHandlerOptions = {}): Promise
     reloading ??= (async () => {
       try {
         reloadEnvFile();
-        const next = await createApp(root, options.configFile);
+        const next = await createApp(root, options.configFile, options.config);
         storage = storageDir(root, next);
         const previous = current;
         current = next;

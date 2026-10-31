@@ -184,13 +184,20 @@ export interface LoadProjectOptions {
    * that hold agent-unit's settings in their own config, such as a framework integration.
    */
   configFile?: string;
+  /**
+   * The config itself, for a tool that has already evaluated it in this process (a framework's dev
+   * server). A build needs `configFile` instead, so the server can evaluate the settings it runs with.
+   */
+  config?: AgentUnitConfig;
 }
 
 export async function loadProject(rootDir = process.cwd(), options: LoadProjectOptions = {}): Promise<LoadedProject> {
   const root = resolve(rootDir);
-  const configFile = options.configFile ? resolve(root, options.configFile) : findConfigFile(root);
+  if (options.config && options.configFile) throw new Error("agent-unit: pass `config` or `configFile`, not both.");
+  const configFile = options.config ? undefined : options.configFile ? resolve(root, options.configFile) : findConfigFile(root);
   if (options.configFile && !existsSync(configFile!)) throw new Error(`agent-unit: the config module ${configFile} does not exist.`);
-  let config: AgentUnitConfig = {};
+  let config: AgentUnitConfig = options.config ?? {};
+  if (options.config && typeof options.config !== "object") throw new Error("agent-unit: `config` must be a config object.");
   if (configFile) {
     const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false });
     // A config without a default export (a named one, or an empty file) once read as an empty config,
