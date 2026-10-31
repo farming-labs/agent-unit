@@ -208,6 +208,8 @@ export async function loadProject(rootDir = process.cwd(), options: LoadProjectO
     }
     const loaded = await jiti.import<AgentUnitConfig | { default: AgentUnitConfig }>(configFile);
     config = ((loaded as { default?: AgentUnitConfig }).default ?? loaded) as AgentUnitConfig;
+    // A function is called for the settings, as the built server calls it when its engine is first used.
+    if (typeof config === "function") config = (config as () => AgentUnitConfig)();
     if (!config || typeof config !== "object") throw new Error(`${configFile} must export a config object (export default defineConfig({ ... })).`);
   }
   checkPresets(config, configFile);

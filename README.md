@@ -648,6 +648,11 @@ where the server runs, like the config file:
 modules: [agentUnit({ basePath: "/api/agents", configFile: ".farm/agent-unit.config.ts" })],
 ```
 
+The module may export a function that returns the config instead. The server calls it when the
+engine is first used, so a framework that evaluates its own config as its server starts can hand the
+settings over then. Pass the already-evaluated config as `config` too, and the build reads it instead
+of evaluating the module.
+
 In development, `createDevHandler` from `agent-unit/build` serves the same agents from source as a
 Fetch handler, for a framework's own dev server. It reloads agents and `.env` when they change and
 runs the sweep:
