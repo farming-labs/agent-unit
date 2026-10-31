@@ -1,5 +1,6 @@
 import { join } from "node:path";
 import type { NitroModule } from "nitro/types";
+import type { AgentUnitConfig } from "./config";
 import { configForPreset, loadProject } from "./build/load";
 import { checkSchedule, sweepScheduled } from "./build/schedule";
 import { prepareTasks } from "./build/tasks";
@@ -16,6 +17,11 @@ export interface AgentUnitNitroOptions {
    * framework keep agent-unit's settings in its own config.
    */
   configFile?: string;
+  /**
+   * The config itself, when the framework has already evaluated it, read at build time instead of
+   * evaluating `configFile` again. The server still imports `configFile`.
+   */
+  config?: AgentUnitConfig;
 }
 
 /**
@@ -33,7 +39,7 @@ export function agentUnit(options: AgentUnitNitroOptions = {}): NitroModule {
     name: "agent-unit",
     async setup(nitro) {
       const preset = nitro.options.preset;
-      const loaded = await loadProject(options.root ?? nitro.options.rootDir, { configFile: options.configFile });
+      const loaded = await loadProject(options.root ?? nitro.options.rootDir, { configFile: options.configFile, config: options.config });
       const project = { ...loaded, config: configForPreset(loaded.config, preset) };
       // The module mounts agent-unit's engine; an app's own agent server is built by agent-unit build.
       if (project.config.server !== undefined) {

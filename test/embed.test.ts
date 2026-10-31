@@ -110,6 +110,9 @@ describe("createDevHandler", () => {
     } finally {
       handler.close();
     }
-    await expect(loadProject(root, { config: {}, configFile: "x.mjs" })).rejects.toThrow(/not both/);
+    // With a config module too, the config is read as given and the module is what the server imports.
+    writeFileSync(join(root, "host.mjs"), `throw new Error("evaluated at build time");`);
+    const project = await loadProject(root, { config: { name: "given" }, configFile: "host.mjs" });
+    expect(project).toMatchObject({ name: "given", configFile: join(root, "host.mjs") });
   });
 });

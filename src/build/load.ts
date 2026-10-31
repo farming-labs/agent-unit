@@ -185,20 +185,20 @@ export interface LoadProjectOptions {
    */
   configFile?: string;
   /**
-   * The config itself, for a tool that has already evaluated it in this process (a framework's dev
-   * server). A build needs `configFile` instead, so the server can evaluate the settings it runs with.
+   * The config itself, for a tool that has already evaluated it in this process (a framework). It is
+   * read instead of evaluating a file; with `configFile` too, the built server still imports that
+   * module, so the settings it runs with evaluate where it runs. A build needs `configFile`.
    */
   config?: AgentUnitConfig;
 }
 
 export async function loadProject(rootDir = process.cwd(), options: LoadProjectOptions = {}): Promise<LoadedProject> {
   const root = resolve(rootDir);
-  if (options.config && options.configFile) throw new Error("agent-unit: pass `config` or `configFile`, not both.");
-  const configFile = options.config ? undefined : options.configFile ? resolve(root, options.configFile) : findConfigFile(root);
+  const configFile = options.configFile ? resolve(root, options.configFile) : options.config ? undefined : findConfigFile(root);
   if (options.configFile && !existsSync(configFile!)) throw new Error(`agent-unit: the config module ${configFile} does not exist.`);
   let config: AgentUnitConfig = options.config ?? {};
   if (options.config && typeof options.config !== "object") throw new Error("agent-unit: `config` must be a config object.");
-  if (configFile) {
+  if (configFile && !options.config) {
     const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false });
     // A config without a default export (a named one, or an empty file) once read as an empty config,
     // which then failed somewhere unrelated: name the file instead.
