@@ -129,7 +129,7 @@ export function generateEntry(
 ) {
   const nitro = options.nitro ?? appNitro;
   mkdirSync(dir, { recursive: true });
-  const adapters = detectAdapters(project.root);
+  const adapters = detectAdapters(project.root, project.config.framework);
   const durable = options.runtime === "durable-objects";
   const imports = [
     durable

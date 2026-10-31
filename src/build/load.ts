@@ -177,9 +177,19 @@ function scanAgents(dir: string): Record<string, string> {
 }
 
 /** Loads `agent-unit.config.*` and discovers agents. Always re-evaluates, so dev reloads and repeated builds see edits and env. */
-export async function loadProject(rootDir = process.cwd()): Promise<LoadedProject> {
+export interface LoadProjectOptions {
+  /**
+   * A module whose default export is the config, used instead of `agent-unit.config.*`. The built
+   * server imports the same module, so its settings still evaluate where the server runs. For tools
+   * that hold agent-unit's settings in their own config, such as a framework integration.
+   */
+  configFile?: string;
+}
+
+export async function loadProject(rootDir = process.cwd(), options: LoadProjectOptions = {}): Promise<LoadedProject> {
   const root = resolve(rootDir);
-  const configFile = findConfigFile(root);
+  const configFile = options.configFile ? resolve(root, options.configFile) : findConfigFile(root);
+  if (options.configFile && !existsSync(configFile!)) throw new Error(`agent-unit: the config module ${configFile} does not exist.`);
   let config: AgentUnitConfig = {};
   if (configFile) {
     const jiti = createJiti(import.meta.url, { moduleCache: false, fsCache: false });

@@ -19,7 +19,7 @@ export async function loadAgents(project: LoadedProject): Promise<{ agents: Reco
   const agents: Record<string, unknown> = { ...(project.config.agents ?? {}) };
   for (const [name, file] of Object.entries(project.agentFiles)) agents[name] = await jiti.import(file);
   const adapters: AgentAdapter<any>[] = [...(project.config.adapters ?? [])];
-  for (const builtin of detectAdapters(project.root)) {
+  for (const builtin of detectAdapters(project.root, project.config.framework)) {
     adapters.push((await ADAPTER_MODULES[builtin.entry]())[builtin.exportName] as AgentAdapter<any>);
   }
   return { agents, adapters };

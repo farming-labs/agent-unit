@@ -10,6 +10,12 @@ export interface AgentUnitNitroOptions {
   root?: string;
   /** Where the agent API is mounted in the app. Default `/agents`. */
   basePath?: string;
+  /**
+   * A module whose default export is agent-unit's config, used instead of `agent-unit.config.*`. The
+   * server imports it too, so settings such as storage URLs still evaluate where it runs. Lets a
+   * framework keep agent-unit's settings in its own config.
+   */
+  configFile?: string;
 }
 
 /**
@@ -27,8 +33,12 @@ export function agentUnit(options: AgentUnitNitroOptions = {}): NitroModule {
     name: "agent-unit",
     async setup(nitro) {
       const preset = nitro.options.preset;
-      const loaded = await loadProject(options.root ?? nitro.options.rootDir);
+      const loaded = await loadProject(options.root ?? nitro.options.rootDir, { configFile: options.configFile });
       const project = { ...loaded, config: configForPreset(loaded.config, preset) };
+      // The module mounts agent-unit's engine; an app's own agent server is built by agent-unit build.
+      if (project.config.server !== undefined) {
+        throw new Error("agent-unit: the agent-unit/nitro module serves agents on agent-unit's engine, so `server` does not apply here. Remove it to serve your agents, or build your own server with agent-unit build.");
+      }
       const basePath = (options.basePath ?? project.config.basePath ?? "/agents").replace(/\/+$/, "");
       const warn = (message: string) => nitro.logger.warn(message);
       // The Durable Objects runtime needs agent-unit's own Worker entry and exports, which the app's
