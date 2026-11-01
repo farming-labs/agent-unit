@@ -7,6 +7,10 @@ Give agent-unit the server you already have, or the agents you want served, and 
 Workers, Vercel, Netlify or AWS Lambda. It handles what each host does differently, so your code
 does not have to.
 
+If you know [Nitro](https://nitro.build), this is the same idea for agent servers: Nitro takes a web
+framework's server and builds it for any host, and agent-unit does that for whichever agent framework
+you use. It is built on Nitro, so its presets and deploy targets are the ones you already know.
+
 ```
 your Hono or Fetch server ─┐
 Mastra's own server ───────┼──► agent-unit build --preset <host> ──► Node · Bun · Deno · Workers
