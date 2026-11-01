@@ -1,5 +1,6 @@
 export { createAgentUnit, type AgentUnit, type AgentUnitOptions } from "./app";
 export { createHandler, eventStream, type AuthorizeContext, type HandlerOptions, type RequestContext } from "./handler";
+export type { ClockChoice } from "./farmjs";
 export { agentCardDocument } from "./a2a";
 export { handleMcp } from "./mcp";
 export type { RunService } from "./service";

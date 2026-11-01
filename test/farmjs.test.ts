@@ -287,6 +287,19 @@ describe("Farm.js clock", () => {
     expect(calls).toEqual([]);
   });
 
+  it("follows the app's clock choice, and AGENT_UNIT_CLOCK over it", () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
+    const clock = (overrides: Record<string, string | undefined>, choice?: "local" | "farmjs") =>
+      farmClock({ env: () => ({ ...env, ...overrides }), endpoint: () => SITE, choice });
+    expect(clock({}, "local").mode()).toBe("off");
+    expect(clock({ VERCEL: "1" }, "local").mode()).toBe("off");
+    expect(clock({}, "farmjs").mode()).toBe("backstop");
+    expect(clock({ AGENT_UNIT_CLOCK: "farmjs" }, "local").mode()).toBe("backstop");
+    expect(clock({ AGENT_UNIT_CLOCK: "local" }, "farmjs").mode()).toBe("off");
+    expect(clock({ FARMJS_API_KEY: undefined }, "farmjs").mode()).toBe("off");
+    expect(String(warn.mock.calls.at(-1)![0])).toMatch(/clock is "farmjs", but FARMJS_API_KEY is not set/);
+  });
+
   it("skips registering, and says so once, when the site URL is unknown", async () => {
     const warn = vi.spyOn(console, "warn").mockImplementation(() => undefined);
     const calls = infra();

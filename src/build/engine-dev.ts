@@ -51,6 +51,7 @@ export async function createEngineApp(project: LoadedProject): Promise<DevApp> {
     basePath: project.config.basePath,
     authorize: project.config.authorize,
     origin: project.config.origin,
+    clock: project.config.clock ?? (project.config.sweep !== undefined ? "local" : undefined),
     retention: project.config.retention,
     maxBodyBytes: project.config.maxBodyBytes,
   });

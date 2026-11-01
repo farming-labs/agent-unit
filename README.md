@@ -309,10 +309,26 @@ right away, signed with the key when there is no `AGENT_UNIT_SECRET`. The sweep 
 it is scheduled, and is still what deletes finished runs after `retention`. The Durable Objects
 runtime wakes runs from their own alarms and does not use Infra.
 
+Your own setup comes first, and Infra is the fallback:
+
+1. `clock: "local"`, or a `sweep` schedule of your own (top level or in a host's `presets` entry):
+   the host wakes runs, with its sweep and in-process timers, and Infra is never called.
+   `clock: "farmjs"` keeps Infra on next to your `sweep`.
+2. Nothing set and `FARMJS_API_KEY` present: Infra wakes runs, and the host's default sweep is the
+   backstop.
+3. Nothing set and no key: the host alone, as before.
+
+```ts
+export default defineConfig({
+  // The host's cron wakes runs on Node; on Vercel, Infra does.
+  presets: { "node-server": { sweep: "* * * * *" } },
+});
+```
+
 | Variable | |
 | --- | --- |
-| `FARMJS_API_KEY` | Turns it on |
-| `AGENT_UNIT_CLOCK` | `local` turns it off: in-process timers and the sweep only. `farmjs` requires it, and the server says so when the key is missing |
+| `FARMJS_API_KEY` | Turns it on, unless the config chose the host |
+| `AGENT_UNIT_CLOCK` | Overrides `clock` for one deployment: `local` turns it off (in-process timers and the sweep only), `farmjs` requires it, and the server says so when the key is missing |
 | `FARMJS_ENVIRONMENT` | `production`, `staging` or `development`. Default: the key's own environment |
 | `FARMJS_PROJECT_ID` | The project the runs belong to, for an organization-wide key |
 | `FARMJS_API_URL` | Default `https://app.farmjs.dev` |
@@ -936,6 +952,7 @@ export default defineConfig({
   runtime: "default",                                // or "durable-objects" on Cloudflare
   budget: "60s",                                     // yield and continue after this long
   sweep: "*/5 * * * *",                              // sweep schedule, or false
+  // clock: "farmjs",                               // Infra wakes runs too, beside your own sweep
   basePath: "/api/agents",
   authorize: (request) => request.headers.get("authorization") === `Bearer ${process.env.API_TOKEN}`,
   retention: "30d",                                  // delete finished runs 30 days after they finish

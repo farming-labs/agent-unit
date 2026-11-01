@@ -31,6 +31,7 @@ const ENGINE_OPTIONS = [
   "budget",
   "retention",
   "sweep",
+  "clock",
   "basePath",
   "authorize",
   "origin",

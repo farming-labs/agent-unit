@@ -3,7 +3,7 @@ import { safeEqual } from "../runtime/util";
 import type { AgentEvent, RunInput, RunRecord, RunStatus } from "../types";
 import { agentCardDocument } from "./a2a";
 import { checkPost, readBody, RUN_ID, THREAD_ID } from "./body";
-import { farmClock, farmjsSignature, verifyFarmjsSignature } from "./farmjs";
+import { farmClock, farmjsSignature, verifyFarmjsSignature, type ClockChoice } from "./farmjs";
 import { handleMcp } from "./mcp";
 import type { RunService } from "./service";
 
@@ -29,6 +29,12 @@ export interface HandlerOptions {
    * Without one, runs continue in-process.
    */
   origin?: string;
+  /**
+   * What wakes sleeping runs and recovers stalled ones. `"local"`: the host only (its scheduled
+   * sweep and in-process timers). `"farmjs"`: Farm.js Infra, with FARMJS_API_KEY. Unset: Infra
+   * wherever FARMJS_API_KEY is set, the host otherwise. AGENT_UNIT_CLOCK overrides it.
+   */
+  clock?: ClockChoice;
   /** Largest accepted request body, in bytes. Default 1 MB. */
   maxBodyBytes?: number;
   /** Most messages accepted in one MCP JSON-RPC batch. Default 20. */
@@ -188,6 +194,7 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
   if (engine instanceof RunEngine && !engine.options.scheduleWake && !engine.options.clock) {
     engine.options.clock = farmClock({
       env: () => engine.env(),
+      choice: options.clock,
       endpoint: () => {
         const origin = clockOrigin();
         return origin && `${origin}${base}`;
