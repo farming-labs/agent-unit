@@ -264,8 +264,8 @@ npx agent-unit build --preset <preset>
 | Cloudflare Workers | `cloudflare-module` with `runtime: "durable-objects"` | One Durable Object per run (no storage to configure) | Yields every 10 min and continues from an alarm | Each run's own alarm |
 | Cloudflare Workers (KV) | `cloudflare-module` | Set `storage` (for example `cloudflare-kv-binding`) | Yields every 25s and continues | Cron Trigger runs the sweep |
 | Vercel | `vercel` | Set `storage` (Upstash, Redis, …) | Yields every 240s and continues | Vercel Cron runs the sweep (see below for the Hobby plan) |
-| Netlify | `netlify` | Set `storage` (`netlify-blobs`, Redis, …) | Yields every 20s; finishes in the request | Generated scheduled function (needs `AGENT_UNIT_SECRET`) |
-| AWS Lambda | `aws-lambda` | Set `storage` (Redis, Upstash, a database via db0, …) | Yields every 25s; finishes in the request | Point EventBridge at `POST /__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` |
+| Netlify | `netlify` | Set `storage` (`netlify-blobs`, Redis, …) | Yields every 20s; finishes in the request | Generated scheduled function (needs `AGENT_UNIT_SECRET` or `FARMJS_API_KEY`) |
+| AWS Lambda | `aws-lambda` | Set `storage` (Redis, Upstash, a database via db0, …) | Yields every 25s; finishes in the request | [Farm.js Infra](#wake-runs-with-farmjs-infra) with `FARMJS_API_KEY` and `AGENT_UNIT_URL`, or point EventBridge at `POST /__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` |
 
 The storage, long-run and sweep columns are for agent-unit's engine; your own server keeps whatever
 storage it already uses.
@@ -278,7 +278,8 @@ Your own `compatibility_flags` and `alias` settings are kept.
 Any other [Nitro preset](https://nitro.build/deploy) works too. Serverless hosts need shared
 storage, because their filesystem does not survive between invocations; without one the build warns
 and keeps runs in memory, which an invocation does not keep. Set `AGENT_UNIT_SECRET` in production: it protects the internal continue and sweep
-endpoints, which serverless hosts use to continue long runs. A long run continues in a fresh
+endpoints, which serverless hosts use to continue long runs (`FARMJS_API_KEY` does too, see
+[Wake runs with Farm.js Infra](#wake-runs-with-farmjs-infra)). A long run continues in a fresh
 invocation at the deployment's own URL, read from `AGENT_UNIT_URL` (or `VERCEL_URL`, Netlify's `URL`,
 or the `origin` option) and never from an incoming request; without one it continues in-process.
 
@@ -286,6 +287,33 @@ On Vercel's Hobby plan, cron jobs run at most once a day, and a deploy with a mo
 fails. The engine's sweep (which wakes sleeping runs and recovers stalled ones) runs every minute by
 default, so on Hobby set `presets: { vercel: { sweep: "0 0 * * *" } }`, or `sweep: false`. Apps from
 `agent-unit init` start with the daily sweep on Vercel.
+
+### Wake runs with Farm.js Infra
+
+Set `FARMJS_API_KEY` (a [Farm.js](https://farmjs.dev) API key with the `agents:runtime` permission)
+and Farm.js Infra wakes sleeping runs within a minute of their time and picks up runs whose process
+died, on every host, with no cron to schedule and no `AGENT_UNIT_SECRET`. When a run sleeps, and
+while it executes, the engine tells Infra when to look at it again. Infra then calls
+`POST /__agent-unit/wake/<run>` on your deployment, signed with your key, and the engine wakes or
+continues the run and answers when to call again.
+
+Infra calls the deployment's own URL, the one long runs continue at (`AGENT_UNIT_URL`, `VERCEL_URL`,
+Netlify's `URL` or the `origin` option), with the base path, and only over https; without one the
+server says so once and runs wake as before. On Vercel, Netlify, AWS Lambda and Workers, Infra is
+the clock. On Node, Bun and Deno the in-process timers keep running and Infra is the backstop for a
+process that stopped. Registering waits two seconds at most and a failure is logged once, so Infra
+being down never fails a run or a request. A run that yields still continues in a fresh invocation
+right away, signed with the key when there is no `AGENT_UNIT_SECRET`. The sweep keeps running where
+it is scheduled, and is still what deletes finished runs after `retention`. The Durable Objects
+runtime wakes runs from their own alarms and does not use Infra.
+
+| Variable | |
+| --- | --- |
+| `FARMJS_API_KEY` | Turns it on |
+| `AGENT_UNIT_CLOCK` | `local` turns it off: in-process timers and the sweep only. `farmjs` requires it, and the server says so when the key is missing |
+| `FARMJS_ENVIRONMENT` | `production`, `staging` or `development`. Default: the key's own environment |
+| `FARMJS_PROJECT_ID` | The project the runs belong to, for an organization-wide key |
+| `FARMJS_API_URL` | Default `https://app.farmjs.dev` |
 
 ### Deploy in one command
 

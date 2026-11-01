@@ -64,6 +64,7 @@ describe("the files agent-unit init writes", () => {
     // Runs on agent-unit's engine need the sweep, which nothing schedules on Lambda.
     const engine = initFiles({ name: "eng", framework: "agent-unit", runner: "engine", hosts: ["lambda"] }, "0.1.16").files["README.md"]!;
     expect(engine).toContain("schedule `POST <Url>/__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` every minute");
+    expect(engine).toContain("set `FARMJS_API_KEY`, and `AGENT_UNIT_URL` to the function's `Url`, and Farm.js Infra does it");
   });
 
   it("uses one store and no D1 when Workers is not a host", () => {
