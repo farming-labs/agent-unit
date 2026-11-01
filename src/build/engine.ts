@@ -247,8 +247,6 @@ return createAgentUnit({
   basePath: ${basePath},
   authorize: settings.authorize,
   origin: settings.origin,
-  // The app's choice wins; a sweep schedule of its own keeps waking runs on the host.
-  clock: settings.clock ?? (settings.sweep !== undefined ? "local" : undefined),
   retention: settings.retention,
   maxBodyBytes: settings.maxBodyBytes,
   env,

@@ -116,13 +116,6 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
   /** Cron for the sweep that wakes sleepers and recovers stalled runs. Default every minute. `false` disables it. */
   sweep?: string | false;
   /**
-   * What wakes sleeping runs and recovers stalled ones. Your choice wins: `"local"` keeps it on the
-   * host (its scheduled `sweep` and in-process timers), `"farmjs"` uses Farm.js Infra (needs
-   * FARMJS_API_KEY), with the host's sweep as the backstop. Unset, setting `sweep` yourself means
-   * `"local"`; otherwise Infra wakes runs wherever FARMJS_API_KEY is set, and the host does without it.
-   */
-  clock?: "local" | "farmjs";
-  /**
    * Cloudflare settings your app needs beside agent-unit's, in Cloudflare's own format: `wrangler`
    * is merged into the generated `wrangler.json` (D1, KV, R2 and Durable Object bindings, vars,
    * routes), and `exports` names a file whose classes the Worker also exports (a storage
@@ -157,7 +150,6 @@ export const PRESET_SETTINGS = [
   "budget",
   "retention",
   "sweep",
-  "clock",
   "basePath",
   "authorize",
   "origin",

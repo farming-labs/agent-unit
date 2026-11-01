@@ -116,35 +116,3 @@ describe("createDevHandler", () => {
     expect(project).toMatchObject({ name: "given", configFile: join(root, "host.mjs") });
   });
 });
-
-describe("clock from the config", () => {
-  const saved = { ...process.env };
-  afterEach(() => {
-    for (const key of ["FARMJS_API_KEY", "AGENT_UNIT_URL", "AGENT_UNIT_CLOCK"]) {
-      if (saved[key] === undefined) delete process.env[key];
-      else process.env[key] = saved[key];
-    }
-  });
-
-  const modeFor = async (config: Record<string, unknown>) => {
-    process.env.FARMJS_API_KEY = "farmjs_" + "a".repeat(32);
-    process.env.AGENT_UNIT_URL = "https://agents.example.com";
-    const root = app({ "agents/approver.mjs": APPROVER });
-    const handler = await createDevHandler({ root, config: { storage: { driver: "memory" }, ...config }, watch: false, logger: { info() {}, warn() {}, error() {} } });
-    try {
-      await handler.fetch(new Request("http://localhost/manifest.json"));
-      const engine = (handler.unit() as unknown as { engine: { options: { clock?: { mode(): string } } } }).engine;
-      return engine.options.clock?.mode();
-    } finally {
-      handler.close();
-    }
-  };
-
-  it("uses Farm.js Infra when the app chose nothing, and the host when it set its own sweep", async () => {
-    expect(await modeFor({})).toBe("backstop");
-    expect(await modeFor({ sweep: "*/5 * * * *" })).toBe("off");
-    expect(await modeFor({ sweep: false })).toBe("off");
-    expect(await modeFor({ clock: "local" })).toBe("off");
-    expect(await modeFor({ sweep: "0 0 * * *", clock: "farmjs" })).toBe("backstop");
-  });
-});

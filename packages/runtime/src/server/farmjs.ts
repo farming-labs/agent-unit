@@ -60,23 +60,15 @@ function serverless(env: Record<string, string | undefined>): boolean {
   return (globalThis as { navigator?: { userAgent?: string } }).navigator?.userAgent === "Cloudflare-Workers";
 }
 
-/** Which clock wakes runs: the host's sweep and in-process timers, or Farm.js Infra. */
-export type ClockChoice = "local" | "farmjs";
-
 export interface FarmClockOptions {
   env: () => Record<string, string | undefined>;
-  /**
-   * The app's own choice. Unset, Infra is the clock wherever FARMJS_API_KEY is set: the host's
-   * sweep is the backstop. AGENT_UNIT_CLOCK in the environment overrides it.
-   */
-  choice?: ClockChoice;
   /** The base URL Infra calls back (origin and base path), from the deployment's own URL, never a request's Host. */
   endpoint: () => string | undefined;
 }
 
 /**
  * Registers wake-ups with Farm.js Infra (`POST {FARMJS_API_URL}/api/agents/wakes`). On when
- * FARMJS_API_KEY is set, unless the app chose the `local` clock (AGENT_UNIT_CLOCK or `clock`). Calls made together are sent as one
+ * FARMJS_API_KEY is set, unless AGENT_UNIT_CLOCK is `local`. Calls made together are sent as one
  * request, awaited for at most two seconds; a failure is logged once and never fails a run.
  */
 export function farmClock(options: FarmClockOptions): WakeClock {
@@ -137,13 +129,9 @@ export function farmClock(options: FarmClockOptions): WakeClock {
   return {
     mode() {
       const env = options.env();
-      const choice = env.AGENT_UNIT_CLOCK || options.choice;
-      if (choice === "local") return "off";
+      if (env.AGENT_UNIT_CLOCK === "local") return "off";
       if (!env.FARMJS_API_KEY) {
-        if (choice === "farmjs") {
-          const by = env.AGENT_UNIT_CLOCK ? "AGENT_UNIT_CLOCK is farmjs" : 'clock is "farmjs"';
-          warn("key", `${by}, but FARMJS_API_KEY is not set, so Farm.js Infra cannot wake runs.`);
-        }
+        if (env.AGENT_UNIT_CLOCK === "farmjs") warn("key", "AGENT_UNIT_CLOCK is farmjs, but FARMJS_API_KEY is not set, so Farm.js Infra cannot wake runs.");
         return "off";
       }
       const endpoint = options.endpoint();
