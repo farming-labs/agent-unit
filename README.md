@@ -299,7 +299,9 @@ key, and the engine wakes or continues the run and answers when to call again.
 
 Infra calls the deployment's own URL, the one long runs continue at (`AGENT_UNIT_URL`, `VERCEL_URL`,
 Netlify's `URL` or the `origin` option), with the base path, and only over https; without one the
-server says so once and runs wake as before. On Vercel, Netlify, AWS Lambda and Workers, Infra is
+server says so once and runs wake as before. On a Vercel production deployment it calls the
+project's production domain instead, since per-deployment URLs sit behind Deployment Protection;
+preview deployments need `AGENT_UNIT_URL` set to a URL Infra can reach. On Vercel, Netlify, AWS Lambda and Workers, Infra is
 the clock. On Node, Bun and Deno the in-process timers keep running and Infra is the backstop for a
 process that stopped. Registering waits two seconds at most and a failure is logged once, so Infra
 being down never fails a run or a request. A run that yields still continues in a fresh invocation

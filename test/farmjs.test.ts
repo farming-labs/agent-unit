@@ -307,6 +307,13 @@ describe("Farm.js clock", () => {
     for (const [host, endpoint] of [
       [{ VERCEL: "1", VERCEL_URL: "app-abc.vercel.app" }, "https://app-abc.vercel.app/api/agent"],
       [{ NETLIFY: "true", URL: "https://agents.netlify.app" }, "https://agents.netlify.app/api/agent"],
+      // Production wakes go to the production domain, not the protected per-deployment URL.
+      [
+        { VERCEL: "1", VERCEL_ENV: "production", VERCEL_URL: "app-abc.vercel.app", VERCEL_PROJECT_PRODUCTION_URL: "agents.example.com" },
+        "https://agents.example.com/api/agent",
+      ],
+      [{ VERCEL: "1", VERCEL_ENV: "preview", VERCEL_URL: "app-def.vercel.app", VERCEL_PROJECT_PRODUCTION_URL: "agents.example.com" }, "https://app-def.vercel.app/api/agent"],
+      [{ VERCEL: "1", VERCEL_ENV: "production", VERCEL_PROJECT_PRODUCTION_URL: "agents.example.com", AGENT_UNIT_URL: "https://wake.example.com" }, "https://wake.example.com/api/agent"],
     ] as const) {
       const { engine } = app({ FARMJS_API_KEY: KEY, ...host });
       await (await engine.start("nap")).done;

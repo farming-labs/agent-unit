@@ -133,15 +133,29 @@ const RUN_STATUSES = new Set<RunStatus>(["running", "interrupted", "sleeping", "
 export function createHandler(engine: RunService, options: HandlerOptions = {}) {
   const base = (options.basePath ?? "").replace(/\/+$/, "");
   const secret = () => options.secret ?? engine.env().AGENT_UNIT_SECRET;
-  const selfOrigin = (): string | undefined => {
-    const env = engine.env();
-    const candidate = options.origin ?? env.AGENT_UNIT_URL ?? (env.VERCEL_URL ? `https://${env.VERCEL_URL}` : undefined) ?? env.URL;
+  const originOf = (candidate: string | undefined): string | undefined => {
     if (!candidate) return undefined;
     try {
       return new URL(candidate).origin;
     } catch {
       return undefined;
     }
+  };
+  const selfOrigin = (): string | undefined => {
+    const env = engine.env();
+    return originOf(options.origin ?? env.AGENT_UNIT_URL ?? (env.VERCEL_URL ? `https://${env.VERCEL_URL}` : undefined) ?? env.URL);
+  };
+  /**
+   * Where Infra wakes runs. On a Vercel production deployment that is the project's production
+   * domain: its per-deployment URL (VERCEL_URL) sits behind Deployment Protection by default, and
+   * wakes should reach whichever deployment is live by then, not the one that registered them.
+   */
+  const clockOrigin = (): string | undefined => {
+    const env = engine.env();
+    if (!options.origin && !env.AGENT_UNIT_URL && env.VERCEL_ENV === "production" && env.VERCEL_PROJECT_PRODUCTION_URL) {
+      return originOf(`https://${env.VERCEL_PROJECT_PRODUCTION_URL}`);
+    }
+    return selfOrigin();
   };
 
   // Serverless hosts continue a yielded run in a fresh invocation through the internal endpoint.
@@ -175,7 +189,7 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
     engine.options.clock = farmClock({
       env: () => engine.env(),
       endpoint: () => {
-        const origin = selfOrigin();
+        const origin = clockOrigin();
         return origin && `${origin}${base}`;
       },
     });
