@@ -1,7 +1,9 @@
 import { AgentUnitError, RunEngine } from "../runtime/engine";
+import { safeEqual } from "../runtime/util";
 import type { AgentEvent, RunInput, RunRecord, RunStatus } from "../types";
 import { agentCardDocument } from "./a2a";
 import { checkPost, readBody, RUN_ID, THREAD_ID } from "./body";
+import { farmClock, farmjsSignature, verifyFarmjsSignature } from "./farmjs";
 import { handleMcp } from "./mcp";
 import type { RunService } from "./service";
 
@@ -15,14 +17,16 @@ export interface HandlerOptions {
    */
   authorize?: (request: Request, context: AuthorizeContext) => boolean | Response | Promise<boolean | Response>;
   /**
-   * Secret for the internal continuation and sweep endpoints. Default: the AGENT_UNIT_SECRET
-   * environment variable. Without one those endpoints are disabled.
+   * Secret for the internal continuation, wake and sweep endpoints. Default: the AGENT_UNIT_SECRET
+   * environment variable. They also take calls signed with FARMJS_API_KEY (`farmjs-signature`), as
+   * Farm.js Infra sends them; with neither, those endpoints are disabled.
    */
   secret?: string;
   /**
-   * This deployment's own URL, used to continue a long run in a fresh invocation. Default: the
-   * AGENT_UNIT_URL environment variable, or the platform's (VERCEL_URL, Netlify's URL). It is never
-   * taken from a request, whose Host header anyone can set. Without one, runs continue in-process.
+   * This deployment's own URL, used to continue a long run in a fresh invocation and as the URL
+   * Farm.js Infra wakes runs at. Default: the AGENT_UNIT_URL environment variable, or the platform's
+   * (VERCEL_URL, Netlify's URL). It is never taken from a request, whose Host header anyone can set.
+   * Without one, runs continue in-process.
    */
   origin?: string;
   /** Largest accepted request body, in bytes. Default 1 MB. */
@@ -32,15 +36,6 @@ export interface HandlerOptions {
   /** Interval for SSE keep-alive comments. Default 15s. */
   heartbeatMs?: number;
   version?: string;
-}
-
-/** Compares secrets in constant time, so response timing reveals nothing about the expected value. */
-function safeEqual(a: string, b: string): boolean {
-  const left = new TextEncoder().encode(a);
-  const right = new TextEncoder().encode(b);
-  let diff = left.length ^ right.length;
-  for (let i = 0; i < Math.max(left.length, right.length); i++) diff |= (left[i] ?? 0) ^ (right[i] ?? 0);
-  return diff === 0;
 }
 
 /** What a request does, for `authorize`. */
@@ -153,12 +148,15 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
   if (engine instanceof RunEngine && !engine.options.continueRun && !engine.options.scheduleWake) {
     engine.options.continueRun = async (id) => {
       const token = secret();
+      // Without a secret, the call is signed with FARMJS_API_KEY, as Farm.js Infra signs its own.
+      const apiKey = token ? undefined : engine.env().FARMJS_API_KEY;
       const origin = selfOrigin();
-      if (origin && token) {
+      if (origin && (token || apiKey)) {
+        const url = `${origin}${base}/__agent-unit/continue/${encodeURIComponent(id)}`;
         try {
-          const response = await fetch(`${origin}${base}/__agent-unit/continue/${encodeURIComponent(id)}`, {
+          const response = await fetch(url, {
             method: "POST",
-            headers: { authorization: `Bearer ${token}` },
+            headers: token ? { authorization: `Bearer ${token}` } : { "farmjs-signature": await farmjsSignature(apiKey!, "POST", new URL(url).pathname) },
             // A host without waitUntil answers only when the continuation stops; it is running by then.
             signal: AbortSignal.timeout(5_000),
           });
@@ -172,9 +170,24 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
     };
   }
 
-  const internalAllowed = (request: Request) => {
+  // Farm.js Infra wakes runs at their time on hosts with no scheduler of their own (see farmjs.ts).
+  if (engine instanceof RunEngine && !engine.options.scheduleWake && !engine.options.clock) {
+    engine.options.clock = farmClock({
+      env: () => engine.env(),
+      endpoint: () => {
+        const origin = selfOrigin();
+        return origin && `${origin}${base}`;
+      },
+    });
+  }
+
+  /** The secret, or a fresh signature of this very call (method and path) with FARMJS_API_KEY. */
+  const internalAllowed = async (request: Request, method: string, pathname: string) => {
     const token = secret();
-    return Boolean(token) && safeEqual(request.headers.get("authorization") ?? "", `Bearer ${token}`);
+    if (token && safeEqual(request.headers.get("authorization") ?? "", `Bearer ${token}`)) return true;
+    const apiKey = engine.env().FARMJS_API_KEY;
+    const signature = request.headers.get("farmjs-signature");
+    return Boolean(apiKey && signature) && (await verifyFarmjsSignature(apiKey!, signature!, method, pathname));
   };
 
   return async function handle(request: Request, context: RequestContext = {}): Promise<Response> {
@@ -228,10 +241,15 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
       }
 
       if (segments[0] === "__agent-unit") {
-        if (!internalAllowed(request)) return problem(401, "unauthorized", "Missing or invalid agent-unit secret.");
+        if (!(await internalAllowed(request, method, url.pathname))) return problem(401, "unauthorized", "Missing or invalid agent-unit secret or signature.");
         if (method === "POST" && segments[1] === "continue" && segments[2] && engine.continue) {
           await background(engine.continue(segments[2]));
           return json({ ok: true }, context.waitUntil ? 202 : 200);
+        }
+        if (method === "POST" && segments[1] === "wake" && segments[2] && engine.handleWake) {
+          // An id the engine could not have made is no run: the clock may forget it.
+          const next = RUN_ID.test(segments[2]) ? await engine.handleWake(segments[2], { background }) : undefined;
+          return json({ next: next === undefined ? null : new Date(next).toISOString() });
         }
         if (segments[1] === "sweep" && engine.sweep) {
           const { woken, recovered, deleted, settled } = await engine.sweep();
