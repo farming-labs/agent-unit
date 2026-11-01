@@ -98,7 +98,11 @@ describe("per-preset settings in the agent-unit/nitro module", () => {
     const { options, warnings } = await setup(root, "node-server");
     expect(Object.keys(options.tasks).sort()).toEqual(["agent-unit:sweep", "digest"]);
     expect(options.scheduledTasks).toMatchObject({ "0 8 * * *": ["digest"], "* * * * *": ["agent-unit:sweep"] });
-    expect(warnings).toEqual(["agent-unit: `cloudflare` in agent-unit.config.ts do not apply with the agent-unit/nitro module: set them in your nitro.config."]);
+    expect(warnings).toEqual([
+      "agent-unit: `cloudflare` in agent-unit.config.ts do not apply with the agent-unit/nitro module: set them in your nitro.config.",
+      // No storage and no FARMJS_API_KEY: on disk, as on any Node build.
+      expect.stringContaining("agent-unit: runs are kept on disk in .data/agent-unit, which a container without a volume loses on every redeploy."),
+    ]);
     await expect(setup(app(`{ presets: { "cloudflare-module": { runtime: "durable-objects" } } }`), "cloudflare-module")).rejects.toThrow(
       `runtime "durable-objects" is built by \`agent-unit build\`, not by the agent-unit/nitro module`,
     );

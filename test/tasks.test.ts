@@ -73,7 +73,7 @@ export default ({ name }: { name: string }) => {
     const root = mkdtempSync(join(tmpdir(), "agent-unit-sweep-"));
     dirs.push(root);
     writeFileSync(join(root, "package.json"), JSON.stringify({ name: "sweep", type: "module" }));
-    const engine = (sweep: string, preset: string) => () => prepareEngine({ root, name: "sweep", config: { sweep }, agentFiles: {} }, preset, join(root, ".agent-unit"), () => {});
+    const engine = (sweep: string, preset: string) => () => prepareEngine({ root, name: "sweep", config: { sweep, storage: "memory" }, agentFiles: {} }, preset, join(root, ".agent-unit"), () => {});
     expect(engine("every minute", "node-server")).toThrow(/the schedule of the sweep, "every minute", is not a cron expression/);
     expect(engine("*/30 * * * * *", "vercel")).toThrow(/needs five fields/);
     expect(engine("*/5 * * * *", "vercel")).not.toThrow();

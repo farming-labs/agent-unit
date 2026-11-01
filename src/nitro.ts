@@ -59,7 +59,7 @@ export function agentUnit(options: AgentUnitNitroOptions = {}): NitroModule {
       const dir = join(nitro.options.buildDir, "agent-unit", preset);
       // The app's own `agent-unit` mount wins, so runs can live in storage the app already configures.
       // A dev server runs on this machine, with its disk, whatever the preset it will be built for.
-      const storage = nitro.options.storage["agent-unit"] ? undefined : resolveStorage(project, nitro.options.dev ? "node-server" : preset, warn);
+      const storage = nitro.options.storage["agent-unit"] ? undefined : resolveStorage(project, preset, warn, { dev: nitro.options.dev });
       generateEntry(project, dir, { budgetMs: resolveBudget(project, preset), basePath, preset, storage });
       const handler = join(dir, "entry.mjs");
       nitro.options.handlers.push({ route: basePath || "/", handler }, { route: `${basePath}/**`, handler });
