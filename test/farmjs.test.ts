@@ -13,8 +13,10 @@ import { createEngine } from "./helpers";
 const KEY = "farmjs_test_vector_key";
 const SITE = "https://app.example.com";
 const realFetch = globalThis.fetch;
+const engines: { close(): void }[] = [];
 
 afterEach(() => {
+  for (const engine of engines.splice(0)) engine.close();
   globalThis.fetch = realFetch;
   vi.restoreAllMocks();
   vi.useRealTimers();
@@ -30,6 +32,7 @@ const napper = (duration = "2h") =>
 /** A handler under /api/agent, and a signed call to one of its internal routes. */
 function app(env: Record<string, string | undefined>, agents: Record<string, unknown> = { nap: napper() }) {
   const engine = createEngine(agents, { env });
+  engines.push(engine);
   const handler = createHandler(engine, { basePath: "/api/agent" });
   const pending: Promise<unknown>[] = [];
   const call = (path: string, init: RequestInit = post, waitUntil = true) =>

@@ -292,10 +292,10 @@ default, so on Hobby set `presets: { vercel: { sweep: "0 0 * * *" } }`, or `swee
 
 Set `FARMJS_API_KEY` (a [Farm.js](https://farmjs.dev) API key with the `agents:runtime` permission)
 and Farm.js Infra wakes sleeping runs within a minute of their time and picks up runs whose process
-died, on every host, with no cron to schedule and no `AGENT_UNIT_SECRET`. When a run sleeps, and
-while it executes, the engine tells Infra when to look at it again. Infra then calls
-`POST /__agent-unit/wake/<run>` on your deployment, signed with your key, and the engine wakes or
-continues the run and answers when to call again.
+died, on every host the default runtime runs on, with no cron to schedule and no
+`AGENT_UNIT_SECRET`. When a run sleeps, and while it executes, the engine tells Infra when to look
+at it again. Infra then calls `POST /__agent-unit/wake/<run>` on your deployment, signed with your
+key, and the engine wakes or continues the run and answers when to call again.
 
 Infra calls the deployment's own URL, the one long runs continue at (`AGENT_UNIT_URL`, `VERCEL_URL`,
 Netlify's `URL` or the `origin` option), with the base path, and only over https; without one the
