@@ -47,6 +47,13 @@ export interface EngineOptions {
    */
   scheduleWake?: (runId: string, at: number) => void | Promise<void>;
   /**
+   * An outside clock (Farm.js Infra) told about each wake-up a run needs: the end of a sleep, and a
+   * watchdog while it executes. Unlike `scheduleWake`, it leaves continuing after a yield as it is,
+   * and in-process sleep timers keep running unless its mode is "only". `createHandler` sets one up
+   * when FARMJS_API_KEY is set.
+   */
+  clock?: WakeClock;
+  /**
    * Check storage about once a second, while a run executes, for a cancel sent to another process.
    * Default true. Runtimes that deliver every cancel to the executing process turn it off.
    */
@@ -63,6 +70,23 @@ export interface EngineOptions {
    * every delta its own event. Default 50ms.
    */
   deltaBatchMs?: number;
+}
+
+/** An outside clock for `EngineOptions.clock`; it calls `handleWake` at the times it is given. */
+export interface WakeClock {
+  /** "off" here, a "backstop" beside in-process timers (a long-lived server), or the "only" clock (serverless hosts). */
+  mode(): "off" | "backstop" | "only";
+  /** Registers a wake-up for a run, replacing its earlier one. Never rejects. */
+  schedule(runId: string, at: number): Promise<void>;
+}
+
+export interface HandleWakeOptions {
+  /**
+   * Takes the execution a wake-up starts: a request's `waitUntil`, or awaiting it where the host
+   * freezes after a response. Given by a clock that calls over HTTP (Farm.js Infra), which replaces
+   * its time for the run with the answer, so the answer then covers that execution too.
+   */
+  background?: (work: Promise<unknown>) => Promise<unknown>;
 }
 
 export interface ResumeOptions {
@@ -612,26 +636,34 @@ export class RunEngine {
   }
 
   /**
-   * What a scheduled wake-up (`scheduleWake`) should do for a run: wake it if its sleep is due,
-   * continue it if it yielded or its executor died. Returns when to check again, if ever.
+   * What a scheduled wake-up (`scheduleWake`, or a `clock`'s call) should do for a run: wake it if its
+   * sleep is due, continue it if it yielded or its executor died. Returns when to check again, if ever.
+   * With `background`, the answer covers the execution it started: the run's wake time if it sleeps
+   * again, a lease from now while it runs, nothing once it finished or waits for an answer (the
+   * sweep's retention deletes finished runs, so the clock keeps no entry per finished run).
    */
-  async handleWake(id: string): Promise<number | undefined> {
+  async handleWake(id: string, options: HandleWakeOptions = {}): Promise<number | undefined> {
     const run = await this.store.getRun(id);
     if (!run) return undefined;
+    const background = options.background ?? ((work) => work);
     if (run.status === "sleeping") {
       const due = run.wakeAt ? Date.parse(run.wakeAt) : 0;
       if (due > Date.now()) return due;
-      await (await this.wakeRun(id))?.done;
+      const started = await this.wakeRun(id);
+      if (started) await background(started.done);
     } else if (run.status === "running") {
       // Still executing here or held by a live lease elsewhere: look again once that lease could lapse.
       if (this.busy(id) || !(await this.store.leaseExpired(id))) return Date.now() + this.leaseMs;
-      await this.continue(id);
-    } else if (TERMINAL.has(run.status) && this.options.retentionMs !== undefined) {
+      await background(this.continue(id));
+    } else if (TERMINAL.has(run.status) && this.options.retentionMs !== undefined && !options.background) {
       const due = Date.parse(run.updatedAt) + this.options.retentionMs;
       if (due > Date.now()) return due;
       await this.deleteRun(id);
     }
-    return undefined;
+    if (!options.background) return undefined;
+    const current = await this.store.getRun(id);
+    if (current?.status === "sleeping") return current.wakeAt ? Date.parse(current.wakeAt) : Date.now();
+    return current?.status === "running" ? Date.now() + this.leaseMs : undefined;
   }
 
   /** Wakes a sleeping run now and starts it; `done` settles when that execution stops. */
@@ -833,7 +865,8 @@ export class RunEngine {
     let yielded = false;
     try {
       // Watchdog: if this process dies mid-run, the host's scheduler continues the run once the lease lapses.
-      await this.options.scheduleWake?.(id, Date.now() + this.leaseMs);
+      if (this.options.scheduleWake) await this.options.scheduleWake(id, Date.now() + this.leaseMs);
+      else await this.tellClock(id, Date.now() + this.leaseMs);
       const durable = createDurable();
       let output: unknown;
       let failure: unknown;
@@ -940,11 +973,20 @@ export class RunEngine {
     }
   }
 
+  /** Registers a wake-up with the outside clock, if it is on here. False when it replaces in-process timers. */
+  private async tellClock(id: string, at: number): Promise<boolean> {
+    const clock = this.options.clock;
+    const mode = clock?.mode() ?? "off";
+    if (mode !== "off") await clock!.schedule(id, at);
+    return mode !== "only";
+  }
+
   private async armTimer(id: string, wakeAt: number) {
     if (this.options.scheduleWake) {
       await this.options.scheduleWake(id, wakeAt);
       return;
     }
+    if (!(await this.tellClock(id, wakeAt))) return;
     const delay = wakeAt - Date.now();
     if (delay > MAX_LOCAL_SLEEP_MS) return;
     this.clearTimer(id);

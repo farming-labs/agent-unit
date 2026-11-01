@@ -108,7 +108,10 @@ A runtime decides where runs live and what wakes them; agent code and the HTTP c
 in every runtime.
 
 - **Default:** runs, journals and events in any unstorage driver; leases for exclusivity; in-process
-  timers plus a scheduled sweep (or `POST /__agent-unit/sweep`) for wake-ups and recovery.
+  timers plus a scheduled sweep (or `POST /__agent-unit/sweep`) for wake-ups and recovery. With
+  `FARMJS_API_KEY` and an https URL for the deployment (unless `AGENT_UNIT_CLOCK` is `local`),
+  Farm.js Infra also calls each run at its wake time and once its lease could lapse
+  (`POST /__agent-unit/wake/:id`); on serverless hosts it replaces the in-process timers.
 - **Durable Objects** (Cloudflare): one object per run, named by its id, holds the journal and events
   and is the only executor. The object's alarm is armed as a watchdog while the run executes, set to
   the wake time when it sleeps, and set to now when it yields; when it fires, the object wakes,
