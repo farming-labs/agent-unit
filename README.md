@@ -665,20 +665,20 @@ const agents = await createDevHandler({ root, config }); // or configFile, as fo
 // on shutdown: agents.close();
 ```
 
-In a [Farm](https://farmjs.dev) app, mount it with one catch-all API route, which works in
-`farm dev` and every production target (see [`examples/farm-app`](./examples/farm-app)):
+In a [Farm](https://farmjs.dev) app, add the [`@farm.js/agent`](https://farmjs.dev/docs/integrations/agent)
+integration. It serves the agents in `src/agents` in `farm dev` and builds them with this module for
+every Farm deploy target, with the settings in `farm.config.ts` (see [`examples/farm-app`](./examples/farm-app)):
 
 ```ts
-// src/app/api/ai/[...path]/route.ts
-import { after } from "@farm.js/core/after";
-import { agents } from "../../../../agents/server"; // createAgentUnit({ …, basePath: "/api/ai" })
+// farm.config.ts
+import { agent } from "@farm.js/agent";
+import { defineConfig } from "@farm.js/core";
 
-const handle = (request: Request) =>
-  agents.handler(request, { waitUntil: (work) => after(async () => void (await work)) });
-
-export const GET = handle;
-export const POST = handle;
-export const DELETE = handle;
+export default defineConfig({
+  integrations: {
+    agent: agent({ framework: "ai-sdk", storage: { driver: "redis", url: process.env.REDIS_URL } }),
+  },
+});
 ```
 
 Anywhere else that speaks Fetch (Hono, Next.js route handlers, Bun.serve, Deno.serve, a Worker):
