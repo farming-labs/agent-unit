@@ -54,6 +54,19 @@ export async function verifyFarmjsSignature(apiKey: string, header: string, meth
   return safeEqual(await sign(apiKey, t, method, pathname), v1);
 }
 
+/**
+ * Where Farm.js Infra is and the headers that identify the app to it: the key, and the environment
+ * and project when they are set. Shared by every call agent-unit makes to Infra.
+ */
+export function farmjsInfra(env: Record<string, string | undefined>): { api: string; headers: Record<string, string> } | undefined {
+  const apiKey = env.FARMJS_API_KEY;
+  if (!apiKey) return undefined;
+  const headers: Record<string, string> = { authorization: `Bearer ${apiKey}` };
+  if (env.FARMJS_ENVIRONMENT) headers["x-farm-environment"] = env.FARMJS_ENVIRONMENT;
+  if (env.FARMJS_PROJECT_ID) headers["x-farm-project"] = env.FARMJS_PROJECT_ID;
+  return { api: (env.FARMJS_API_URL || DEFAULT_API_URL).replace(/\/+$/, ""), headers };
+}
+
 /** Hosts that freeze between requests, where an in-process timer would not fire. */
 function serverless(env: Record<string, string | undefined>): boolean {
   if (env.VERCEL || env.NETLIFY || env.AWS_LAMBDA_FUNCTION_NAME) return true;
@@ -108,14 +121,11 @@ export function farmClock(options: FarmClockOptions): WakeClock {
     const wakes = [...(pending ?? [])];
     pending = undefined;
     batch = undefined;
-    const env = options.env();
-    const apiKey = env.FARMJS_API_KEY;
+    const infra = farmjsInfra(options.env());
     const endpoint = options.endpoint();
-    if (!apiKey || !endpoint || !wakes.length) return;
-    const api = (env.FARMJS_API_URL || DEFAULT_API_URL).replace(/\/+$/, "");
-    const headers: Record<string, string> = { authorization: `Bearer ${apiKey}`, "content-type": "application/json" };
-    if (env.FARMJS_ENVIRONMENT) headers["x-farm-environment"] = env.FARMJS_ENVIRONMENT;
-    if (env.FARMJS_PROJECT_ID) headers["x-farm-project"] = env.FARMJS_PROJECT_ID;
+    if (!infra || !endpoint || !wakes.length) return;
+    const { api } = infra;
+    const headers = { ...infra.headers, "content-type": "application/json" };
     // A sleep longer than Infra takes is registered at its limit; the wake then answers the real time.
     const latest = Date.now() + MAX_AHEAD_MS;
     const requests: Promise<void>[] = [];
