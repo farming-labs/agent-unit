@@ -3,7 +3,7 @@ import { createRequire } from "node:module";
 import { dirname, join, resolve } from "node:path";
 import { parseDuration } from "@agent-unit/runtime/runtime";
 import { builtinDriverDependencies, builtinDrivers } from "unstorage";
-import type { StorageConfig } from "../config";
+import type { AgentUnitConfig, StorageConfig } from "../config";
 import { buildManifest } from "./agents";
 import { detectAdapters } from "./adapters";
 import { appNitro, distEntry, ownNitro, presetEntryKey, toImport, type LoadedProject, type NitroImport } from "./load";
@@ -44,14 +44,58 @@ export function resolveBudget(project: LoadedProject, preset: string): number | 
   return match ? parseDuration(match[1]) : undefined;
 }
 
-export function resolveStorage(project: LoadedProject, preset: string, warn: (message: string) => void): StorageConfig {
-  if (project.config.storage) return withSafeDefaults(project.config.storage);
-  if (SERVER_PRESETS.test(preset)) return DEFAULT_STORAGE;
-  warn(
-    `The "${preset}" preset has no durable local disk, so runs would be lost between invocations. ` +
-      `Set \`storage\` in agent-unit.config.ts to a shared driver (upstash, redis, cloudflare-kv-binding, netlify-blobs, ...). Using memory for now.`,
-  );
-  return { driver: "memory" };
+/** Farm.js storage, as the build records it: the runtime keeps runs there with FARMJS_API_KEY. */
+export const FARMJS_STORAGE: StorageConfig = { driver: "farmjs" };
+
+/** `storage` as the config sets it, with `"farmjs"` and `"memory"` as drivers. */
+export function storageConfig(storage: AgentUnitConfig["storage"]): StorageConfig | undefined {
+  if (typeof storage !== "string") return storage;
+  if (storage !== "farmjs" && storage !== "memory") {
+    throw new Error(`agent-unit: storage is "farmjs", "memory" or an unstorage driver such as { driver: "redis", url: process.env.REDIS_URL }, not "${storage}".`);
+  }
+  return { driver: storage };
+}
+
+const objectKey = (name: string) => (/^[A-Za-z_$][\w$]*$/.test(name) ? name : JSON.stringify(name));
+
+/** Why a build for `preset` without storage stops, and every way to give it some. */
+export function missingStorageError(preset: string): string {
+  const lines = [
+    `agent-unit: runs on ${preset} need storage that outlives a request, and none is set. Either:`,
+    `  - add FARMJS_API_KEY (from app.farmjs.dev) to the build's environment to use Farm.js storage, or set storage: "farmjs"`,
+    `  - set storage, e.g. { driver: "upstash" } or { driver: "redis", url: process.env.REDIS_URL }`,
+    `  - set it per target: presets: { ${objectKey(preset)}: { storage: { ... } } }`,
+  ];
+  if (/^cloudflare/.test(preset)) lines.push(`  - use runtime: "durable-objects", which keeps each run in its own Durable Object`);
+  lines.push(`  - or storage: "memory" if runs may be lost between requests`);
+  return lines.join("\n");
+}
+
+export interface ResolveStorageOptions {
+  /** A dev server (or Nitro's prerenderer) runs on this machine: runs stay on its disk, with no network. */
+  dev?: boolean;
+  /** Where FARMJS_API_KEY is looked for. Default: the build's environment. */
+  env?: Record<string, string | undefined>;
+}
+
+/**
+ * Where this build keeps runs. The config's choice wins; without one, Farm.js storage when the build
+ * has FARMJS_API_KEY, the disk on servers, and on hosts without a durable disk the build stops.
+ */
+export function resolveStorage(project: LoadedProject, preset: string, warn: (message: string) => void, options: ResolveStorageOptions = {}): StorageConfig {
+  const configured = storageConfig(project.config.storage);
+  const local = options.dev === true || preset === "nitro-prerender";
+  if (configured) return local && configured.driver === "farmjs" ? DEFAULT_STORAGE : withSafeDefaults(configured);
+  if (local) return DEFAULT_STORAGE;
+  if ((options.env ?? process.env).FARMJS_API_KEY) return FARMJS_STORAGE;
+  if (SERVER_PRESETS.test(preset)) {
+    warn(
+      `agent-unit: runs are kept on disk in ${DEFAULT_STORAGE.base}, which a container without a volume loses on every redeploy. ` +
+        `Add FARMJS_API_KEY (from app.farmjs.dev) to the build's environment to keep them in Farm.js storage, or set \`storage\`.`,
+    );
+    return DEFAULT_STORAGE;
+  }
+  throw new Error(missingStorageError(preset));
 }
 
 /** Whether `name` is installed where the app resolves packages. */
@@ -63,12 +107,26 @@ function installed(root: string, name: string): boolean {
 }
 
 /**
+ * Code that reads the config's storage where the server runs, and stops if it is not the driver the
+ * build includes. With no storage in the config at build, the build's default for the host applies.
+ */
+function configuredStorage(name: string, fallback: StorageConfig | undefined): string {
+  return `// Run storage, from the config as it evaluates here: a URL or token it reads from the environment
+// is read where the server runs, never written into the build.
+const storageConfig = (typeof settings.storage === "string" ? { driver: settings.storage } : settings.storage) ?? ${fallback ? JSON.stringify(fallback) : "undefined"};
+if (storageConfig?.driver !== ${JSON.stringify(name)}) {
+  throw new Error(\`agent-unit: this build keeps runs in ${JSON.stringify(name)} storage, but agent-unit.config.ts chooses "\${storageConfig?.driver}" where it runs. Give the build and the server the same environment, or set storage per host with presets.\`);
+}
+`;
+}
+
+/**
  * The code that mounts run storage when the server starts. Only the driver is chosen at build; its
  * options come from agent-unit.config.ts as it evaluates where the server runs, so a URL or token the
  * config reads from the environment is read there and never written into the build (Nitro's own
  * storage mounts serialize their options into the output).
  */
-function storageMount(project: LoadedProject, dir: string, storage: StorageConfig): { imports: string[]; code: string } {
+function storageMount(project: LoadedProject, dir: string, storage: StorageConfig, readConfig: string): { imports: string[]; code: string } {
   const name = storage.driver;
   const builtin = (builtinDrivers as Record<string, string>)[name];
   // agent-unit's own unstorage, which an app on a strict package manager may not resolve itself.
@@ -79,18 +137,10 @@ function storageMount(project: LoadedProject, dir: string, storage: StorageConfi
       if (!installed(project.root, dep.name)) throw new Error(`agent-unit: the "${name}" storage driver needs ${dep.name}. Install it in your app: npm install ${dep.name}`);
       return `${option}: () => import(${JSON.stringify(dep.import ?? dep.name)}), `;
     });
-  // With no storage in the config, the build's default for this host (disk or memory) applies.
-  const fallback = project.config.storage ? "undefined" : JSON.stringify(storage);
   const defaults = /^(fs|fs-lite)$/.test(name) ? "atomic: true, " : "";
   return {
     imports: [`import storageDriver from ${module};`],
-    code: `// Run storage, from the config as it evaluates here: a URL or token it reads from the environment
-// is read where the server runs, never written into the build.
-const storageConfig = settings.storage ?? ${fallback};
-if (storageConfig?.driver !== ${JSON.stringify(name)}) {
-  throw new Error(\`agent-unit: this build keeps runs in ${JSON.stringify(name)} storage, but agent-unit.config.ts chooses "\${storageConfig?.driver}" where it runs. Give the build and the server the same environment, or set storage per host with presets.\`);
-}
-const { driver: _driver, ...storageOptions } = storageConfig;
+    code: `${readConfig}const { driver: _driver, ...storageOptions } = storageConfig;
 ${
       name === "upstash"
         ? `// Upstash's own names, or the ones Vercel gives an Upstash database from its Marketplace (as
@@ -131,11 +181,22 @@ export function generateEntry(
   mkdirSync(dir, { recursive: true });
   const adapters = detectAdapters(project.root, project.config.framework);
   const durable = options.runtime === "durable-objects";
+  // Farm.js storage is the engine's own, not an unstorage mount in Nitro.
+  const farmjs = !durable && options.storage?.driver === FARMJS_STORAGE.driver;
+  const configured = storageConfig(project.config.storage);
+  // Storage the config sets is read again where the server runs, unless a dev server (or Nitro's
+  // prerenderer) keeps runs on its own disk instead of the Farm.js storage the config chooses.
+  const readConfig =
+    options.storage === undefined
+      ? ""
+      : configured && configured.driver !== options.storage.driver
+        ? `// On this machine's disk, whatever the config chooses for deployments.\nconst storageConfig = ${JSON.stringify(options.storage)};\n`
+        : configuredStorage(options.storage.driver, configured ? undefined : options.storage);
   const imports = [
     durable
       ? `import { createDurableAgentUnit } from ${JSON.stringify(distEntry("cloudflare"))};`
       : `import { createAgentUnit } from ${JSON.stringify(distEntry("server"))};`,
-    ...(durable
+    ...(durable || farmjs
       ? []
       : [
           `import { useStorage } from ${nitro("nitro/storage")};`,
@@ -145,7 +206,7 @@ export function generateEntry(
     ...adapters.map((adapter) => `import { ${adapter.exportName} } from ${JSON.stringify(distEntry(adapter.entry))};`),
   ];
   imports.push(project.configFile ? `import configExport from ${toImport(dir, project.configFile)};` : `const configExport = {};`);
-  const mount = !durable && options.storage ? storageMount(project, dir, options.storage) : undefined;
+  const mount = !durable && !farmjs && options.storage ? storageMount(project, dir, options.storage, readConfig) : undefined;
   if (mount) imports.push(...mount.imports);
   // The config evaluates where the server runs; the built preset's entry applies over it, as at build.
   const presetEntry = options.preset === undefined ? undefined : presetEntryKey(project.config, options.preset);
@@ -225,14 +286,20 @@ export function getUnit() {
 
 function createUnit(config) {
 ${settingsLine}
-${mount?.code ?? ""}
+${
+      farmjs
+        ? `${readConfig}// Farm.js storage, with FARMJS_API_KEY from where the server runs: runs and leases change atomically.
+const storage = "farmjs";
+`
+        : `${mount?.code ?? ""}
 // On Redis, runs and leases change atomically, so two instances never overwrite each other.
 const storageView = useStorage("agent-unit");
 const mounted = useStorage().getMount("agent-unit:")?.driver;
 const storage = mounted?.name === "redis" && typeof mounted.getInstance === "function"
   ? new RunStore(storageView, redisCoordination({ client: () => mounted.getInstance(), base: mounted.options?.base }))
   : storageView;
-
+`
+    }
 // Secrets come from Workers bindings when present, otherwise from the process environment.
 const env = new Proxy({}, {
   get: (_, key) => typeof key === "string" ? (globalThis.__env__?.[key] ?? globalThis.process?.env?.[key]) : undefined,

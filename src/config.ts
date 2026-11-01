@@ -92,11 +92,14 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
    */
   framework?: AgentFramework;
   /**
-   * Durable storage for runs (an unstorage driver). Default: the filesystem (`.data/agent-unit`)
-   * on servers. Serverless presets need a shared driver such as redis, upstash, cloudflare-kv-binding,
-   * upstash or netlify-blobs, because their filesystem does not survive between invocations.
+   * Where runs are kept: `"farmjs"` (Farm.js storage, with FARMJS_API_KEY where the server runs),
+   * `"memory"` (lost between requests on serverless hosts, and on restart), or an unstorage driver
+   * such as `{ driver: "redis", url: process.env.REDIS_URL }`. Default: Farm.js storage when the build
+   * has FARMJS_API_KEY; otherwise the filesystem (`.data/agent-unit`) on Node, Bun and Deno, and other
+   * hosts must set one, since their filesystem does not survive between invocations.
+   * `agent-unit dev` keeps runs on disk unless this is `"memory"` or a driver.
    */
-  storage?: StorageConfig;
+  storage?: StorageConfig | "farmjs" | "memory";
   /** Nitro preset to build for. Default: `node-server`, or the NITRO_PRESET environment variable. */
   preset?: string;
   /**
@@ -111,7 +114,7 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
    * per preset (25s on Workers, 240s on Vercel), unlimited on servers. `false` disables it.
    */
   budget?: string | number | false;
-  /** Delete finished runs, with their journal and events, this long after they finish (`"30d"`). Applied by the sweep. */
+  /** Delete finished runs, with their journal and events, this long after they finish (`"30d"`). Applied by the sweep. Default: 30 days in Farm.js storage, otherwise never. */
   retention?: string | number;
   /** Cron for the sweep that wakes sleepers and recovers stalled runs. Default every minute. `false` disables it. */
   sweep?: string | false;

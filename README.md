@@ -258,14 +258,14 @@ npx agent-unit build --preset <preset>
 
 | Host | Preset | Storage | Long runs | Sleep and recovery |
 | --- | --- | --- | --- | --- |
-| Node | `node-server` (default) | Filesystem by default | Unlimited | In-process timers + sweep every minute |
-| Bun | `bun` | Filesystem by default | Unlimited | In-process timers + sweep |
-| Deno | `deno-server` | Filesystem by default | Unlimited | In-process timers + sweep |
+| Node | `node-server` (default) | [Farm.js storage](#farmjs-storage) with `FARMJS_API_KEY`, otherwise the filesystem | Unlimited | In-process timers + sweep every minute |
+| Bun | `bun` | Farm.js storage with `FARMJS_API_KEY`, otherwise the filesystem | Unlimited | In-process timers + sweep |
+| Deno | `deno-server` | Farm.js storage with `FARMJS_API_KEY`, otherwise the filesystem | Unlimited | In-process timers + sweep |
 | Cloudflare Workers | `cloudflare-module` with `runtime: "durable-objects"` | One Durable Object per run (no storage to configure) | Yields every 10 min and continues from an alarm | Each run's own alarm |
-| Cloudflare Workers (KV) | `cloudflare-module` | Set `storage` (for example `cloudflare-kv-binding`) | Yields every 25s and continues | Cron Trigger runs the sweep |
-| Vercel | `vercel` | Set `storage` (Upstash, Redis, …) | Yields every 240s and continues | Vercel Cron runs the sweep (see below for the Hobby plan) |
-| Netlify | `netlify` | Set `storage` (`netlify-blobs`, Redis, …) | Yields every 20s; finishes in the request | Generated scheduled function (needs `AGENT_UNIT_SECRET` or `FARMJS_API_KEY`) |
-| AWS Lambda | `aws-lambda` | Set `storage` (Redis, Upstash, a database via db0, …) | Yields every 25s; finishes in the request | [Farm.js Infra](#wake-runs-with-farmjs-infra) with `FARMJS_API_KEY` and `AGENT_UNIT_URL`, or point EventBridge at `POST /__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` |
+| Cloudflare Workers (KV) | `cloudflare-module` | Farm.js storage with `FARMJS_API_KEY`, or set `storage` (for example `cloudflare-kv-binding`) | Yields every 25s and continues | Cron Trigger runs the sweep |
+| Vercel | `vercel` | Farm.js storage with `FARMJS_API_KEY`, or set `storage` (Upstash, Redis, …) | Yields every 240s and continues | Vercel Cron runs the sweep (see below for the Hobby plan) |
+| Netlify | `netlify` | Farm.js storage with `FARMJS_API_KEY`, or set `storage` (`netlify-blobs`, Redis, …) | Yields every 20s; finishes in the request | Generated scheduled function (needs `AGENT_UNIT_SECRET` or `FARMJS_API_KEY`) |
+| AWS Lambda | `aws-lambda` | Farm.js storage with `FARMJS_API_KEY`, or set `storage` (Redis, Upstash, a database via db0, …) | Yields every 25s; finishes in the request | [Farm.js Infra](#wake-runs-with-farmjs-infra) with `FARMJS_API_KEY` and `AGENT_UNIT_URL`, or point EventBridge at `POST /__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` |
 
 The storage, long-run and sweep columns are for agent-unit's engine; your own server keeps whatever
 storage it already uses.
@@ -276,8 +276,9 @@ Agents SDK import these when they load, and one missing module stops the whole W
 Your own `compatibility_flags` and `alias` settings are kept.
 
 Any other [Nitro preset](https://nitro.build/deploy) works too. Serverless hosts need shared
-storage, because their filesystem does not survive between invocations; without one the build warns
-and keeps runs in memory, which an invocation does not keep. Set `AGENT_UNIT_SECRET` in production: it protects the internal continue and sweep
+storage, because their filesystem does not survive between invocations; without `storage` or
+`FARMJS_API_KEY` the build for one stops and lists the ways to set it (see
+[Farm.js storage](#farmjs-storage)). Set `AGENT_UNIT_SECRET` in production: it protects the internal continue and sweep
 endpoints, which serverless hosts use to continue long runs (`FARMJS_API_KEY` does too, see
 [Wake runs with Farm.js Infra](#wake-runs-with-farmjs-infra)). A long run continues in a fresh
 invocation at the deployment's own URL, read from `AGENT_UNIT_URL` (or `VERCEL_URL`, Netlify's `URL`,
@@ -316,6 +317,57 @@ runtime wakes runs from their own alarms and does not use Infra.
 | `FARMJS_ENVIRONMENT` | `production`, `staging` or `development`. Default: the key's own environment |
 | `FARMJS_PROJECT_ID` | The project the runs belong to, for an organization-wide key |
 | `FARMJS_API_URL` | Default `https://app.farmjs.dev` |
+
+### Farm.js storage
+
+Add `FARMJS_API_KEY` to the build's environment and to the host's, and runs persist on every host the
+default runtime runs on, Vercel, Netlify, AWS Lambda, Workers, Node, Bun and Deno, with no Redis or
+database to set up. Each project and environment keeps its own runs, and saves and leases are exact,
+so any number of instances share them (see [Several servers, one store](#several-servers-one-store)).
+
+With no `storage` in the config, a build that has the key keeps runs in Farm.js storage. Set it
+explicitly to choose it whatever the build's environment has; the key is then read only where the
+server runs:
+
+```ts
+storage: "farmjs",                          // Farm.js storage, the key read where the server runs
+presets: { vercel: { storage: "farmjs" } }, // on one host only
+storage: "memory",                          // in the process: demos and tests that may lose runs between requests
+```
+
+Without the key and without `storage`:
+
+| Build for | Runs are kept |
+| --- | --- |
+| Node, Bun, Deno | On disk in `.data/agent-unit`, and the build warns: a container without a volume loses them on every redeploy |
+| Vercel, Netlify, AWS Lambda, Workers (default runtime) | Nowhere: the build stops, saying what to set |
+| Workers with `runtime: "durable-objects"` | In each run's own Durable Object, as always |
+
+```
+agent-unit: runs on vercel need storage that outlives a request, and none is set. Either:
+  - add FARMJS_API_KEY (from app.farmjs.dev) to the build's environment to use Farm.js storage, or set storage: "farmjs"
+  - set storage, e.g. { driver: "upstash" } or { driver: "redis", url: process.env.REDIS_URL }
+  - set it per target: presets: { vercel: { storage: { ... } } }
+  - or storage: "memory" if runs may be lost between requests
+```
+
+`agent-unit dev` (and `farm dev`) keeps runs on disk and makes no calls to Farm.js, unless `storage`
+is `"memory"` or a driver. A server built for Farm.js storage that has no `FARMJS_API_KEY` where it
+runs says so once as it starts, and each request that touches a run fails (a 500, with the same
+message in the log) until the key is set.
+
+The key needs the `agents:runtime` permission, as for the clock; `FARMJS_ENVIRONMENT`,
+`FARMJS_PROJECT_ID` and `FARMJS_API_URL` apply to both (see the table above). Limits:
+
+- A value (a run record, a journal entry, an event, a state value) is at most 1 MiB as JSON, and a
+  storage key at most 512 bytes. A listing returns at most 10,000 keys.
+- Finished runs are deleted 30 days after they finish, unless `retention` says otherwise.
+- Each read and write is a request to Farm.js storage. One that fails (storage unreachable, a key
+  refused) throws an error that names Farm.js storage and the HTTP status, and the step or request
+  fails with it.
+
+With `createAgentUnit`, pass `storage: "farmjs"`, or leave `storage` out with the key set.
+`farmjsStore()` from `agent-unit/server` is the same store, for `new RunEngine({ store })`.
 
 ### Deploy in one command
 
@@ -755,7 +807,7 @@ import { createAgentUnit } from "agent-unit/server";
 const unit = createAgentUnit({
   agents: { support },
   adapters: [aiSdkAdapter],      // from agent-unit/adapters/ai-sdk: the frameworks your agents use
-  storage,                       // any unstorage instance
+  storage,                       // any unstorage instance, "farmjs" or "memory"
   basePath: "/api/agents",
   // Second argument: what the request does, with the run's agent and thread taken from storage.
   // Here each user's runs are on threads named "<user id>:…", so a run must be started with one.
@@ -865,9 +917,11 @@ See [spec/adapters.md](./spec/adapters.md) for adapters of frameworks that keep 
 
 ### Several servers, one store
 
-Run as many instances as you like over one store. With Redis it is exact out of the box:
+Run as many instances as you like over one store. With [Farm.js storage](#farmjs-storage) or
+Redis it is exact out of the box:
 
 ```ts
+storage: "farmjs", // or just FARMJS_API_KEY in the build's environment
 storage: { driver: "redis", url: process.env.REDIS_URL },
 ```
 
@@ -893,9 +947,9 @@ conditional write, such as a database `UPDATE … WHERE version = ?`.
 
 - Leases make one execution run a run at a time, renewed while it works, and every change to a run
   record is a versioned save: it lands only if nobody else saved the run since it was read, so two
-  processes racing to resume, cancel or wake a run cannot both win (the loser gets a 409). On Redis
-  both are atomic, wired in automatically by `agent-unit build` and `agent-unit dev` when `storage`
-  uses the `redis` driver. On other shared stores the save is check-then-write, which is exact
+  processes racing to resume, cancel or wake a run cannot both win (the loser gets a 409). In
+  Farm.js storage and on Redis both are atomic, wired in automatically by `agent-unit build` (and,
+  for the `redis` driver, by `agent-unit dev`). On other shared stores the save is check-then-write, which is exact
   within a process and best effort across processes racing within milliseconds; pass atomic
   `leases` and `atomic` writes to `RunStore` for those (see [Several servers, one store](#several-servers-one-store)), or use the Durable Objects
   runtime, where each run's object is its only executor and saves go through the index atomically.
@@ -931,14 +985,14 @@ import { defineConfig } from "agent-unit";
 
 export default defineConfig({
   name: "support",                                   // manifest, MCP and A2A name
-  storage: { driver: "redis", url: process.env.REDIS_URL },  // any unstorage driver
+  storage: { driver: "redis", url: process.env.REDIS_URL },  // any unstorage driver, "farmjs" or "memory"
   preset: "vercel",                                  // or --preset
   runtime: "default",                                // or "durable-objects" on Cloudflare
   budget: "60s",                                     // yield and continue after this long
   sweep: "*/5 * * * *",                              // sweep schedule, or false
   basePath: "/api/agents",
   authorize: (request) => request.headers.get("authorization") === `Bearer ${process.env.API_TOKEN}`,
-  retention: "30d",                                  // delete finished runs 30 days after they finish
+  retention: "30d",                                  // delete finished runs 30 days after they finish (the default in Farm.js storage)
   maxBodyBytes: 1_000_000,                           // largest accepted request body (default 1 MB)
   // server: "./src/server.ts",                      // your own server instead (see "Your own server")
   // agents: { support },                            // instead of the agents/ directory
