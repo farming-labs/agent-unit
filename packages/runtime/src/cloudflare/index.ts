@@ -6,6 +6,7 @@ import { functionAdapter, resolveAgent } from "../agents";
 import { AgentUnitError, RunEngine, type LoadedAgent, type ResumeOptions } from "../runtime/engine";
 import { RunStore, type ListRunsFilter } from "../runtime/store";
 import { parseDuration, randomId } from "../runtime/util";
+import { farmApprovals } from "../server/farmjs";
 import { createHandler, type HandlerOptions, type RequestContext } from "../server/handler";
 import type { RunService } from "../server/service";
 import type { AgentEvent, Manifest, RunInput, RunRecord } from "../types";
@@ -95,6 +96,17 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
   const agents = () => (loaded ??= Object.entries(options.agents).map(([name, agent]) => resolveAgent(name, agent, adapters)));
   const budget = options.budget === false ? undefined : parseDuration(options.budget ?? "10m");
   const retention = options.retention === undefined ? undefined : parseDuration(options.retention);
+  const basePath = (options.basePath ?? "").replace(/\/+$/, "");
+  /** Where Farm.js Infra answers interrupts: AGENT_UNIT_URL's origin with the base path, never a request's Host. */
+  const infraEndpoint = (env: Bindings): string | undefined => {
+    const site = env.AGENT_UNIT_URL;
+    if (typeof site !== "string" || !site) return undefined;
+    try {
+      return `${new URL(site).origin}${basePath}`;
+    } catch {
+      return undefined;
+    }
+  };
 
   const namespace = <Stub>(env: Bindings, binding: string) => {
     const value = env[binding] as DurableObjectNamespaceLike<Stub> | undefined;
@@ -171,6 +183,8 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
         env: this.env as Record<string, string | undefined>,
         waitUntil: (promise) => this.ctx.waitUntil(promise),
         scheduleWake: (_id, at) => this.ctx.storage.setAlarm(at),
+        // Alarms wake runs here, but the interrupts they wait on still go to Farm.js Infra for approval.
+        approvals: farmApprovals({ env: () => this.env as Record<string, string | undefined>, endpoint: () => infraEndpoint(this.env) }),
         // Every cancel reaches this object, where the run executes: no need to poll the index for one.
         remoteCancelCheck: false,
       }));

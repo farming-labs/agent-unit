@@ -298,8 +298,9 @@ at it again. Infra then calls `POST /__agent-unit/wake/<run>` on your deployment
 key, and the engine wakes or continues the run and answers when to call again.
 
 Infra calls the deployment's own URL, the one long runs continue at (`AGENT_UNIT_URL`, `VERCEL_URL`,
-Netlify's `URL` or the `origin` option), with the base path, and only over https; without one the
-server says so once and runs wake as before. On a Vercel production deployment it calls the
+Netlify's `URL` or the `origin` option), with the base path, and only over https (or a localhost URL
+while `FARMJS_API_URL` is a local Infra too); without one the server says so once and runs wake as
+before. On a Vercel production deployment it calls the
 project's production domain instead, since per-deployment URLs sit behind Deployment Protection;
 preview deployments need `AGENT_UNIT_URL` set to a URL Infra can reach. On Vercel, Netlify, AWS Lambda and Workers, Infra is
 the clock. On Node, Bun and Deno the in-process timers keep running and Infra is the backstop for a
@@ -307,12 +308,32 @@ process that stopped. Registering waits two seconds at most and a failure is log
 being down never fails a run or a request. A run that yields still continues in a fresh invocation
 right away, signed with the key when there is no `AGENT_UNIT_SECRET`. The sweep keeps running where
 it is scheduled, and is still what deletes finished runs after `retention`. The Durable Objects
-runtime wakes runs from their own alarms and does not use Infra.
+runtime wakes runs from their own alarms and does not use Infra's clock.
+
+#### Approve interrupts in Farm.js Infra
+
+With the same key, every interrupt a run waits on shows up under Agents > Approvals in the Infra
+dashboard, where a member of the project's organization approves or rejects it, with an optional
+note. Infra then calls `POST /__agent-unit/answer/<run>`, signed with your key, and the run resumes
+with `{ approved, by, note? }`:
+
+```ts
+const decision = await run.interrupt<{ approved: boolean; by: string; note?: string }>("approve-refund", { amount: 18400 });
+if (!decision.approved) return "declined";
+```
+
+This works on every host, the Durable Objects runtime included, and on long-lived servers too, and
+`AGENT_UNIT_CLOCK=local` does not turn it off. An interrupt answered through your own
+`POST /runs/:id/resume`, or a run cancelled while it waits, is marked closed in Infra. Infra answers
+one pause at a time, by its `key`, so a late answer never resumes a later pause of the same name.
+A payload over 16 KB of JSON shows as omitted, and an interrupt name longer than 120 characters is
+not sent (the server says so once). As with wake-ups, registering waits two seconds at most and never
+fails a run.
 
 | Variable | |
 | --- | --- |
 | `FARMJS_API_KEY` | Turns it on |
-| `AGENT_UNIT_CLOCK` | `local` turns it off: in-process timers and the sweep only. `farmjs` requires it, and the server says so when the key is missing |
+| `AGENT_UNIT_CLOCK` | `local` turns the clock off: in-process timers and the sweep only (approvals stay on). `farmjs` requires it, and the server says so when the key is missing |
 | `FARMJS_ENVIRONMENT` | `production`, `staging` or `development`. Default: the key's own environment |
 | `FARMJS_PROJECT_ID` | The project the runs belong to, for an organization-wide key |
 | `FARMJS_API_URL` | Default `https://app.farmjs.dev` |

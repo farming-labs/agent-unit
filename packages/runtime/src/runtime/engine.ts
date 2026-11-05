@@ -54,6 +54,12 @@ export interface EngineOptions {
    */
   clock?: WakeClock;
   /**
+   * An outside place (Farm.js Infra) told about each interrupt a run waits on, so people can answer
+   * it there, and about each one answered or cancelled some other way. `createHandler` sets one up
+   * when FARMJS_API_KEY is set.
+   */
+  approvals?: ApprovalRegistry;
+  /**
    * Check storage about once a second, while a run executes, for a cancel sent to another process.
    * Default true. Runtimes that deliver every cancel to the executing process turn it off.
    */
@@ -80,6 +86,14 @@ export interface WakeClock {
   schedule(runId: string, at: number): Promise<void>;
 }
 
+/** Where `EngineOptions.approvals` sends the interrupts runs wait on. Neither method ever rejects. */
+export interface ApprovalRegistry {
+  /** The run is saved as waiting on this interrupt. */
+  open(run: RunRecord, interrupt: PendingInterrupt): Promise<void>;
+  /** The run stopped waiting on it: answered other than through the registry, or cancelled. */
+  close(run: RunRecord, interrupt: PendingInterrupt): Promise<void>;
+}
+
 export interface HandleWakeOptions {
   /**
    * Takes the execution a wake-up starts: a request's `waitUntil`, or awaiting it where the host
@@ -92,6 +106,11 @@ export interface HandleWakeOptions {
 export interface ResumeOptions {
   /** The `key` of the interrupt the answer is for (from `RUN_INTERRUPTED` or the run's `interrupt`). */
   interrupt?: string;
+  /**
+   * Internal: the answer came through `EngineOptions.approvals` (Farm.js Infra's answer route), which
+   * already knows, so it is not also told the interrupt closed. The HTTP resume route never sets it.
+   */
+  answeredBy?: "approvals";
 }
 
 export class AgentUnitError extends Error {
@@ -526,22 +545,29 @@ export class RunEngine {
       }
       // Only the winner writes its answer, so a losing resume can never replace it.
       await this.store.putJournalEntry(id, key, { kind: "interrupt", answered: true, answer: encode(answer) });
-      return { run, done: this.schedule(id) };
+      const closing = options.answeredBy === "approvals" ? undefined : this.options.approvals?.close(run, previous.interrupt!);
+      const execution = this.schedule(id);
+      // Settles with the execution, so a host that keeps `done` alive keeps the notice alive too.
+      return { run, done: closing ? Promise.all([execution, closing]).then(([record]) => record) : execution };
     });
   }
 
   async cancel(id: string): Promise<RunRecord> {
-    return this.locked(id, () => this.cancelNow(id));
+    // Queued under the lock, awaited after it, so a slow Infra never holds up other changes to the run.
+    const notices: Promise<void>[] = [];
+    const run = await this.locked(id, () => this.cancelNow(id, notices));
+    await Promise.all(notices);
+    return run;
   }
 
-  private async cancelNow(id: string, tries = 0): Promise<RunRecord> {
+  private async cancelNow(id: string, notices: Promise<void>[], tries = 0): Promise<RunRecord> {
     const run = await this.getRun(id);
     if (TERMINAL.has(run.status)) return run;
     const previous = structuredClone(run);
     // Another process changed the run between our read and our write: decide again on what it did.
     const retry = () => {
       if (tries >= 5) throw new AgentUnitError(409, "run_conflict", `Run "${id}" kept changing; try again.`);
-      return this.cancelNow(id, tries + 1);
+      return this.cancelNow(id, notices, tries + 1);
     };
     const execution = this.active.get(id);
     if (execution) {
@@ -573,6 +599,7 @@ export class RunEngine {
     const event = { type: "RUN_CANCELLED", seq: ++run.eventCount, runId: id, timestamp: Date.now() } as AgentEvent;
     run.updatedAt = nowIso();
     if (!(await this.store.putRun(run, previous))) return retry();
+    if (previous.status === "interrupted" && previous.interrupt && this.options.approvals) notices.push(this.options.approvals.close(run, previous.interrupt));
     await this.store.appendEvents(id, [event]);
     this.publish(event);
     this.clearTimer(id);
@@ -951,6 +978,7 @@ export class RunEngine {
       this.active.delete(id);
       if (!execution.leaseLost) await this.store.releaseLease(id, execution.leaseOwner);
     }
+    if (run.status === "interrupted" && run.interrupt && this.options.approvals) await this.openApproval(id, run.interrupt);
     if (yielded) {
       if (this.options.continueRun) await this.options.continueRun(id);
       else if (this.options.scheduleWake) await this.options.scheduleWake(id, Date.now());
@@ -958,6 +986,19 @@ export class RunEngine {
     }
     await this.scheduleExpiry(run);
     return run;
+  }
+
+  /**
+   * Tells `approvals` the run waits on this interrupt, if it still does: under the run's lock, so a
+   * cancel or resume in this process lands wholly before (nothing is sent) or after (its close follows).
+   */
+  private async openApproval(id: string, interrupt: PendingInterrupt) {
+    let sent: Promise<void> | undefined;
+    await this.locked(id, async () => {
+      const current = await this.store.getRun(id);
+      if (current?.status === "interrupted" && current.interrupt?.key === interrupt.key) sent = this.options.approvals!.open(current, current.interrupt);
+    });
+    await sent;
   }
 
   /**
