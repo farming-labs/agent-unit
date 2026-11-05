@@ -313,8 +313,8 @@ runtime wakes runs from their own alarms and does not use Infra's clock.
 #### Approve interrupts in Farm.js Infra
 
 With the same key, every interrupt a run waits on shows up under Agents > Approvals in the Infra
-dashboard, where a member of the project's organization approves or rejects it, with an optional
-note. Infra then calls `POST /__agent-unit/answer/<run>`, signed with your key, and the run resumes
+dashboard, where an owner or admin of the project's organization approves or rejects it, with an
+optional note. See [`examples/infra-approvals`](examples/infra-approvals). Infra then calls `POST /__agent-unit/answer/<run>`, signed with your key, and the run resumes
 with `{ approved, by, note? }`:
 
 ```ts
