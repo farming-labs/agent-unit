@@ -490,6 +490,8 @@ export class RunEngine {
       if (options.interrupt !== undefined && options.interrupt !== run.interrupt.key) {
         throw new AgentUnitError(409, "interrupt_mismatch", `Run "${id}" is waiting on interrupt "${run.interrupt.key}", not "${options.interrupt}".`);
       }
+      // The interrupted record can be visible before its execution finishes releasing ownership.
+      await this.idle(id);
       const previous = structuredClone(run);
       const key = run.interrupt.key;
       delete run.interrupt;

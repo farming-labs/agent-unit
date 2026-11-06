@@ -394,6 +394,9 @@ curl -X POST localhost:3000/runs/run_…/resume \
 Every file in `agents/` is an agent named after the file (`agents/support/index.ts` serves as
 `support`). Export a framework agent or a `defineAgent` agent as the default export.
 
+A run can be resumed as soon as its status is `interrupted`. If its previous execution is still
+finishing, the engine waits for it to settle before starting the resumed execution.
+
 ### Bring your framework
 
 agent-unit recognises agents from these frameworks when your `package.json` depends on them:
