@@ -1148,7 +1148,7 @@ function readme(answers: Required<InitAnswers>, env: string[]): string {
       // Lambda has no scheduler of its own for the sweep, unlike Workers, Vercel and Netlify here.
       if (engine) {
         after.push(
-          "Nothing wakes sleeping runs or recovers stalled ones on Lambda by itself: schedule `POST <Url>/__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` every minute (an EventBridge Scheduler target, or any cron service).",
+          "Nothing wakes sleeping runs or recovers stalled ones on Lambda by itself: set `FARMJS_API_KEY`, and `AGENT_UNIT_URL` to the function's `Url`, and Farm.js Infra does it, or schedule `POST <Url>/__agent-unit/sweep` with `Authorization: Bearer <AGENT_UNIT_SECRET>` every minute (an EventBridge Scheduler target, or any cron service).",
         );
       }
     }
