@@ -93,12 +93,13 @@ export class RunStore {
   private readonly atomic: AtomicWrites;
   private indexReady: Promise<void> | undefined;
 
-  constructor(
-    readonly storage: Storage,
-    options: RunStoreOptions = {},
-  ) {
-    this.leases = options.leases ?? storageLeases(storage);
-    this.atomic = options.atomic ?? checkThenWrite(storage);
+  /** The run storage; on Windows, wrapped so writes survive a reader briefly holding the file. */
+  readonly storage: Storage;
+
+  constructor(storage: Storage, options: RunStoreOptions = {}) {
+    this.storage = retryBusyWrites(storage);
+    this.leases = options.leases ?? storageLeases(this.storage);
+    this.atomic = options.atomic ?? checkThenWrite(this.storage);
   }
 
   /** True when conditional writes are atomic, not check-then-write. */
@@ -343,6 +344,51 @@ export class RunStore {
     let last = known;
     while ((await this.storage.getItem(`events:${id}:${pad(last + 1)}`)) !== null) last++;
     return last;
+  }
+}
+
+const BUSY_CODES: ReadonlySet<unknown> = new Set(["EPERM", "EACCES", "EBUSY"]);
+const BUSY_RETRY_BUDGET_MS = 1_500;
+const retrying = new WeakMap<object, Storage>();
+const retryWrappers = new WeakSet<object>();
+
+/**
+ * On Windows, replacing a file that another handle has open fails with EPERM, EACCES or EBUSY, and
+ * the filesystem drivers write atomically by renaming a temp file over the record. A concurrent read
+ * of the same run (`GET /runs/:id`, a dashboard polling) would make the write, and the run, fail.
+ * Like graceful-fs, `setItem` and `removeItem` retry those errors with a short backoff, then rethrow
+ * the last one unchanged. A failed rename leaves the record as it was, and a retry writes the whole
+ * value again. Other errors, and every error on other platforms, throw at once.
+ *
+ * One wrapper per storage: check-then-write queues by storage identity, so every RunStore over the
+ * same storage must keep sharing the same object. Elsewhere the storage is returned as it is.
+ */
+export function retryBusyWrites(storage: Storage, platform = globalThis.process?.platform): Storage {
+  if (platform !== "win32" || retryWrappers.has(storage)) return storage;
+  let wrapper = retrying.get(storage);
+  if (wrapper) return wrapper;
+  // Inherits everything else, so the wrapper reads, disposes and watches exactly like the storage,
+  // and a method replaced on the wrapper never loops back through the retry.
+  const setItem = (...args: Parameters<Storage["setItem"]>) => retryBusy(() => storage.setItem(...args));
+  const removeItem = (...args: Parameters<Storage["removeItem"]>) => retryBusy(() => storage.removeItem(...args));
+  wrapper = Object.create(storage, {
+    setItem: { value: setItem, writable: true, configurable: true },
+    removeItem: { value: removeItem, writable: true, configurable: true },
+  }) as Storage;
+  retrying.set(storage, wrapper);
+  retryWrappers.add(wrapper);
+  return wrapper;
+}
+
+async function retryBusy<T>(write: () => Promise<T>): Promise<T> {
+  const deadline = Date.now() + BUSY_RETRY_BUDGET_MS;
+  for (let delay = 10; ; delay = Math.min(delay * 2, 200)) {
+    try {
+      return await write();
+    } catch (error) {
+      if (!BUSY_CODES.has((error as { code?: unknown } | null)?.code) || Date.now() + delay > deadline) throw error;
+      await new Promise((resolve) => setTimeout(resolve, delay));
+    }
   }
 }
 
