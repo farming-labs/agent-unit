@@ -11,7 +11,19 @@ import {
   type RunRecord,
   type TokenUsage,
 } from "../types";
-import { currentFrame, idempotencyKey, RunHalted, runInFrame, runWithContext, type RunInternals, type RunState, type StepInfo, type StepOptions } from "./context";
+import {
+  currentFrame,
+  idempotencyKey,
+  InterruptTimeoutError,
+  RunHalted,
+  runInFrame,
+  runWithContext,
+  type InterruptOptions,
+  type RunInternals,
+  type RunState,
+  type StepInfo,
+  type StepOptions,
+} from "./context";
 import { decode, encode, toJsonSafe } from "./serialize";
 import type { Journal, ListRunsFilter, RunStore, StateScope } from "./store";
 import { addUsage, mergeUsage } from "./usage";
@@ -60,6 +72,12 @@ export interface EngineOptions {
    */
   approvals?: ApprovalRegistry;
   /**
+   * Called once a run is saved as waiting on an interrupt, to tell someone (a Slack message, an
+   * email). Best effort: awaited for at most two seconds, kept alive with `waitUntil`, and an error
+   * is logged, never failing or delaying the run. The run's state, not the message, is the record.
+   */
+  onInterrupt?: InterruptHook;
+  /**
    * Check storage about once a second, while a run executes, for a cancel sent to another process.
    * Default true. Runtimes that deliver every cancel to the executing process turn it off.
    */
@@ -78,6 +96,12 @@ export interface EngineOptions {
   deltaBatchMs?: number;
 }
 
+/** `EngineOptions.onInterrupt`: told about each interrupt a run starts waiting on. */
+export type InterruptHook = (event: { run: RunRecord; interrupt: PendingInterrupt }) => void | Promise<void>;
+
+/** How long a run's end waits for `onInterrupt` before going on without it. */
+const INTERRUPT_HOOK_WAIT_MS = 2000;
+
 /** An outside clock for `EngineOptions.clock`; it calls `handleWake` at the times it is given. */
 export interface WakeClock {
   /** "off" here, a "backstop" beside in-process timers (a long-lived server), or the "only" clock (serverless hosts). */
@@ -90,8 +114,11 @@ export interface WakeClock {
 export interface ApprovalRegistry {
   /** The run is saved as waiting on this interrupt. */
   open(run: RunRecord, interrupt: PendingInterrupt): Promise<void>;
-  /** The run stopped waiting on it: answered other than through the registry, or cancelled. */
-  close(run: RunRecord, interrupt: PendingInterrupt): Promise<void>;
+  /**
+   * The run stopped waiting on it: answered other than through the registry, cancelled, or (with
+   * `reason: "expired"`) its `timeout` passed.
+   */
+  close(run: RunRecord, interrupt: PendingInterrupt, reason?: "expired"): Promise<void>;
 }
 
 export interface HandleWakeOptions {
@@ -312,11 +339,17 @@ class RunExecution implements RunInternals {
     return step.idempotencyKey;
   }
 
-  async interrupt<T>(name: string, payload?: unknown): Promise<T> {
+  async interrupt<T>(name: string, payload?: unknown, options: InterruptOptions = {}): Promise<T> {
+    const timeoutMs = options.timeout === undefined ? undefined : parseDuration(options.timeout);
     const key = this.allocate(`interrupt:${name}`);
     const entry = this.journal[key];
-    if (entry?.kind === "interrupt" && entry.answered) return decode(entry.answer) as T;
-    this.park({ kind: "interrupt", interrupt: { key, name, payload: toJsonSafe(payload) } });
+    if (entry?.kind === "interrupt") {
+      if (entry.expired !== undefined) throw new InterruptTimeoutError(name, entry.expired);
+      if (entry.answered) return decode(entry.answer) as T;
+    }
+    const interrupt: PendingInterrupt = { key, name, payload: toJsonSafe(payload) };
+    if (timeoutMs !== undefined) interrupt.expiresAt = new Date(Date.now() + timeoutMs).toISOString();
+    this.park({ kind: "interrupt", interrupt });
     throw new RunHalted("interrupt");
   }
 
@@ -538,6 +571,7 @@ export class RunEngine {
       const previous = structuredClone(run);
       const key = run.interrupt.key;
       delete run.interrupt;
+      delete run.wakeAt;
       run.status = "running";
       run.updatedAt = nowIso();
       // Conditional: another process may have resumed or cancelled it since we read it.
@@ -545,6 +579,7 @@ export class RunEngine {
         const current = await this.getRun(id);
         throw new AgentUnitError(409, "run_not_interrupted", `Run "${id}" is ${current.status}, not interrupted; another request changed it first.`);
       }
+      this.clearTimer(id);
       // Only the winner writes its answer, so a losing resume can never replace it.
       await this.store.putJournalEntry(id, key, { kind: "interrupt", answered: true, answer: encode(answer) });
       const closing = options.answeredBy === "approvals" ? undefined : this.options.approvals?.close(run, previous.interrupt!);
@@ -638,9 +673,9 @@ export class RunEngine {
     const recovered: string[] = [];
     const deleted: string[] = [];
     const work: Promise<unknown>[] = [];
-    // Earliest wake time first, every due sleeper, not just the newest runs.
+    // Earliest wake time first, every due sleeper (and interrupt past its timeout), not just the newest runs.
     for (const id of await this.store.dueSleepers(now)) {
-      const execution = await this.wakeRun(id);
+      const execution = await this.wakeDue(id, now);
       if (execution) {
         woken.push(id);
         work.push(execution.done);
@@ -678,7 +713,12 @@ export class RunEngine {
     if (run.status === "sleeping") {
       const due = run.wakeAt ? Date.parse(run.wakeAt) : 0;
       if (due > Date.now()) return due;
-      const started = await this.wakeRun(id);
+      const started = await this.wakeRun(id, Date.now());
+      if (started) await background(started.done);
+    } else if (run.status === "interrupted" && run.wakeAt) {
+      const due = Date.parse(run.wakeAt);
+      if (due > Date.now()) return due;
+      const started = await this.expireInterrupt(id);
       if (started) await background(started.done);
     } else if (run.status === "running") {
       // Still executing here or held by a live lease elsewhere: look again once that lease could lapse.
@@ -692,14 +732,68 @@ export class RunEngine {
     if (!options.background) return undefined;
     const current = await this.store.getRun(id);
     if (current?.status === "sleeping") return current.wakeAt ? Date.parse(current.wakeAt) : Date.now();
+    if (current?.status === "interrupted" && current.wakeAt) return Date.parse(current.wakeAt);
     return current?.status === "running" ? Date.now() + this.leaseMs : undefined;
   }
 
-  /** Wakes a sleeping run now and starts it; `done` settles when that execution stops. */
-  async wakeRun(id: string): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
+  /** Starts a run whose wake time has come: wakes it from a sleep, or ends an interrupt whose timeout passed. */
+  private async wakeDue(id: string, now = Date.now()): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
+    const run = await this.store.getRun(id);
+    if (run?.status === "interrupted") return this.expireInterrupt(id, now);
+    return this.wakeRun(id, now);
+  }
+
+  /**
+   * An in-process timer fired. The run may have moved on since it was set (answered, woken or
+   * parked again by another process), and Node can fire a millisecond early, so this wakes only
+   * what is due now and sets the timer again for a wake time still ahead.
+   */
+  private async onTimer(id: string) {
+    // The execution that set it may still be saving the parked run.
+    await this.idle(id);
+    const now = Date.now();
+    if (await this.wakeDue(id, now)) return;
+    const run = await this.store.getRun(id);
+    const at = run?.wakeAt && (run.status === "sleeping" || run.status === "interrupted") ? Date.parse(run.wakeAt) : undefined;
+    if (at !== undefined && at > now) this.setTimer(id, at);
+  }
+
+  /**
+   * Ends the wait of a run whose interrupt timed out: the replayed `interrupt` call throws
+   * `InterruptTimeoutError`. An answer that lands first wins; this then does nothing.
+   */
+  private async expireInterrupt(id: string, now = Date.now()): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
+    let closing: Promise<void> | undefined;
+    const started = await this.locked(id, async () => {
+      const run = await this.store.getRun(id);
+      if (!run || run.status !== "interrupted" || !run.interrupt?.expiresAt || !run.wakeAt || Date.parse(run.wakeAt) > now) return undefined;
+      await this.idle(id);
+      const previous = structuredClone(run);
+      const interrupt = run.interrupt;
+      delete run.interrupt;
+      delete run.wakeAt;
+      run.status = "running";
+      run.updatedAt = nowIso();
+      // An answer or a cancel from another process got there first.
+      if (!(await this.store.putRun(run, previous))) return undefined;
+      this.clearTimer(id);
+      await this.store.putJournalEntry(id, interrupt.key, { kind: "interrupt", answered: false, expired: interrupt.expiresAt });
+      closing = this.options.approvals?.close(run, interrupt, "expired");
+      return { done: this.schedule(id) };
+    });
+    if (!started) return undefined;
+    return { done: closing ? Promise.all([started.done, closing]).then(([record]) => record) : started.done };
+  }
+
+  /**
+   * Wakes a sleeping run now and starts it; `done` settles when that execution stops. With `dueBy`,
+   * only a sleep whose wake time has come by then: a timer or sweep never cuts a later sleep short.
+   */
+  async wakeRun(id: string, dueBy?: number): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
     return this.locked(id, async () => {
       const run = await this.store.getRun(id);
       if (!run || run.status !== "sleeping") return undefined;
+      if (dueBy !== undefined && run.wakeAt && Date.parse(run.wakeAt) > dueBy) return undefined;
       const previous = structuredClone(run);
       run.status = "running";
       delete run.wakeAt;
@@ -933,6 +1027,10 @@ export class RunEngine {
         run.status = "interrupted";
         run.interrupt = execution.parked.interrupt;
         execution.emitEvent({ type: "RUN_INTERRUPTED", interrupt: execution.parked.interrupt });
+        if (run.interrupt.expiresAt) {
+          run.wakeAt = run.interrupt.expiresAt;
+          await this.armTimer(id, Date.parse(run.wakeAt));
+        }
       } else if (execution.parked?.kind === "sleep") {
         run.status = "sleeping";
         run.wakeAt = new Date(execution.parked.wakeAt).toISOString();
@@ -980,7 +1078,9 @@ export class RunEngine {
       this.active.delete(id);
       if (!execution.leaseLost) await this.store.releaseLease(id, execution.leaseOwner);
     }
-    if (run.status === "interrupted" && run.interrupt && this.options.approvals) await this.openApproval(id, run.interrupt);
+    if (run.status === "interrupted" && run.interrupt) {
+      await Promise.all([this.options.approvals ? this.openApproval(id, run.interrupt) : undefined, this.notifyInterrupt(run, run.interrupt)]);
+    }
     if (yielded) {
       if (this.options.continueRun) await this.options.continueRun(id);
       else if (this.options.scheduleWake) await this.options.scheduleWake(id, Date.now());
@@ -1001,6 +1101,23 @@ export class RunEngine {
       if (current?.status === "interrupted" && current.interrupt?.key === interrupt.key) sent = this.options.approvals!.open(current, current.interrupt);
     });
     await sent;
+  }
+
+  /** Calls `onInterrupt`, never letting it fail the run or hold it up for long. */
+  private async notifyInterrupt(run: RunRecord, interrupt: PendingInterrupt) {
+    const hook = this.options.onInterrupt;
+    if (!hook) return;
+    const call = (async () => hook({ run: structuredClone(run), interrupt: structuredClone(interrupt) }))().catch((error) =>
+      console.error(`[agent-unit] run ${run.id}: onInterrupt failed for the interrupt "${interrupt.name}":`, error),
+    );
+    this.options.waitUntil?.(call);
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const waited = new Promise((resolve) => {
+      timer = setTimeout(resolve, INTERRUPT_HOOK_WAIT_MS);
+      (timer as { unref?: () => void }).unref?.();
+    });
+    await Promise.race([call, waited]);
+    clearTimeout(timer);
   }
 
   /**
@@ -1030,12 +1147,17 @@ export class RunEngine {
       return;
     }
     if (!(await this.tellClock(id, wakeAt))) return;
+    this.setTimer(id, wakeAt);
+  }
+
+  /** The in-process timer for a wake time up to 15 minutes ahead; longer ones are the sweep's. */
+  private setTimer(id: string, wakeAt: number) {
     const delay = wakeAt - Date.now();
     if (delay > MAX_LOCAL_SLEEP_MS) return;
     this.clearTimer(id);
     const timer = setTimeout(() => {
       this.timers.delete(id);
-      this.wake(id).catch((error) => console.error(`[agent-unit] run ${id} could not wake:`, error));
+      this.onTimer(id).catch((error) => console.error(`[agent-unit] run ${id} could not wake:`, error));
     }, Math.max(0, delay));
     (timer as { unref?: () => void }).unref?.();
     this.timers.set(id, timer);

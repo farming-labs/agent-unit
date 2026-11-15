@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import { defineAgent } from "../packages/runtime/src/agents";
 import { parseEventStream } from "../packages/runtime/src/client";
 import { createDurableAgentUnit } from "../packages/runtime/src/cloudflare";
+import { InterruptTimeoutError } from "../packages/runtime/src/runtime/context";
 import type { AgentEvent } from "../packages/runtime/src/types";
 import { FakeNamespace } from "./fakes/durable-objects";
 
@@ -24,6 +25,14 @@ function setup(budget?: string | false) {
       nap: defineAgent(async (input, run) => {
         await run.sleep(Number(input.ms ?? 10));
         return "rested";
+      }),
+      wait: defineAgent(async (input, run) => {
+        try {
+          return await run.interrupt<string>("approve", undefined, { timeout: Number(input.ms ?? 20) });
+        } catch (error) {
+          if (error instanceof InterruptTimeoutError) return "timed out";
+          throw error;
+        }
       }),
       long: defineAgent(async (_input, run) => {
         for (let i = 0; i < 3; i++) {
@@ -123,6 +132,26 @@ describe("Durable Objects runtime", () => {
       await runs.fireAlarm(run.id);
     }
     expect(await (await call(`/runs/${run.id}`)).json()).toMatchObject({ status: "completed", output: "rested" });
+  });
+
+  it("ends an interrupt's wait from the object's alarm once its timeout passes", async () => {
+    const { call, settle, runs } = setup();
+    const run = await (await call("/agents/wait/runs", post({ input: { ms: 20 } }))).json();
+    await settle();
+    const parked = await (await call(`/runs/${run.id}`)).json();
+    expect(parked).toMatchObject({ status: "interrupted", interrupt: { name: "approve" } });
+    const alarm = runs.storages.get(run.id)!.alarm!;
+    expect(alarm).toBe(Date.parse(parked.interrupt.expiresAt));
+
+    // Firing early re-arms instead of ending the wait.
+    await runs.fireAlarm(run.id);
+    if ((await (await call(`/runs/${run.id}`)).json()).status === "interrupted") {
+      expect(runs.storages.get(run.id)!.alarm).toBe(alarm);
+      await new Promise((resolve) => setTimeout(resolve, Math.max(0, alarm - Date.now() + 5)));
+      await runs.fireAlarm(run.id);
+    }
+    await settle();
+    expect(await (await call(`/runs/${run.id}`)).json()).toMatchObject({ status: "completed", output: "timed out" });
   });
 
   it("continues a yielded run from its alarm", async () => {

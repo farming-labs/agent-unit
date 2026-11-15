@@ -503,6 +503,50 @@ Every file in `agents/` is an agent named after the file (`agents/support/index.
 A run can be resumed as soon as its status is `interrupted`. If its previous execution is still
 finishing, the engine waits for it to settle before starting the resumed execution.
 
+#### Stop waiting after a while
+
+Give an interrupt a `timeout` and it throws `InterruptTimeoutError` once that passes without an
+answer. Catch it to decide what no answer means; nothing is approved by default, and an uncaught
+timeout fails the run:
+
+```ts
+import { InterruptTimeoutError } from "agent-unit";
+
+try {
+  decision = await run.interrupt("approve-refund", order, { timeout: "24h" });
+} catch (error) {
+  if (!(error instanceof InterruptTimeoutError)) throw error;
+  decision = { approved: false };
+}
+```
+
+The deadline (`interrupt.expiresAt` on the run and in `RUN_INTERRUPTED`) is kept by whatever wakes
+sleeping runs on your host: timers and the sweep, a Durable Object's alarm, or Farm.js Infra's clock.
+So it ends on time where sleeps do, and on Vercel's Hobby plan, whose sweep runs once a day, it ends
+at the next sweep. An answer that lands first wins; a later one gets `409`. If the agent pauses
+again after the timeout, a late answer would land on that next pause, so send the pause's `key`
+as `interrupt` in the resume body (`409 interrupt_mismatch` then refuses it).
+
+#### Tell someone a run is waiting
+
+`onInterrupt` in `agent-unit.config.ts` is called once a run starts waiting, with the run and the
+interrupt. Send the message your team reads, with a link to wherever you answer
+`POST /runs/:id/resume`:
+
+```ts
+export default defineConfig({
+  onInterrupt: ({ run, interrupt }) =>
+    fetch(process.env.SLACK_WEBHOOK_URL!, {
+      method: "POST",
+      body: JSON.stringify({ text: `${run.agent} is waiting on ${interrupt.name} (run ${run.id})` }),
+    }),
+});
+```
+
+It is best effort: awaited for at most two seconds, and an error is logged, never failing or holding
+up the run. A process that stops right after the run parks can skip it, so treat the run's status,
+not the message, as the record (`GET /runs?status=interrupted` lists everything waiting).
+
 ### Bring your framework
 
 agent-unit recognises agents from these frameworks when your `package.json` depends on them:
@@ -570,7 +614,7 @@ Inside any run, `useRun()` (or the `run` argument of `defineAgent`) gives you:
 | --- | --- |
 | `run.step(name, fn)` | Run `fn` once; replays return the journaled result. `fn` receives `{ idempotencyKey }` |
 | `run.idempotencyKey()` | The key of the step or tool call running now |
-| `run.interrupt(name, payload)` | Park until `POST /runs/:id/resume` answers, then return the answer |
+| `run.interrupt(name, payload, { timeout? })` | Park until `POST /runs/:id/resume` answers, then return the answer; with `timeout`, throw `InterruptTimeoutError` once it passes |
 | `run.sleep("10m")` | Park until the time passes |
 | `run.state.get/set/delete(key, { scope })` | State scoped to the `thread` (default), the `agent` or the `app` |
 | `run.secrets.get(name)` | Read a secret from the host environment (Workers bindings included) |

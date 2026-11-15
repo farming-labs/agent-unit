@@ -241,6 +241,7 @@ export const unit = createDurableAgentUnit({
   authorize: settings.authorize,
   retention: settings.retention,
   maxBodyBytes: settings.maxBodyBytes,
+  onInterrupt: settings.onInterrupt,
 });
 `,
     );
@@ -316,6 +317,7 @@ return createAgentUnit({
   origin: settings.origin,
   retention: settings.retention,
   maxBodyBytes: settings.maxBodyBytes,
+  onInterrupt: settings.onInterrupt,
   env,
 });
 }

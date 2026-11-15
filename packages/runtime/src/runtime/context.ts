@@ -38,6 +38,29 @@ export interface StepOptions {
   announce?: boolean;
 }
 
+export interface InterruptOptions {
+  /**
+   * Stop waiting after this long (milliseconds or a duration such as `"24h"`): the `interrupt`
+   * call then throws `InterruptTimeoutError`. Default: wait until answered or cancelled.
+   */
+  timeout?: number | string;
+}
+
+/** Thrown by `run.interrupt` when its `timeout` passes without an answer. Catch it to decide what no answer means. */
+export class InterruptTimeoutError extends Error {
+  readonly code = "interrupt_timeout";
+
+  constructor(
+    /** The interrupt's name. */
+    readonly interrupt: string,
+    /** When the wait ended (ISO 8601). */
+    readonly expiresAt: string,
+  ) {
+    super(`The interrupt "${interrupt}" got no answer by ${expiresAt}. Catch InterruptTimeoutError to decide what no answer means.`);
+    this.name = "InterruptTimeoutError";
+  }
+}
+
 export interface RunState {
   get<T = unknown>(key: string, options?: { scope?: StateScope }): Promise<T | undefined>;
   set(key: string, value: unknown, options?: { scope?: StateScope }): Promise<void>;
@@ -59,8 +82,11 @@ export interface RunContext {
    * the framework calls for you. Throws outside a step or tool call, where no stable key exists.
    */
   idempotencyKey(): string;
-  /** Parks the run until `POST /runs/:id/resume` answers; returns the answer. */
-  interrupt<T = unknown>(name: string, payload?: unknown): Promise<T>;
+  /**
+   * Parks the run until `POST /runs/:id/resume` answers; returns the answer. With `timeout`, throws
+   * `InterruptTimeoutError` once it passes unanswered.
+   */
+  interrupt<T = unknown>(name: string, payload?: unknown, options?: InterruptOptions): Promise<T>;
   /** Parks the run until the duration passes. */
   sleep(duration: number | string): Promise<void>;
   readonly state: RunState;

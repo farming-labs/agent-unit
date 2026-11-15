@@ -1,7 +1,7 @@
 import { createStorage, type Storage } from "unstorage";
 import { validateAdapter, type AgentAdapter } from "../adapter/types";
 import { functionAdapter, resolveAgent } from "../agents";
-import { RunEngine } from "../runtime/engine";
+import { RunEngine, type InterruptHook } from "../runtime/engine";
 import { RunStore } from "../runtime/store";
 import { parseDuration } from "../runtime/util";
 import { FARMJS_KEY_MISSING, farmjsStore, isFarmjsStore } from "./farmjs-store";
@@ -33,6 +33,8 @@ export interface AgentUnitOptions extends HandlerOptions {
   env?: Record<string, string | undefined>;
   /** Keeps background work alive on hosts that need it, for work not tied to a request. */
   waitUntil?: (promise: Promise<unknown>) => void;
+  /** Called once a run starts waiting on an interrupt, to tell someone. Best effort; see `EngineOptions.onInterrupt`. */
+  onInterrupt?: InterruptHook;
 }
 
 export interface AgentUnit {
@@ -89,6 +91,7 @@ export function createAgentUnit(options: AgentUnitOptions): AgentUnit {
     deltaBatchMs: options.deltaBatchMs,
     env: options.env,
     waitUntil: options.waitUntil,
+    onInterrupt: options.onInterrupt,
   });
   const handler = createHandler(engine, options);
   return {

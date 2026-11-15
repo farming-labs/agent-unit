@@ -4,7 +4,7 @@ import type { AgentEvent, RunRecord, RunStatus } from "../types";
 /** One journaled fact about a run: a completed step, an interrupt answer or a wake time. */
 export type JournalEntry =
   | { kind: "step"; value?: unknown; error?: unknown }
-  | { kind: "interrupt"; answered: boolean; answer?: unknown }
+  | { kind: "interrupt"; answered: boolean; answer?: unknown; expired?: string }
   | { kind: "sleep"; wakeAt: number; woke?: boolean };
 
 export type Journal = Record<string, JournalEntry>;
@@ -142,7 +142,8 @@ export class RunStore {
   private indexKeys(run: RunRecord): string[] {
     const created = time(MAX_TIME - Date.parse(run.createdAt));
     const keys = [`index:all:${created}:${run.id}`, `index:status:${run.status}:${created}:${run.id}`];
-    if (run.status === "sleeping" && run.wakeAt) keys.push(`index:wake:${time(Date.parse(run.wakeAt))}:${run.id}`);
+    // Sleepers and interrupts with a timeout: both wait for a time the sweep must notice.
+    if ((run.status === "sleeping" || run.status === "interrupted") && run.wakeAt) keys.push(`index:wake:${time(Date.parse(run.wakeAt))}:${run.id}`);
     if (TERMINAL.has(run.status)) keys.push(`index:done:${time(Date.parse(run.updatedAt))}:${run.id}`);
     return keys;
   }
@@ -183,7 +184,7 @@ export class RunStore {
     return runs;
   }
 
-  /** Sleeping runs whose wake time has come, earliest first. */
+  /** Sleeping runs, and interrupted runs whose timeout passed, whose wake time has come, earliest first. */
   async dueSleepers(now = Date.now()): Promise<string[]> {
     const due: string[] = [];
     for (const key of await this.indexed("index:wake")) {

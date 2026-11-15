@@ -224,8 +224,8 @@ export function farmClock(options: FarmClockOptions): WakeClock {
 }
 
 type ApprovalEntry =
-  | { run: string; key: string; agent: string; interrupt: string; payload?: unknown; status: "open" }
-  | { run: string; key: string; interrupt: string; status: "closed" };
+  | { run: string; key: string; agent: string; interrupt: string; payload?: unknown; expiresAt?: string; status: "open" }
+  | { run: string; key: string; interrupt: string; status: "closed"; reason?: "expired" };
 
 const utf8Length = (text: string) => encoder.encode(text).byteLength;
 
@@ -278,11 +278,12 @@ export function farmApprovals(options: FarmClockOptions): ApprovalRegistry {
       if (!enabled(interrupt.key, interrupt.name)) return Promise.resolve();
       const json = interrupt.payload === undefined ? undefined : JSON.stringify(interrupt.payload);
       const payload = json !== undefined && utf8Length(json) > MAX_PAYLOAD_BYTES ? { omitted: "payload larger than 16 KB" } : interrupt.payload;
-      return sender.send(`${run.id}\n${interrupt.key}`, { run: run.id, key: interrupt.key, agent: run.agent, interrupt: interrupt.name, payload, status: "open" });
+      const expiresAt = interrupt.expiresAt ? { expiresAt: interrupt.expiresAt } : {};
+      return sender.send(`${run.id}\n${interrupt.key}`, { run: run.id, key: interrupt.key, agent: run.agent, interrupt: interrupt.name, payload, ...expiresAt, status: "open" });
     },
-    close(run, interrupt) {
+    close(run, interrupt, reason) {
       if (!enabled(interrupt.key, interrupt.name)) return Promise.resolve();
-      return sender.send(`${run.id}\n${interrupt.key}`, { run: run.id, key: interrupt.key, interrupt: interrupt.name, status: "closed" });
+      return sender.send(`${run.id}\n${interrupt.key}`, { run: run.id, key: interrupt.key, interrupt: interrupt.name, status: "closed", ...(reason ? { reason } : {}) });
     },
   };
 }
