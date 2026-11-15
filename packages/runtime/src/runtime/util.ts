@@ -21,6 +21,15 @@ export function parseDuration(duration: number | string): number {
   return Number(match[1]) * UNITS[match[2]!]!;
 }
 
+/** Compares secrets in constant time, so response timing reveals nothing about the expected value. */
+export function safeEqual(a: string, b: string): boolean {
+  const left = new TextEncoder().encode(a);
+  const right = new TextEncoder().encode(b);
+  let diff = left.length ^ right.length;
+  for (let i = 0; i < Math.max(left.length, right.length); i++) diff |= (left[i] ?? 0) ^ (right[i] ?? 0);
+  return diff === 0;
+}
+
 export function nowIso(): string {
   return new Date().toISOString();
 }
