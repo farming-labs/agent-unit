@@ -3,7 +3,7 @@ import { createStorage, type Storage } from "unstorage";
 import nullDriver from "unstorage/drivers/null";
 import { validateAdapter, type AgentAdapter } from "../adapter/types";
 import { functionAdapter, resolveAgent } from "../agents";
-import { AgentUnitError, RunEngine, type LoadedAgent, type ResumeOptions } from "../runtime/engine";
+import { AgentUnitError, RunEngine, type InterruptHook, type LoadedAgent, type ResumeOptions } from "../runtime/engine";
 import { RunStore, type ListRunsFilter } from "../runtime/store";
 import { parseDuration, randomId } from "../runtime/util";
 import { farmApprovals } from "../server/farmjs";
@@ -36,6 +36,8 @@ export interface DurableAgentUnitOptions
   retention?: string | number;
   /** Binding names in wrangler.json. Default `AGENT_UNIT_RUNS` and `AGENT_UNIT_INDEX`. */
   bindings?: { runs?: string; index?: string };
+  /** Called once a run starts waiting on an interrupt, to tell someone. Best effort; see `EngineOptions.onInterrupt`. */
+  onInterrupt?: InterruptHook;
 }
 
 type Envelope<T> = { ok: T } | { error: { status: 400 | 404 | 409 | 413 | 415; code: string; message: string } };
@@ -185,6 +187,7 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
         scheduleWake: (_id, at) => this.ctx.storage.setAlarm(at),
         // Alarms wake runs here, but the interrupts they wait on still go to Farm.js Infra for approval.
         approvals: farmApprovals({ env: () => this.env as Record<string, string | undefined>, endpoint: () => infraEndpoint(this.env) }),
+        onInterrupt: options.onInterrupt,
         // Every cancel reaches this object, where the run executes: no need to poll the index for one.
         remoteCancelCheck: false,
       }));

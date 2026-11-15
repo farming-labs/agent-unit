@@ -53,6 +53,7 @@ export async function createEngineApp(project: LoadedProject): Promise<DevApp> {
     origin: project.config.origin,
     retention: project.config.retention,
     maxBodyBytes: project.config.maxBodyBytes,
+    onInterrupt: project.config.onInterrupt,
   });
   return {
     unit,

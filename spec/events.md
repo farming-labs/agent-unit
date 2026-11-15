@@ -39,7 +39,7 @@ Over SSE each event is one message: `id:` is `seq`, `data:` is the JSON event.
 | `CUSTOM` | `name`, `value` | Emitted by agent code via `run.emit` |
 | `RUN_FINISHED` | `result`, `usage?` | Terminal: the run completed. `usage` lists token usage per provider and model (AG-UI `TokenUsage`) |
 | `RUN_ERROR` | `message`, `code?` | Terminal: the run failed |
-| **`RUN_INTERRUPTED`** | `interrupt: { key, name, payload }` | Parked: waiting for an answer |
+| **`RUN_INTERRUPTED`** | `interrupt: { key, name, payload, expiresAt? }` | Parked: waiting for an answer, until `expiresAt` when the interrupt has a timeout |
 | **`RUN_SLEEPING`** | `wakeAt` | Parked: waiting for a time |
 | **`RUN_CANCELLED`** | | Terminal: the run was cancelled |
 

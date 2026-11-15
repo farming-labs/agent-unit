@@ -35,6 +35,7 @@ const ENGINE_OPTIONS = [
   "authorize",
   "origin",
   "maxBodyBytes",
+  "onInterrupt",
 ] as const satisfies readonly (keyof AgentUnitConfig)[];
 
 /**

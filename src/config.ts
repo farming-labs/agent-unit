@@ -1,4 +1,5 @@
 import type { AgentAdapter } from "@agent-unit/runtime/adapter";
+import type { InterruptHook } from "@agent-unit/runtime/runtime";
 import type { HandlerOptions } from "@agent-unit/runtime/server";
 
 /** An unstorage driver by name plus its options, e.g. `{ driver: "redis", url: process.env.REDIS_URL }`. */
@@ -113,6 +114,18 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
   budget?: string | number | false;
   /** Delete finished runs, with their journal and events, this long after they finish (`"30d"`). Applied by the sweep. */
   retention?: string | number;
+  /**
+   * Called once a run starts waiting on an interrupt, with `{ run, interrupt }`, to tell someone: post
+   * to Slack, send an email. Best effort: awaited for at most two seconds, and an error is logged,
+   * never failing the run. People answer through `POST /runs/:id/resume`. Runs beside Farm.js
+   * Infra's approvals when FARMJS_API_KEY is set.
+   *
+   * ```ts
+   * onInterrupt: ({ run, interrupt }) =>
+   *   fetch(process.env.SLACK_WEBHOOK_URL!, { method: "POST", body: JSON.stringify({ text: `${run.agent} waits on ${interrupt.name}` }) }),
+   * ```
+   */
+  onInterrupt?: InterruptHook;
   /** Cron for the sweep that wakes sleepers and recovers stalled runs. Default every minute. `false` disables it. */
   sweep?: string | false;
   /**
@@ -154,6 +167,7 @@ export const PRESET_SETTINGS = [
   "authorize",
   "origin",
   "maxBodyBytes",
+  "onInterrupt",
   "tasks",
   "cloudflare",
   "nitro",

@@ -18,7 +18,7 @@ interface RunRecord {
   input: unknown;
   output?: unknown;          // when completed
   error?: { name: string; message: string };   // when failed
-  interrupt?: { key: string; name: string; payload: unknown };   // when interrupted
+  interrupt?: { key: string; name: string; payload: unknown; expiresAt?: string };   // when interrupted; expiresAt with a timeout
   wakeAt?: string;           // ISO time, when sleeping
   cancelRequested?: boolean; // a cancel reached another process while this run executed
   executing?: boolean;       // an execution started and has not finished
@@ -146,5 +146,6 @@ the engine then registers each wake-up with Farm.js Infra
 
 With `FARMJS_API_KEY` set, the engine also registers each interrupt a run waits on
 (`POST https://app.farmjs.dev/api/agents/approvals`, an entry `{ run, key, agent, interrupt, payload,
-status: "open" }`), and `{ run, key, interrupt, status: "closed" }` once it is resumed through
-`POST /runs/:id/resume` or cancelled. This is independent of `AGENT_UNIT_CLOCK`.
+expiresAt?, status: "open" }`), and `{ run, key, interrupt, status: "closed" }` once it is resumed
+through `POST /runs/:id/resume` or cancelled, or `{ …, status: "closed", reason: "expired" }` once its
+timeout passes. This is independent of `AGENT_UNIT_CLOCK`.

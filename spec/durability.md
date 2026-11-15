@@ -13,7 +13,7 @@ Inside a run, `useRun()` (from `agent-unit/runtime`) returns the run context:
 | Primitive | Behaviour |
 | --- | --- |
 | `run.step(name, fn)` | Runs `fn` once. Its result is journaled; on replay the result is returned without calling `fn`. |
-| `run.interrupt(name, payload)` | Parks the run with `RUN_INTERRUPTED`. After `resume`, returns the answer. |
+| `run.interrupt(name, payload, { timeout? })` | Parks the run with `RUN_INTERRUPTED`. After `resume`, returns the answer. With `timeout`, once it passes unanswered, throws `InterruptTimeoutError` (`code: "interrupt_timeout"`, `interrupt`, `expiresAt`); the replay throws it again. |
 | `run.sleep(duration)` | Parks the run with `RUN_SLEEPING` until the time passes. `duration` is ms or `"30s"`, `"5m"`, `"2h"`, `"1d"`. |
 | `run.state` | Key–value storage scoped to the `thread` (default), the `agent` or the whole `app`. |
 | `run.secrets.get(name)` | Reads a secret from the host environment. |
@@ -57,7 +57,8 @@ Step results are stored as JSON with support for `undefined`, `Date`, `BigInt`, 
 
 ## Continuation on any host
 
-- **Interrupt:** the run parks; `POST /runs/:id/resume` continues it.
+- **Interrupt:** the run parks; `POST /runs/:id/resume` continues it. An interrupt with a timeout
+  also sets the run's `wakeAt` to its deadline, so whatever wakes sleepers (below) ends the wait.
 - **Sleep:** the run parks; a scheduled sweep, on the host's own scheduler, wakes runs whose time
   has passed. It runs every minute unless the app sets another schedule (`sweep`); on a plan whose
   scheduler runs only daily, sleeps end up to a day late. Long-lived servers also wake them with an

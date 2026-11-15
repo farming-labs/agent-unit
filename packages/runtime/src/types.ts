@@ -6,6 +6,8 @@ export interface PendingInterrupt {
   key: string;
   name: string;
   payload: unknown;
+  /** When the wait ends without an answer (ISO 8601), for an interrupt given a `timeout`. */
+  expiresAt?: string;
 }
 
 export interface RunRecord {
