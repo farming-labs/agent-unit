@@ -279,14 +279,22 @@ ${imports.join("\n")}
 // The engine starts with the server, so a bad setting fails at startup. A config module may export a
 // function instead, called when the engine is first used: a framework that evaluates its own config
 // as its server starts hands the settings over by then.
+let currentSettings;
 let current = typeof configExport === "function" ? undefined : createUnit(configExport);
 /** agent-unit's engine. */
 export function getUnit() {
   return (current ??= createUnit(configExport()));
 }
 
+/** The settings the engine was created with: the config as it evaluates here, with the preset's entry. */
+export function getSettings() {
+  getUnit();
+  return currentSettings;
+}
+
 function createUnit(config) {
 ${settingsLine}
+currentSettings = settings;
 ${
       farmjs
         ? `${readConfig}// Farm.js storage, with FARMJS_API_KEY from where the server runs: runs and leases change atomically.

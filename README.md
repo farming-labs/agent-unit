@@ -151,7 +151,8 @@ export default async ({ name, scheduledTime }: { name: string; scheduledTime: nu
 ```
 
 `scheduledTime` is when the task starts running (the hosts' schedulers pass no scheduled time).
-`npx agent-unit task send-digest` runs it once from source.
+`npx agent-unit task send-digest` runs it once from source. On agent-unit's engine, a task can
+[start a run of one of your agents](#run-an-agent-on-a-schedule) instead of calling a module.
 
 ### Mastra
 
@@ -546,6 +547,32 @@ export default defineConfig({
 It is best effort: awaited for at most two seconds, and an error is logged, never failing or holding
 up the run. A process that stops right after the run parks can skip it, so treat the run's status,
 not the message, as the record (`GET /runs?status=interrupted` lists everything waiting).
+
+#### Run an agent on a schedule
+
+A task with `agent` starts a run of that agent each time its schedule comes round, on the host's own
+scheduler (see [scheduled tasks](#background-work-and-scheduled-tasks) for which hosts have one):
+
+```ts
+export default defineConfig({
+  tasks: {
+    "morning-digest": { schedule: "0 8 * * *", agent: "digest", input: { team: "support" } },
+  },
+});
+```
+
+Each scheduled time starts one run. Its id comes from the task's name and that time, so a scheduler
+that fires twice for the same time (a retry, a cluster where every process runs the schedule) gets
+the run the first fire started. A fire that comes late still counts for its time, and one that comes
+early counts for the time it is about to reach (up to 30 seconds early, or half the interval for a
+schedule that runs more often than once a minute). Times are read in the server's time zone, as the
+host's scheduler reads them: UTC on Workers and Vercel.
+
+The runs are ordinary runs: `GET /runs?agent=digest` lists them, and they can sleep, wait for an
+answer and resume. `input` is read from the config where the server runs, so `process.env` there
+gives the server's values. Agent tasks need agent-unit's engine, so they do not apply with `server`,
+and the Durable Objects runtime does not run them yet. `npx agent-unit task morning-digest` runs the
+agent once from source, on the dev server's storage, and prints the run once it finishes or pauses.
 
 ### Bring your framework
 
