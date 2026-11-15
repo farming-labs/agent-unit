@@ -34,6 +34,6 @@ A2A registries can discover the agents.
 
 - name: the agent name
 - input: `{ "message": string, "threadId"?: string }`
-- result: the run's final text, or a structured `{ status, runId, interrupt }` when the run parks
+- result: the run's final text, or a structured `{ status, runId, interrupt?, wait?, wakeAt? }` when the run parks
 
 `initialize`, `tools/list` and `tools/call` are supported.

@@ -40,10 +40,12 @@ export interface HandlerOptions {
 
 /** What a request does, for `authorize`. */
 export interface AuthorizeContext {
-  action: "manifest" | "list" | "start" | "read" | "events" | "resume" | "cancel" | "delete" | "mcp";
+  action: "manifest" | "list" | "start" | "read" | "events" | "resume" | "cancel" | "delete" | "mcp" | "send";
   agent?: string;
   runId?: string;
   threadId?: string;
+  /** The name of the event a `send` sends. */
+  event?: string;
 }
 
 /** An event `seq` to read after: a whole number from 0, or 0 for anything else. */
@@ -124,7 +126,7 @@ export function eventStream(events: AsyncIterable<AgentEvent>, signal: AbortSign
   });
 }
 
-const RUN_STATUSES = new Set<RunStatus>(["running", "interrupted", "sleeping", "completed", "failed", "cancelled"]);
+const RUN_STATUSES = new Set<RunStatus>(["running", "interrupted", "sleeping", "waiting", "completed", "failed", "cancelled"]);
 
 /**
  * The agent-unit HTTP API (spec/runs.md) as a Web `Request → Response` handler. Mount it in Nitro,
@@ -395,6 +397,17 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
           const settled = await background(done);
           return settled ? json(settled) : json(run, 202);
         }
+      }
+
+      if (segments[0] === "events" && segments.length === 1 && method === "POST") {
+        const body = await readJson(request, options.maxBodyBytes);
+        if (typeof body.name !== "string") throw new AgentUnitError(400, "invalid_event", "`name` must be the event's name.");
+        const denied = await guard({ action: "send", event: body.name });
+        if (denied) return denied;
+        const sent = await engine.send(body.name, body.data ?? null, body.id === undefined ? {} : { id: body.id as string });
+        // The runs it started continue after the response, or in the request where the host freezes after one.
+        await background(sent.done);
+        return json({ id: sent.id, runs: sent.runs, ...(sent.duplicate ? { duplicate: true } : {}) }, 202);
       }
 
       if (segments[0] === "runs") {

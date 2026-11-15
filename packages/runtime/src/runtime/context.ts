@@ -11,7 +11,7 @@ const HALTED = Symbol.for("agent-unit.halted");
 
 export class RunHalted extends Error {
   readonly [HALTED] = true;
-  constructor(readonly reason: "interrupt" | "sleep" | "yield" | "cancel" | "lost") {
+  constructor(readonly reason: "interrupt" | "sleep" | "wait" | "yield" | "cancel" | "lost") {
     super(`agent-unit run halted (${reason})`);
     this.name = "RunHalted";
   }
@@ -61,6 +61,34 @@ export class InterruptTimeoutError extends Error {
   }
 }
 
+export interface WaitForOptions {
+  /**
+   * Keys the event's `data` must have, each with an equal JSON value: `{ orderId: "o_1" }` takes
+   * `{ orderId: "o_1", amount: 1840 }`. Default: any event with this name.
+   */
+  match?: Record<string, unknown>;
+  /**
+   * Stop waiting after this long (milliseconds or a duration such as `"1h"`): the `waitFor` call
+   * then throws `EventTimeoutError`. Default: wait until the event comes or the run is cancelled.
+   */
+  timeout?: number | string;
+}
+
+/** Thrown by `run.waitFor` when its `timeout` passes without the event. Catch it to decide what no event means. */
+export class EventTimeoutError extends Error {
+  readonly code = "event_timeout";
+
+  constructor(
+    /** The event's name. */
+    readonly event: string,
+    /** When the wait ended (ISO 8601). */
+    readonly expiresAt: string,
+  ) {
+    super(`No "${event}" event came by ${expiresAt}. Catch EventTimeoutError to decide what no event means.`);
+    this.name = "EventTimeoutError";
+  }
+}
+
 export interface RunState {
   get<T = unknown>(key: string, options?: { scope?: StateScope }): Promise<T | undefined>;
   set(key: string, value: unknown, options?: { scope?: StateScope }): Promise<void>;
@@ -89,6 +117,12 @@ export interface RunContext {
   interrupt<T = unknown>(name: string, payload?: unknown, options?: InterruptOptions): Promise<T>;
   /** Parks the run until the duration passes. */
   sleep(duration: number | string): Promise<void>;
+  /**
+   * Returns the `data` of the first event named `event` that matches, sent with `POST /events` since
+   * the run started and not taken by an earlier `waitFor` of this run. Parks the run until one is
+   * sent. With `timeout`, throws `EventTimeoutError` once it passes without one.
+   */
+  waitFor<T = unknown>(event: string, options?: WaitForOptions): Promise<T>;
   readonly state: RunState;
   readonly secrets: { get(name: string): string | undefined };
   /** Emits a CUSTOM event. */

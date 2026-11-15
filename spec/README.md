@@ -8,7 +8,7 @@ keeps its own API; this contract does not apply to it.
 | Document | What it defines |
 | --- | --- |
 | [runs.md](./runs.md) | Runs and threads, run states, the HTTP API |
-| [events.md](./events.md) | The event stream (AG-UI event types plus three extensions) |
+| [events.md](./events.md) | The event stream (AG-UI event types plus four extensions) |
 | [manifest.md](./manifest.md) | The manifest, the A2A agent card and the MCP surface |
 | [durability.md](./durability.md) | Steps, interrupts, sleep, state, replay and the determinism rule |
 | [adapters.md](./adapters.md) | How a framework plugs in |
@@ -18,7 +18,8 @@ keeps its own API; this contract does not apply to it.
 An **agent** is code written with any framework. Each invocation is a **run**, identified by a run
 id and belonging to a **thread** (a conversation; memory and state scope to it). A run produces an
 ordered stream of **events**. A run can stop without finishing: it **interrupts** to ask a human
-something, **sleeps** until a time, or **yields** because its host is about to time out. Its progress
+something, **sleeps** until a time, **waits** for an event another system sends, or **yields**
+because its host is about to time out. Its progress
 is saved as a **journal** of completed steps, so it can continue in a later process, on a later
 deploy, from the last completed step, without repeating work that already happened.
 

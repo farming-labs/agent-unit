@@ -74,6 +74,16 @@ describe.skipIf(!workerd)("Durable Objects runtime in workerd", () => {
     expect(record).toMatchObject({ status: "completed", output: { slept: true } });
   });
 
+  it("waits for an event in the run's object and takes it from POST /events, across a restart", async () => {
+    const run = await client().start("payer", { orderId: "o_do_evt" });
+    await waitForStatus(client(), run.id, "waiting");
+
+    await restart();
+
+    expect(await client().send("payment.succeeded", { orderId: "o_do_evt", amount: 9 })).toMatchObject({ runs: [run.id] });
+    expect(await waitForStatus(client(), run.id, "completed")).toMatchObject({ output: { status: "paid", order: "o_do_evt", amount: 9 } });
+  });
+
   it("reads secrets from bindings, enforces authorize and answers MCP", async () => {
     expect((await fetch(`${server.url}/manifest.json`)).status).toBe(401);
     const greeting = await collect(client().run("greeter", { name: "objects" }));

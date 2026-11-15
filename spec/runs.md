@@ -14,12 +14,13 @@ interface RunRecord {
   id: string;
   agent: string;
   threadId: string;
-  status: "running" | "interrupted" | "sleeping" | "completed" | "failed" | "cancelled";
+  status: "running" | "interrupted" | "sleeping" | "waiting" | "completed" | "failed" | "cancelled";
   input: unknown;
   output?: unknown;          // when completed
   error?: { name: string; message: string };   // when failed
   interrupt?: { key: string; name: string; payload: unknown; expiresAt?: string };   // when interrupted; expiresAt with a timeout
-  wakeAt?: string;           // ISO time, when sleeping, or when interrupted with a timeout (its deadline)
+  wait?: { key: string; event: string; match?: Record<string, unknown>; expiresAt?: string };   // when waiting for an event
+  wakeAt?: string;           // ISO time, when sleeping, or when interrupted or waiting with a timeout (its deadline)
   cancelRequested?: boolean; // a cancel reached another process while this run executed
   executing?: boolean;       // an execution started and has not finished
   crashes?: number;          // executions in a row that crashed; the run fails at the limit (default 5)
@@ -30,8 +31,8 @@ interface RunRecord {
 }
 ```
 
-Terminal states are `completed`, `failed` and `cancelled`. `interrupted` and `sleeping` are parked:
-the run uses no compute until it is answered or woken.
+Terminal states are `completed`, `failed` and `cancelled`. `interrupted`, `sleeping` and `waiting`
+are parked: the run uses no compute until it is answered, woken or sent the event it waits for.
 
 ## HTTP API
 
@@ -49,7 +50,8 @@ percent-encoding gets 400.
 
 An app's `authorize(request, context)` runs before every route except the agent card. `context` says
 what the request does: `action` (`manifest`, `list`, `start`, `read`, `events`, `resume`, `cancel`,
-`delete`, `mcp`) and, where they apply, `agent`, `runId` and `threadId`. For a request about an
+`delete`, `mcp`, `send`) and, where they apply, `agent`, `runId`, `threadId` and `event` (the name of
+an event being sent). For a request about an
 existing run, `agent` and `threadId` come from the stored run, never from the request, so an app can
 check that the caller owns the thread. A caller that is not authorized gets 401 whether or not the run
 exists. A list is checked twice: once with its filters, then each run in it as a `read` with its
@@ -65,7 +67,8 @@ stored agent and thread, so a list without a `threadId` holds only the runs the 
 | `GET` | `/runs/:id` | One `RunRecord` |
 | `GET` | `/runs/:id/events` | The run's events (SSE), from `after` or `Last-Event-ID` |
 | `POST` | `/runs/:id/resume` | Answer the pending interrupt |
-| `POST` | `/runs/:id/cancel` | Cancel a running, interrupted or sleeping run (see below) |
+| `POST` | `/runs/:id/cancel` | Cancel a running or parked run (see below) |
+| `POST` | `/events` | Send an event to the runs that wait for it (see below) |
 | `DELETE` | `/runs/:id` | Delete a finished run with its journal and events (`204`; `409` while it is running or parked) |
 | `GET` | `/manifest.json` | The manifest |
 | `GET` | `/.well-known/agent.json` | The A2A agent card |
@@ -102,6 +105,20 @@ another one (a resume sent again after the run moved on), the answer is refused 
 `interrupt_mismatch` instead of answering that one. Responds like the start request: a stream
 with `Accept: text/event-stream`, otherwise `202` (or `200` once settled, on hosts without
 `waitUntil`) with the record.
+
+### Send an event
+
+```http
+POST /events
+{ "name": "payment.succeeded", "data": { "orderId": "o_1", "amount": 1840 }, "id": "evt_3Q…" }
+```
+
+`name` is 1 to 200 printable characters; `data` is any JSON value (default `null`); `id` is optional,
+1 to 200 printable characters, and a repeat of a kept event's `id` is not delivered again. Responds
+`202 { "id": string, "runs": string[], "duplicate"?: true }`: the event's id (generated when none was
+sent) and the runs that took it now. A run that starts waiting later can still take it (see
+[durability.md](./durability.md#events-sent-to-runs)). Each run that takes it continues in the
+background, or in the request on hosts without `waitUntil`, as a resume does.
 
 ### Cancel
 

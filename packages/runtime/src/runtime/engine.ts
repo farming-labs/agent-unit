@@ -7,12 +7,15 @@ import {
   type AgentEventBody,
   type Manifest,
   type PendingInterrupt,
+  type PendingWait,
   type RunInput,
   type RunRecord,
+  type SentEvent,
   type TokenUsage,
 } from "../types";
 import {
   currentFrame,
+  EventTimeoutError,
   idempotencyKey,
   InterruptTimeoutError,
   RunHalted,
@@ -23,6 +26,7 @@ import {
   type RunState,
   type StepInfo,
   type StepOptions,
+  type WaitForOptions,
 } from "./context";
 import { decode, encode, toJsonSafe } from "./serialize";
 import type { Journal, ListRunsFilter, RunStore, StateScope } from "./store";
@@ -86,6 +90,11 @@ export interface EngineOptions {
   maxCrashes?: number;
   /** Delete finished runs (with their journal and events) this long after they finish, in the sweep. */
   retentionMs?: number;
+  /**
+   * How long an event sent to runs is kept for a run that waits for it later (`run.waitFor`).
+   * Default 24 hours.
+   */
+  eventRetentionMs?: number;
   /** How long `cancel` waits for an executing run to stop before answering. Default 2s. */
   cancelWaitMs?: number;
   /**
@@ -167,7 +176,97 @@ export class AgentUnitError extends Error {
 type Parked =
   | { kind: "interrupt"; interrupt: PendingInterrupt }
   | { kind: "sleep"; key: string; wakeAt: number }
+  | { kind: "wait"; wait: PendingWait }
   | { kind: "yield" };
+
+/** What sending an event did: its id, and the runs that took it now. */
+export interface SendResult {
+  id: string;
+  runs: string[];
+  /** An event with this id was sent before and is still kept, so this one was not delivered. */
+  duplicate?: true;
+  /** Settles when the executions the event started stop; pass it to the host's `waitUntil`. */
+  done: Promise<void>;
+}
+
+/** How long an event sent to runs is kept for a run that waits for it later, unless `eventRetentionMs` says otherwise. */
+export const DEFAULT_EVENT_RETENTION_MS = 24 * 60 * 60_000;
+/** Event names and ids: 1 to 200 characters, no control characters. */
+const EVENT_TEXT = /^[^\u0000-\u001f\u007f]{1,200}$/;
+
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+
+/** Equal JSON values: objects by their keys, whatever the order. */
+function jsonEqual(a: unknown, b: unknown): boolean {
+  if (a === b) return true;
+  if (typeof a !== "object" || typeof b !== "object" || a === null || b === null) return false;
+  if (Array.isArray(a) !== Array.isArray(b)) return false;
+  const left = Object.keys(a);
+  if (left.length !== Object.keys(b).length) return false;
+  return left.every((key) => Object.hasOwn(b, key) && jsonEqual((a as Record<string, unknown>)[key], (b as Record<string, unknown>)[key]));
+}
+
+/** Whether an event's data has every key of `match`, with an equal JSON value. */
+export function eventMatches(match: Record<string, unknown> | undefined, data: unknown): boolean {
+  if (!match) return true;
+  if (!isPlainObject(data)) return false;
+  return Object.entries(match).every(([key, value]) => Object.hasOwn(data, key) && jsonEqual(data[key], value));
+}
+
+/** The ids of the events a run's journal says it took. */
+export function takenEvents(journal: Journal): Set<string> {
+  const ids = new Set<string>();
+  for (const entry of Object.values(journal)) if (entry.kind === "event" && entry.id !== undefined) ids.add(entry.id);
+  return ids;
+}
+
+/** The earliest kept event this wait can take: sent since the run started, kept, matching, not taken already. */
+export async function keptEventFor(store: RunStore, run: RunRecord, wait: Pick<PendingWait, "event" | "match">, taken: Set<string>, retentionMs = DEFAULT_EVENT_RETENTION_MS): Promise<SentEvent | undefined> {
+  const oldest = Date.now() - retentionMs;
+  for (const event of await store.eventsSince(wait.event, Date.parse(run.createdAt))) {
+    if (Date.parse(event.sentAt) < oldest || taken.has(event.id)) continue;
+    if (eventMatches(wait.match, event.data)) return event;
+  }
+  return undefined;
+}
+
+/**
+ * Sends an event: keeps it (unless one with its id is kept already), then hands it to each run that
+ * waits for it and matches. `deliver` starts one run with it and returns `done`, which settles when
+ * that execution stops, or undefined when the run no longer waits on that wait.
+ */
+export async function sendEvent(
+  store: RunStore,
+  name: string,
+  data: unknown,
+  options: { id?: string },
+  retentionMs: number,
+  deliver: (run: RunRecord, event: SentEvent) => Promise<{ done: Promise<unknown> } | undefined>,
+): Promise<SendResult> {
+  if (typeof name !== "string" || !EVENT_TEXT.test(name)) {
+    throw new AgentUnitError(400, "invalid_event", "`name` must be 1 to 200 characters, without control characters.");
+  }
+  if (options.id !== undefined && (typeof options.id !== "string" || !EVENT_TEXT.test(options.id))) {
+    throw new AgentUnitError(400, "invalid_event", "`id` must be 1 to 200 characters, without control characters.");
+  }
+  const event: SentEvent = { id: options.id ?? randomId("evt"), name, data: toJsonSafe(data), sentAt: nowIso() };
+  // Expired ones first, so an id kept past its time does not turn the new one away.
+  await store.pruneEvents(Date.now() - retentionMs, name);
+  if (!(await store.putEvent(event))) return { id: event.id, runs: [], duplicate: true, done: Promise.resolve() };
+  // Kept before the waiting runs are read: a run saved as waiting after this read finds it kept.
+  const runs: string[] = [];
+  const work: Promise<unknown>[] = [];
+  for (const run of await store.waitingFor(name)) {
+    if (!eventMatches(run.wait?.match, event.data)) continue;
+    const started = await deliver(run, event);
+    if (started) {
+      runs.push(run.id);
+      work.push(started.done);
+    }
+  }
+  return { id: event.id, runs, done: Promise.allSettled(work).then(() => undefined) };
+}
 
 const TERMINAL = new Set(["completed", "failed", "cancelled"]);
 
@@ -382,6 +481,40 @@ class RunExecution implements RunInternals {
     if (ms === 0) return;
     this.park({ kind: "sleep", key, wakeAt });
     throw new RunHalted("sleep");
+  }
+
+  async waitFor<T>(event: string, options: WaitForOptions = {}): Promise<T> {
+    if (typeof event !== "string" || !EVENT_TEXT.test(event)) {
+      throw new TypeError(`agent-unit: run.waitFor needs an event name of 1 to 200 characters, without control characters; got ${JSON.stringify(event)}.`);
+    }
+    if (options.match !== undefined && !isPlainObject(options.match)) {
+      throw new TypeError(`agent-unit: the \`match\` of run.waitFor("${event}") must be a plain object of the keys the event's data must have.`);
+    }
+    const match = options.match === undefined ? undefined : (toJsonSafe(options.match) as Record<string, unknown>);
+    const timeoutMs = options.timeout === undefined ? undefined : parseDuration(options.timeout);
+    const key = this.allocate(`event:${event}`);
+    const entry = this.journal[key];
+    if (entry?.kind === "event") {
+      if (entry.expired !== undefined) throw new EventTimeoutError(event, entry.expired);
+      if (entry.received) return decode(entry.data) as T;
+    }
+    await this.assertLive();
+    // The event may have come before the run got here: a webhook can beat the step that asked for it.
+    const kept = await keptEventFor(this.engine.store, this.run, { event, match }, this.takenEvents(), this.engine.options.eventRetentionMs);
+    if (kept) {
+      this.journal[key] = { kind: "event", received: true, id: kept.id, data: encode(kept.data) };
+      await this.persistEntry(key);
+      return decode(encode(kept.data)) as T;
+    }
+    const wait: PendingWait = { key, event, ...(match ? { match } : {}) };
+    if (timeoutMs !== undefined) wait.expiresAt = new Date(Date.now() + timeoutMs).toISOString();
+    this.park({ kind: "wait", wait });
+    throw new RunHalted("wait");
+  }
+
+  /** The ids of the events this run took so far. */
+  takenEvents(): Set<string> {
+    return takenEvents(this.journal);
   }
 
   readonly state: RunState = {
@@ -602,6 +735,42 @@ export class RunEngine {
     });
   }
 
+  /**
+   * Sends an event to the runs that wait for it (`run.waitFor`), and keeps it for runs that wait for
+   * it later. With `options.id`, an event sent again with the same id while the first is kept is not
+   * delivered again.
+   */
+  async send(name: string, data: unknown = null, options: { id?: string } = {}): Promise<SendResult> {
+    return sendEvent(this.store, name, data, options, this.eventRetentionMs, (run, event) => this.deliver(run.id, run.wait!.key, event));
+  }
+
+  /**
+   * Gives a waiting run the event it waits for and continues it: only while it still waits on that
+   * very wait (`key`) and the event matches. Undefined when it does not, or another change got there first.
+   */
+  async deliver(id: string, key: string, event: SentEvent): Promise<{ run: RunRecord; done: Promise<RunRecord | undefined> } | undefined> {
+    return this.locked(id, async () => {
+      const run = await this.store.getRun(id);
+      if (!run || run.status !== "waiting" || run.wait?.key !== key || run.wait.event !== event.name || !eventMatches(run.wait.match, event.data)) return undefined;
+      // The waiting record can be visible before its execution finishes releasing ownership.
+      await this.idle(id);
+      const previous = structuredClone(run);
+      delete run.wait;
+      delete run.wakeAt;
+      run.status = "running";
+      run.updatedAt = nowIso();
+      // Another event, a timeout or a cancel got there first.
+      if (!(await this.store.putRun(run, previous))) return undefined;
+      this.clearTimer(id);
+      await this.store.putJournalEntry(id, key, { kind: "event", received: true, id: event.id, data: encode(event.data) });
+      return { run, done: this.schedule(id) };
+    });
+  }
+
+  private get eventRetentionMs(): number {
+    return this.options.eventRetentionMs ?? DEFAULT_EVENT_RETENTION_MS;
+  }
+
   async cancel(id: string, options: CancelOptions = {}): Promise<RunRecord> {
     // Queued under the lock, awaited after it, so a slow Infra never holds up other changes to the run.
     const notices: Promise<void>[] = [];
@@ -652,6 +821,7 @@ export class RunEngine {
     // Parked, or its executor died: cancel it here, after the last event actually stored.
     run.status = "cancelled";
     delete run.interrupt;
+    delete run.wait;
     delete run.wakeAt;
     delete run.cancelRequested;
     run.eventCount = await this.store.lastEventSeq(id, run.eventCount);
@@ -716,6 +886,7 @@ export class RunEngine {
         deleted.push(id);
       }
     }
+    await this.store.pruneEvents(now - this.eventRetentionMs);
     return { woken, recovered, deleted, settled: Promise.allSettled(work).then(() => undefined) };
   }
 
@@ -744,6 +915,11 @@ export class RunEngine {
       if (due > Date.now()) return due;
       const started = await this.expireInterrupt(id);
       if (started) await background(started.done);
+    } else if (run.status === "waiting" && run.wakeAt) {
+      const due = Date.parse(run.wakeAt);
+      if (due > Date.now()) return due;
+      const started = await this.expireWait(id);
+      if (started) await background(started.done);
     } else if (run.status === "running") {
       // Still executing here or held by a live lease elsewhere: look again once that lease could lapse.
       if (this.busy(id) || !(await this.store.leaseExpired(id))) return Date.now() + this.leaseMs;
@@ -756,14 +932,15 @@ export class RunEngine {
     if (!options.background) return undefined;
     const current = await this.store.getRun(id);
     if (current?.status === "sleeping") return current.wakeAt ? Date.parse(current.wakeAt) : Date.now();
-    if (current?.status === "interrupted" && current.wakeAt) return Date.parse(current.wakeAt);
+    if ((current?.status === "interrupted" || current?.status === "waiting") && current.wakeAt) return Date.parse(current.wakeAt);
     return current?.status === "running" ? Date.now() + this.leaseMs : undefined;
   }
 
-  /** Starts a run whose wake time has come: wakes it from a sleep, or ends an interrupt whose timeout passed. */
+  /** Starts a run whose wake time has come: wakes it from a sleep, or ends an interrupt or event wait whose timeout passed. */
   private async wakeDue(id: string, now = Date.now()): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
     const run = await this.store.getRun(id);
     if (run?.status === "interrupted") return this.expireInterrupt(id, now);
+    if (run?.status === "waiting") return this.expireWait(id, now);
     return this.wakeRun(id, now);
   }
 
@@ -778,7 +955,7 @@ export class RunEngine {
     const now = Date.now();
     if (await this.wakeDue(id, now)) return;
     const run = await this.store.getRun(id);
-    const at = run?.wakeAt && (run.status === "sleeping" || run.status === "interrupted") ? Date.parse(run.wakeAt) : undefined;
+    const at = run?.wakeAt && (run.status === "sleeping" || run.status === "interrupted" || run.status === "waiting") ? Date.parse(run.wakeAt) : undefined;
     if (at !== undefined && at > now) this.setTimer(id, at);
   }
 
@@ -807,6 +984,29 @@ export class RunEngine {
     });
     if (!started) return undefined;
     return { done: closing ? Promise.all([started.done, closing]).then(([record]) => record) : started.done };
+  }
+
+  /**
+   * Ends the wait of a run whose event did not come in time: the replayed `waitFor` call throws
+   * `EventTimeoutError`. An event that lands first wins; this then does nothing.
+   */
+  private async expireWait(id: string, now = Date.now()): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
+    return this.locked(id, async () => {
+      const run = await this.store.getRun(id);
+      if (!run || run.status !== "waiting" || !run.wait?.expiresAt || !run.wakeAt || Date.parse(run.wakeAt) > now) return undefined;
+      await this.idle(id);
+      const previous = structuredClone(run);
+      const wait = run.wait;
+      delete run.wait;
+      delete run.wakeAt;
+      run.status = "running";
+      run.updatedAt = nowIso();
+      // An event or a cancel from another process got there first.
+      if (!(await this.store.putRun(run, previous))) return undefined;
+      this.clearTimer(id);
+      await this.store.putJournalEntry(id, wait.key, { kind: "event", received: false, expired: wait.expiresAt });
+      return { done: this.schedule(id) };
+    });
   }
 
   /**
@@ -1055,6 +1255,14 @@ export class RunEngine {
           run.wakeAt = run.interrupt.expiresAt;
           await this.armTimer(id, Date.parse(run.wakeAt));
         }
+      } else if (execution.parked?.kind === "wait") {
+        run.status = "waiting";
+        run.wait = execution.parked.wait;
+        execution.emitEvent({ type: "RUN_WAITING", wait: execution.parked.wait });
+        if (run.wait.expiresAt) {
+          run.wakeAt = run.wait.expiresAt;
+          await this.armTimer(id, Date.parse(run.wakeAt));
+        }
       } else if (execution.parked?.kind === "sleep") {
         run.status = "sleeping";
         run.wakeAt = new Date(execution.parked.wakeAt).toISOString();
@@ -1083,9 +1291,10 @@ export class RunEngine {
       for (let tries = 0; !(await this.store.putRun(run, expected)); tries++) {
         // Only a cancel request can land while a run executes. A parked run takes it now; a finished one already finished.
         expected = (await this.store.getRun(id)) ?? null;
-        if (expected?.cancelRequested && (run.status === "interrupted" || run.status === "sleeping" || yielded)) {
+        if (expected?.cancelRequested && (run.status === "interrupted" || run.status === "sleeping" || run.status === "waiting" || yielded)) {
           run.status = "cancelled";
           delete run.interrupt;
+          delete run.wait;
           delete run.wakeAt;
           yielded = false;
           execution.emitEvent({ type: "RUN_CANCELLED" });
@@ -1104,6 +1313,13 @@ export class RunEngine {
     }
     if (run.status === "interrupted" && run.interrupt) {
       await Promise.all([this.options.approvals ? this.openApproval(id, run.interrupt) : undefined, this.notifyInterrupt(run, run.interrupt)]);
+    }
+    if (run.status === "waiting" && run.wait) {
+      // Sent after waitFor looked and before the run was saved as waiting: the sender found no waiting
+      // run, but kept the event, so take it now. The sender, if it now sees the run, loses the race.
+      const event = await keptEventFor(this.store, run, run.wait, execution.takenEvents(), this.eventRetentionMs);
+      const started = event && (await this.deliver(id, run.wait.key, event));
+      if (started) return started.done;
     }
     if (yielded) {
       if (this.options.continueRun) await this.options.continueRun(id);
