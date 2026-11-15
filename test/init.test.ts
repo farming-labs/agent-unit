@@ -138,6 +138,8 @@ describe("the files agent-unit init writes", () => {
     expect(pkg.imports).toBeUndefined();
     expect(files["agent-unit.config.ts"]).not.toContain("presets");
     expect(files["agents/assistant.ts"]).toContain(`import { Agent } from "@mastra/core/agent";`);
+    // Mastra's own copy of the AI SDK's model type can trail \`ai\`; one typed boundary keeps the app compiling.
+    expect(files["agents/assistant.ts"]).toContain(`model: mastraModel(provider("gpt-5-mini")),`);
     expect(Object.keys(files).filter((path) => path.startsWith("src/"))).toEqual([]);
     expect(env).toEqual(["OPENAI_API_KEY", "API_TOKEN"]);
   });
@@ -194,6 +196,7 @@ describe("the files agent-unit init writes", () => {
       expect(Object.keys(files).filter((path) => path.startsWith("test/"))).toEqual(["test/assistant.test.ts"]);
       expect(files["agents/assistant.ts"]).toContain("export function createAssistant(model: ");
       expect(files["agents/assistant.ts"]).toContain(`export default createAssistant(provider("gpt-5-mini"));`);
+      expect(files["agents/assistant.ts"]).toContain("export function createAssistant(model: LanguageModel)");
     }
     expect(initFiles({ name: "m", framework: "ai-sdk", runner: "engine", hosts: ["node"] }, "0.1.16").files["agents/assistant.ts"]).toContain("export default new ToolLoopAgent({");
     for (const framework of ["langgraph", "openai-agents"] as const) {
