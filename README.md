@@ -7,6 +7,10 @@ Give agent-unit the server you already have, or the agents you want served, and 
 Workers, Vercel, Netlify or AWS Lambda. It handles what each host does differently, so your code
 does not have to.
 
+If you know [Nitro](https://nitro.build), this is the same idea for agent servers: Nitro takes a web
+framework's server and builds it for any host, and agent-unit does that for whichever agent framework
+you use. It is built on Nitro, so its presets and deploy targets are the ones you already know.
+
 ```
 your Hono or Fetch server ─┐
 Mastra's own server ───────┼──► agent-unit build --preset <host> ──► Node · Bun · Deno · Workers
@@ -440,6 +444,9 @@ curl -X POST localhost:3000/runs/run_…/resume \
 
 Every file in `agents/` is an agent named after the file (`agents/support/index.ts` serves as
 `support`). Export a framework agent or a `defineAgent` agent as the default export.
+
+A run can be resumed as soon as its status is `interrupted`. If its previous execution is still
+finishing, the engine waits for it to settle before starting the resumed execution.
 
 ### Bring your framework
 
