@@ -468,7 +468,9 @@ try {
 The deadline (`interrupt.expiresAt` on the run and in `RUN_INTERRUPTED`) is kept by whatever wakes
 sleeping runs on your host: timers and the sweep, a Durable Object's alarm, or Farm.js Infra's clock.
 So it ends on time where sleeps do, and on Vercel's Hobby plan, whose sweep runs once a day, it ends
-at the next sweep. An answer that lands first wins; a later one gets `409`.
+at the next sweep. An answer that lands first wins; a later one gets `409`. If the agent pauses
+again after the timeout, a late answer would land on that next pause, so send the pause's `key`
+as `interrupt` in the resume body (`409 interrupt_mismatch` then refuses it).
 
 #### Tell someone a run is waiting
 

@@ -19,7 +19,7 @@ interface RunRecord {
   output?: unknown;          // when completed
   error?: { name: string; message: string };   // when failed
   interrupt?: { key: string; name: string; payload: unknown; expiresAt?: string };   // when interrupted; expiresAt with a timeout
-  wakeAt?: string;           // ISO time, when sleeping
+  wakeAt?: string;           // ISO time, when sleeping, or when interrupted with a timeout (its deadline)
   cancelRequested?: boolean; // a cancel reached another process while this run executed
   executing?: boolean;       // an execution started and has not finished
   crashes?: number;          // executions in a row that crashed; the run fails at the limit (default 5)

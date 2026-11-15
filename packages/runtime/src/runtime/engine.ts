@@ -713,7 +713,7 @@ export class RunEngine {
     if (run.status === "sleeping") {
       const due = run.wakeAt ? Date.parse(run.wakeAt) : 0;
       if (due > Date.now()) return due;
-      const started = await this.wakeRun(id);
+      const started = await this.wakeRun(id, Date.now());
       if (started) await background(started.done);
     } else if (run.status === "interrupted" && run.wakeAt) {
       const due = Date.parse(run.wakeAt);
@@ -740,7 +740,22 @@ export class RunEngine {
   private async wakeDue(id: string, now = Date.now()): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
     const run = await this.store.getRun(id);
     if (run?.status === "interrupted") return this.expireInterrupt(id, now);
-    return this.wakeRun(id);
+    return this.wakeRun(id, now);
+  }
+
+  /**
+   * An in-process timer fired. The run may have moved on since it was set (answered, woken or
+   * parked again by another process), and Node can fire a millisecond early, so this wakes only
+   * what is due now and sets the timer again for a wake time still ahead.
+   */
+  private async onTimer(id: string) {
+    // The execution that set it may still be saving the parked run.
+    await this.idle(id);
+    const now = Date.now();
+    if (await this.wakeDue(id, now)) return;
+    const run = await this.store.getRun(id);
+    const at = run?.wakeAt && (run.status === "sleeping" || run.status === "interrupted") ? Date.parse(run.wakeAt) : undefined;
+    if (at !== undefined && at > now) this.setTimer(id, at);
   }
 
   /**
@@ -770,11 +785,15 @@ export class RunEngine {
     return { done: closing ? Promise.all([started.done, closing]).then(([record]) => record) : started.done };
   }
 
-  /** Wakes a sleeping run now and starts it; `done` settles when that execution stops. */
-  async wakeRun(id: string): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
+  /**
+   * Wakes a sleeping run now and starts it; `done` settles when that execution stops. With `dueBy`,
+   * only a sleep whose wake time has come by then: a timer or sweep never cuts a later sleep short.
+   */
+  async wakeRun(id: string, dueBy?: number): Promise<{ done: Promise<RunRecord | undefined> } | undefined> {
     return this.locked(id, async () => {
       const run = await this.store.getRun(id);
       if (!run || run.status !== "sleeping") return undefined;
+      if (dueBy !== undefined && run.wakeAt && Date.parse(run.wakeAt) > dueBy) return undefined;
       const previous = structuredClone(run);
       run.status = "running";
       delete run.wakeAt;
@@ -1128,12 +1147,17 @@ export class RunEngine {
       return;
     }
     if (!(await this.tellClock(id, wakeAt))) return;
+    this.setTimer(id, wakeAt);
+  }
+
+  /** The in-process timer for a wake time up to 15 minutes ahead; longer ones are the sweep's. */
+  private setTimer(id: string, wakeAt: number) {
     const delay = wakeAt - Date.now();
     if (delay > MAX_LOCAL_SLEEP_MS) return;
     this.clearTimer(id);
     const timer = setTimeout(() => {
       this.timers.delete(id);
-      this.wakeDue(id).catch((error) => console.error(`[agent-unit] run ${id} could not wake:`, error));
+      this.onTimer(id).catch((error) => console.error(`[agent-unit] run ${id} could not wake:`, error));
     }, Math.max(0, delay));
     (timer as { unref?: () => void }).unref?.();
     this.timers.set(id, timer);

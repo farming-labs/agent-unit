@@ -19,6 +19,7 @@ export interface RunRecord {
   output?: unknown;
   error?: { name: string; message: string };
   interrupt?: PendingInterrupt;
+  /** When a sleeping run wakes, or when an interrupted run's timeout ends the wait. */
   wakeAt?: string;
   /** Set when a cancel arrived while another process was executing the run; that executor finishes the cancel. */
   cancelRequested?: boolean;

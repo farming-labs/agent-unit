@@ -1,10 +1,10 @@
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { defineAgent } from "../packages/runtime/src/agents";
 import { InterruptTimeoutError } from "../packages/runtime/src/runtime/context";
 import type { ApprovalRegistry } from "../packages/runtime/src/runtime/engine";
 import { farmApprovals } from "../packages/runtime/src/server/farmjs";
 import type { PendingInterrupt, RunRecord } from "../packages/runtime/src/types";
-import { collect, createEngine, types } from "./helpers";
+import { collect, createEngine, memoryStore, types } from "./helpers";
 
 // `run.interrupt(name, payload, { timeout })`: the wait ends through the same wake-ups as a sleep
 // (sweep, in-process timer, host scheduler), and the replayed call throws InterruptTimeoutError.
@@ -12,6 +12,7 @@ import { collect, createEngine, types } from "./helpers";
 const engines: { close(): void }[] = [];
 const realFetch = globalThis.fetch;
 afterEach(() => {
+  vi.restoreAllMocks();
   for (const engine of engines.splice(0)) engine.close();
   globalThis.fetch = realFetch;
 });
@@ -101,6 +102,50 @@ describe("interrupt timeouts", () => {
     await (await engine.sweep(Date.parse(parked!.interrupt!.expiresAt!) + 1)).settled;
     await expect(engine.resume(run.id, { approved: true })).rejects.toMatchObject({ status: 409, code: "run_not_interrupted" });
     expect((await engine.getRun(run.id)).output).toMatch(/^timed out at /);
+  });
+
+  it("never lets a timer left in another process cut the run's next sleep short", async () => {
+    const store = memoryStore();
+    const agent = defineAgent(async (_input, run) => {
+      const answer = await run.interrupt<string>("approve", undefined, { timeout: 60 });
+      await run.sleep("1h");
+      return answer;
+    });
+    const a = engineWith({ agent }, { store });
+    const b = engineWith({ agent }, { store });
+    const { run, done } = await a.start("agent");
+    expect(await done).toMatchObject({ status: "interrupted" });
+    // Answered on another instance, the run goes on to sleep for an hour.
+    expect(await (await b.resume(run.id, "yes")).done).toMatchObject({ status: "sleeping" });
+    // The deadline timer this instance set fires, and leaves the sleep alone.
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(await a.getRun(run.id)).toMatchObject({ status: "sleeping" });
+  });
+
+  it("ends the wait when the deadline passes while the parked run is still being saved", async () => {
+    const store = memoryStore();
+    const putRun = store.putRun.bind(store);
+    store.putRun = async (record, previous) => {
+      // The interrupted record lands after its 10 ms deadline, as on a slow store.
+      if (record.status === "interrupted") await new Promise((resolve) => setTimeout(resolve, 50));
+      return putRun(record, previous);
+    };
+    const engine = engineWith({ refund: refund(10) }, { store });
+    const { run, done } = await engine.start("refund");
+    expect(await done).toMatchObject({ status: "interrupted" });
+    await vi.waitFor(async () =>
+      expect(await engine.getRun(run.id)).toMatchObject({ status: "completed", output: expect.stringMatching(/^timed out at /) }),
+    );
+  });
+
+  it("sets the timer again when it fires before the deadline by the clock", async () => {
+    const engine = engineWith({ refund: refund(30) });
+    const { run, done } = await engine.start("refund");
+    expect(await done).toMatchObject({ status: "interrupted" });
+    // From here the clock reads 20 ms behind the timers, as when Node fires a timer a little early.
+    const realNow = Date.now;
+    vi.spyOn(Date, "now").mockImplementation(() => realNow() - 20);
+    await vi.waitFor(async () => expect((await engine.getRun(run.id)).status).toBe("completed"));
   });
 
   it("drives the deadline through a host scheduler's handleWake, early calls included", async () => {
