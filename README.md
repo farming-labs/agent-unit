@@ -334,10 +334,11 @@ explicitly to choose it whatever the build's environment has; the key is then re
 server runs:
 
 ```ts
-storage: "farmjs",                          // Farm.js storage, the key read where the server runs
-presets: { vercel: { storage: "farmjs" } }, // on one host only
-storage: "memory",                          // in the process: demos and tests that may lose runs between requests
+storage: "farmjs", // Farm.js storage, the key read where the server runs
 ```
+
+Or only on one host, `presets: { vercel: { storage: "farmjs" } }`, or `storage: "memory"` to keep
+runs in the process, for demos and tests that may lose them between requests.
 
 Without the key and without `storage`:
 
@@ -355,8 +356,8 @@ agent-unit: runs on vercel need storage that outlives a request, and none is set
   - or storage: "memory" if runs may be lost between requests
 ```
 
-`agent-unit dev` (and `farm dev`) keeps runs on disk and makes no calls to Farm.js, unless `storage`
-is `"memory"` or a driver. A server built for Farm.js storage that has no `FARMJS_API_KEY` where it
+`agent-unit dev`, `farm dev` and Nitro's prerenderer keep runs on disk and make no calls to Farm.js,
+unless `storage` is `"memory"` or a driver. A server built for Farm.js storage that has no `FARMJS_API_KEY` where it
 runs says so once as it starts, and each request that touches a run fails (a 500, with the same
 message in the log) until the key is set.
 
@@ -364,11 +365,13 @@ The key needs the `agents:runtime` permission, as for the clock; `FARMJS_ENVIRON
 `FARMJS_PROJECT_ID` and `FARMJS_API_URL` apply to both (see the table above). Limits:
 
 - A value (a run record, a journal entry, an event, a state value) is at most 1 MiB as JSON, and a
-  storage key at most 512 bytes. A listing returns at most 10,000 keys.
-- Finished runs are deleted 30 days after they finish, unless `retention` says otherwise.
-- Each read and write is a request to Farm.js storage. One that fails (storage unreachable, a key
-  refused) throws an error that names Farm.js storage and the HTTP status, and the step or request
-  fails with it.
+  storage key at most 512 bytes. Listings longer than 10,000 keys are read in pages.
+- Finished runs are deleted 30 days after they finish, unless `retention` says otherwise. That is
+  the default of a built server and of `createAgentUnit`; a `RunEngine` you build yourself keeps
+  them until you pass `retentionMs`.
+- Each read and write is a request to Farm.js storage. One that fails throws an error that names
+  Farm.js storage and what went wrong (the HTTP status of a refusal, or the network error when
+  storage is unreachable), and the step or request fails with it.
 
 With `createAgentUnit`, pass `storage: "farmjs"`, or leave `storage` out with the key set.
 `farmjsStore()` from `agent-unit/server` is the same store, for `new RunEngine({ store })`.
@@ -929,7 +932,7 @@ Redis it is exact out of the box:
 
 ```ts
 storage: "farmjs", // or just FARMJS_API_KEY in the build's environment
-storage: { driver: "redis", url: process.env.REDIS_URL },
+// or: storage: { driver: "redis", url: process.env.REDIS_URL },
 ```
 
 With `createAgentUnit` on your own server, wrap the storage yourself:

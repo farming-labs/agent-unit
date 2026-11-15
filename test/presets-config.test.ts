@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { configForPreset, loadProject } from "../src/build/load";
 import { resolvePreset } from "../src/build/nitro";
 import { agentUnit } from "../src/nitro";
@@ -9,7 +9,10 @@ import { agentUnit } from "../src/nitro";
 // `presets`: settings for one Nitro preset over the top-level ones.
 
 const dirs: string[] = [];
+// Builds here have no FARMJS_API_KEY, whatever the shell running the tests has.
+beforeEach(() => vi.stubEnv("FARMJS_API_KEY", undefined));
 afterEach(() => {
+  vi.unstubAllEnvs();
   for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
 });
 

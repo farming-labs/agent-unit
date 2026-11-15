@@ -97,7 +97,8 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
    * such as `{ driver: "redis", url: process.env.REDIS_URL }`. Default: Farm.js storage when the build
    * has FARMJS_API_KEY; otherwise the filesystem (`.data/agent-unit`) on Node, Bun and Deno, and other
    * hosts must set one, since their filesystem does not survive between invocations.
-   * `agent-unit dev` keeps runs on disk unless this is `"memory"` or a driver.
+   * `agent-unit dev`, `farm dev` and Nitro's prerenderer keep runs on disk unless this is `"memory"`
+   * or a driver.
    */
   storage?: StorageConfig | "farmjs" | "memory";
   /** Nitro preset to build for. Default: `node-server`, or the NITRO_PRESET environment variable. */

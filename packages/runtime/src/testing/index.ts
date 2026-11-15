@@ -1,11 +1,14 @@
-import { createStorage } from "unstorage";
+import { createStorage, type Storage } from "unstorage";
 import memory from "unstorage/drivers/memory";
 import type { AgentAdapter } from "../adapter/types";
+import type { RunStore } from "../runtime/store";
 import { createAgentUnit, type AgentUnitOptions } from "../server/app";
 import type { AgentEvent, RunInput, RunRecord } from "../types";
 
-export interface TestUnitOptions extends Partial<Omit<AgentUnitOptions, "agents">> {
+export interface TestUnitOptions extends Partial<Omit<AgentUnitOptions, "agents" | "storage">> {
   adapters?: AgentAdapter<any>[];
+  /** Storage to share with a second test unit, to simulate a restart. Default: a new in-memory one. */
+  storage?: Storage | RunStore;
 }
 
 /**
