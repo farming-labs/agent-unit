@@ -59,6 +59,19 @@ export async function verifyFarmjsSignature(apiKey: string, header: string, meth
   return safeEqual(await sign(apiKey, t, method, pathname), v1);
 }
 
+/**
+ * Where Farm.js Infra is and the headers that identify the app to it: the key, and the environment
+ * and project when they are set. Shared by every call agent-unit makes to Infra.
+ */
+export function farmjsInfra(env: Record<string, string | undefined>): { api: string; headers: Record<string, string> } | undefined {
+  const apiKey = env.FARMJS_API_KEY;
+  if (!apiKey) return undefined;
+  const headers: Record<string, string> = { authorization: `Bearer ${apiKey}` };
+  if (env.FARMJS_ENVIRONMENT) headers["x-farm-environment"] = env.FARMJS_ENVIRONMENT;
+  if (env.FARMJS_PROJECT_ID) headers["x-farm-project"] = env.FARMJS_PROJECT_ID;
+  return { api: (env.FARMJS_API_URL || DEFAULT_API_URL).replace(/\/+$/, ""), headers };
+}
+
 /** Hosts that freeze between requests, where an in-process timer would not fire. */
 function serverless(env: Record<string, string | undefined>): boolean {
   if (env.VERCEL || env.NETLIFY || env.AWS_LAMBDA_FUNCTION_NAME) return true;
@@ -141,14 +154,11 @@ function infraSender<T>(
     const entries = [...(pending?.values() ?? [])];
     pending = undefined;
     batch = undefined;
-    const env = options.env();
-    const apiKey = env.FARMJS_API_KEY;
+    const infra = farmjsInfra(options.env());
     const endpoint = options.endpoint();
-    if (!apiKey || !endpoint || !entries.length) return;
-    const url = `${(env.FARMJS_API_URL || DEFAULT_API_URL).replace(/\/+$/, "")}/api/agents/${options.list}`;
-    const headers: Record<string, string> = { authorization: `Bearer ${apiKey}`, "content-type": "application/json" };
-    if (env.FARMJS_ENVIRONMENT) headers["x-farm-environment"] = env.FARMJS_ENVIRONMENT;
-    if (env.FARMJS_PROJECT_ID) headers["x-farm-project"] = env.FARMJS_PROJECT_ID;
+    if (!infra || !endpoint || !entries.length) return;
+    const url = `${infra.api}/api/agents/${options.list}`;
+    const headers = { ...infra.headers, "content-type": "application/json" };
     const requests: Promise<void>[] = [];
     for (let i = 0; i < entries.length; i += MAX_BATCH) {
       requests.push(post(url, headers, JSON.stringify({ endpoint, [options.list]: entries.slice(i, i + MAX_BATCH) })));

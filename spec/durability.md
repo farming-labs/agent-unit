@@ -80,9 +80,10 @@ Everything lives in one unstorage namespace: `runs:`, `steps:<run>:<entry>` (one
 entry), `events:<run>:<seq>`, `index:` (runs by recency and status, sleepers by wake time, finished
 runs by finish time), `state:`, `lease:` and `kv:` (adapter storage). Events are read in seq order
 and a reader stops at a gap until the run settles, so a reader never skips an event that is still
-being written. Any driver works; serverless hosts need a shared one (Redis,
+being written. Any driver works; serverless hosts need a shared one (Farm.js storage, Redis,
 Upstash, Cloudflare KV, Netlify Blobs, a database), because their filesystem does not
-survive between invocations. Filesystem drivers write atomically by default, so a crash never leaves
+survive between invocations, and a build for one without storage stops instead of keeping runs in
+memory. Filesystem drivers write atomically by default, so a crash never leaves
 a torn record, and an execution writes its journal one write at a time.
 
 Only one execution runs a run at a time. Within a process, an execution claims the run before its
@@ -98,8 +99,8 @@ of an execution) is saved only if the stored record still has the version that w
 (`AtomicWrites.compareAndSet`); otherwise the writer reads the run again and decides from what it is
 now. A second resume of the same interrupt gets a 409 instead of replacing the first one's answer,
 and a cancel that lands while a run is executing is folded into its final save instead of being
-overwritten. Redis (`agent-unit/redis`, wired in automatically for the `redis` driver) and the
-Durable Objects index save atomically; other stores fall back to check-then-write, serialized within
+overwritten. Farm.js storage (its `cas` and `lease.*` operations), Redis (`agent-unit/redis`, wired
+in automatically for the `redis` driver) and the Durable Objects index save atomically; other stores fall back to check-then-write, serialized within
 a process.
 
 ## Runtimes

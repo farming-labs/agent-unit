@@ -7,7 +7,7 @@ import { createAgentUnit } from "@agent-unit/runtime/server";
 import type { StorageConfig } from "../config";
 import { loadAgents } from "./agents";
 import type { DevApp } from "./dev";
-import { DEFAULT_STORAGE, withSafeDefaults } from "./engine";
+import { resolveStorage, withSafeDefaults } from "./engine";
 import type { LoadedProject } from "./load";
 
 /** The storage driver the build would mount: one of unstorage's by name or alias, or a module of the app's. */
@@ -33,7 +33,8 @@ async function loadDriver(root: string, config: StorageConfig): Promise<Driver> 
 /** agent-unit's engine serving the app's agents from source, as the built server does. */
 export async function createEngineApp(project: LoadedProject): Promise<DevApp> {
   const { agents, adapters } = await loadAgents(project);
-  const storageConfig = project.config.storage ?? DEFAULT_STORAGE;
+  // On this machine's disk unless the config sets a driver (or memory): dev makes no calls to Farm.js.
+  const storageConfig = resolveStorage(project, "dev", () => {}, { dev: true });
   const driver = await loadDriver(project.root, storageConfig);
   const plain = createStorage({ driver });
   const redis = driver as Driver & { getInstance?: () => unknown; options?: { base?: string } };
