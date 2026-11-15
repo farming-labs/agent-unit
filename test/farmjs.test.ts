@@ -366,7 +366,7 @@ describe("Netlify's scheduled sweep", () => {
     try {
       writeFileSync(join(root, "package.json"), JSON.stringify({ name: "sweep", type: "module" }));
       vi.spyOn(console, "warn").mockImplementation(() => undefined);
-      const build = prepareEngine({ root, name: "sweep", config: { basePath: "/api/agent" }, agentFiles: {} }, "netlify", join(root, ".agent-unit"), () => {});
+      const build = prepareEngine({ root, name: "sweep", config: { basePath: "/api/agent", storage: "memory" }, agentFiles: {} }, "netlify", join(root, ".agent-unit"), () => {});
       mkdirSync(join(root, "out"));
       await build.finish({ outDir: join(root, "out"), serverDir: join(root, "functions", "server") }, () => {});
       const sweep = await import(pathToFileURL(join(root, "functions", "agent-unit-sweep", "agent-unit-sweep.mjs")).href);
