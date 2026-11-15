@@ -55,6 +55,20 @@ describe("Farm.js storage driver", () => {
     expect(fake.values().get("state:note")).toBe("plain text");
   });
 
+  it("lists past one page of 10,000 keys, asking again after the last key it got", async () => {
+    const { storage } = farmjsStore({ env: fake.env });
+    await storage.setItem("other", "1" as never);
+    const namespace = fake.namespaces.get("proj_fake:production")!;
+    const keys = Array.from({ length: 10_001 }, (_, index) => `steps:run_a:${String(index).padStart(5, "0")}`);
+    for (const key of keys) namespace.kv.set(key, "true");
+    expect(await storage.getKeys("steps:run_a")).toEqual(keys);
+    const listings = fake.opsRequests.flat().filter((op) => op.op === "keys");
+    expect(listings).toEqual([
+      { op: "keys", prefix: "steps:run_a:" },
+      { op: "keys", prefix: "steps:run_a:", after: "steps:run_a:09999" },
+    ]);
+  });
+
   it("writes a run record only over the version it read, and creates it only once", async () => {
     const writers = Array.from({ length: 6 }, () => coordination().atomic);
     expect(await writers[0]!.compareAndSet("runs:a", undefined, record(1))).toBe(true);
@@ -116,7 +130,10 @@ describe("Farm.js storage driver", () => {
     vi.setSystemTime(start + 47_000);
     await storage.getItem("a");
     expect(fake.tokenRequests).toHaveLength(1);
+    // Past 80% the call goes on with the token it has, and the new one is fetched beside it.
     vi.setSystemTime(start + 49_000);
+    await storage.getItem("a");
+    await vi.waitFor(() => expect(fake.tokenRequests).toHaveLength(2));
     await storage.getItem("a");
     expect(fake.tokenRequests).toHaveLength(2);
   });
@@ -131,6 +148,11 @@ describe("Farm.js storage driver", () => {
     fake.failTokens(503);
     vi.setSystemTime(start + 55_000);
     expect(await storage.getItem("a")).toBe(1);
+    await vi.waitFor(() => expect(fake.tokenRequests).toHaveLength(2));
+    // A failed refresh is not retried on every call while the token still works.
+    vi.setSystemTime(start + 56_000);
+    expect(await storage.getItem("a")).toBe(1);
+    expect(fake.tokenRequests).toHaveLength(2);
     vi.setSystemTime(start + 61_000);
     await expect(storage.getItem("a")).rejects.toThrow(
       "agent-unit: Farm.js storage got no token from Farm.js Infra (HTTP 503): Farm.js storage is not available on this Farm.js Infra.",
@@ -252,7 +274,7 @@ describe("the engine over Farm.js storage", () => {
     const agents = {
       napper: defineAgent(async (_input, run) => {
         const before = await run.step("before", () => "rested");
-        await run.sleep("150ms");
+        await run.sleep("1h");
         return `${before} and awake`;
       }),
     };
@@ -262,8 +284,8 @@ describe("the engine over Farm.js storage", () => {
     // This process stops: its timer never fires.
     a!.close();
     expect(await b!.sweep()).toMatchObject({ woken: [] });
-    await pause(200);
-    const swept = await b!.sweep();
+    // An hour later, as the sweep's clock reads it.
+    const swept = await b!.sweep(Date.now() + 2 * 3_600_000);
     expect(swept.woken).toEqual([run.id]);
     await swept.settled;
     expect(await c!.getRun(run.id)).toMatchObject({ status: "completed", output: "rested and awake" });
@@ -326,7 +348,8 @@ describe("the engine over Farm.js storage", () => {
     expect(await starter!.getRun(run.id)).toMatchObject({ status: "completed", output: "done" });
     // Leases are the store's own, taken and given back atomically, not records beside the run.
     const ops = fake.opsRequests.flat();
-    expect(ops.filter((op) => op.op === "lease.acquire" && op.run === run.id && !String(op.owner).startsWith("probe_")).length).toBeGreaterThanOrEqual(2);
+    expect(ops.filter((op) => op.op === "lease.acquire" && op.run === run.id).length).toBeGreaterThanOrEqual(2);
+    expect(ops.some((op) => op.op === "lease.expired" && op.run === run.id)).toBe(true);
     expect(ops.some((op) => op.op === "set" && op.key === `lease:${run.id}`)).toBe(false);
     expect(fake.leases().has(run.id)).toBe(false);
   });

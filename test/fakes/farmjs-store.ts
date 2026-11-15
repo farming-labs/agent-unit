@@ -11,7 +11,7 @@ const MAX_KEYS = 10_000;
 
 const bytes = (text: string) => new TextEncoder().encode(text).length;
 
-type Op = { op: string; key?: unknown; prefix?: unknown; value?: unknown; expected?: unknown; run?: unknown; owner?: unknown; ttl?: unknown };
+type Op = { op: string; key?: unknown; prefix?: unknown; after?: unknown; value?: unknown; expected?: unknown; run?: unknown; owner?: unknown; ttl?: unknown };
 
 interface Namespace {
   /** Values as JSON text, as the Durable Object's `kv` table keeps them. */
@@ -79,12 +79,14 @@ export async function startFakeFarmjsStore(options: { key?: string; tokenLifeMs?
   function invalid(ops: unknown): Response | undefined {
     if (!Array.isArray(ops) || ops.length < 1 || ops.length > MAX_OPS) return Response.json({ error: `1 to ${MAX_OPS} ops` }, { status: 400 });
     for (const op of ops as Op[]) {
-      const keyed = ["get", "set", "del", "cas"].includes(op?.op);
-      const leased = op?.op?.startsWith("lease.");
-      if (!keyed && !leased && op?.op !== "keys") return Response.json({ error: `unknown op ${op?.op}` }, { status: 400 });
+      const name = typeof op?.op === "string" ? op.op : undefined;
+      const keyed = ["get", "set", "del", "cas"].includes(name!);
+      const leased = ["lease.acquire", "lease.renew", "lease.release"].includes(name!);
+      if (!keyed && !leased && name !== "keys" && name !== "lease.expired") return Response.json({ error: `unknown op ${String(op?.op)}` }, { status: 400 });
       if (keyed && (typeof op.key !== "string" || !op.key || bytes(op.key) > MAX_KEY_BYTES)) return Response.json({ error: "bad key" }, { status: 400 });
-      if (op.op === "keys" && typeof op.prefix !== "string") return Response.json({ error: "bad prefix" }, { status: 400 });
+      if (op.op === "keys" && (typeof op.prefix !== "string" || (op.after !== undefined && typeof op.after !== "string"))) return Response.json({ error: "bad prefix" }, { status: 400 });
       if (leased && (typeof op.run !== "string" || typeof op.owner !== "string")) return Response.json({ error: "bad lease" }, { status: 400 });
+      if (op.op === "lease.expired" && typeof op.run !== "string") return Response.json({ error: "bad lease" }, { status: 400 });
       if ((op.op === "lease.acquire" || op.op === "lease.renew") && !(typeof op.ttl === "number" && op.ttl > 0)) return Response.json({ error: "bad ttl" }, { status: 400 });
       if (op.op === "cas" && !(op.expected === null || typeof op.expected === "number")) return Response.json({ error: "bad expected" }, { status: 400 });
       if (op.op === "cas" && typeof (op.value as { version?: unknown } | null)?.version !== "number") return Response.json({ error: "cas needs a versioned record" }, { status: 400 });
@@ -118,7 +120,10 @@ export async function startFakeFarmjsStore(options: { key?: string; tokenLifeMs?
           namespace.kv.delete(key);
           return true;
         case "keys":
-          return [...namespace.kv.keys()].filter((name) => name.startsWith(op.prefix as string)).sort().slice(0, MAX_KEYS);
+          return [...namespace.kv.keys()]
+            .filter((name) => name.startsWith(op.prefix as string) && (op.after === undefined || name > (op.after as string)))
+            .sort()
+            .slice(0, MAX_KEYS);
         case "cas": {
           const current = versionOf(namespace.kv.get(key));
           if (op.expected === null ? current !== undefined : current !== op.expected) return false;
@@ -140,6 +145,10 @@ export async function startFakeFarmjsStore(options: { key?: string; tokenLifeMs?
         case "lease.release":
           if (namespace.lease.get(run)?.owner === op.owner) namespace.lease.delete(run);
           return true;
+        case "lease.expired": {
+          const lease = namespace.lease.get(run);
+          return !lease || lease.until <= now;
+        }
         default:
           throw new Error(`unreachable: ${op.op}`);
       }

@@ -1,6 +1,5 @@
 import { createStorage, type Driver } from "unstorage";
 import { RunStore, type AtomicWrites, type LeaseBackend } from "../runtime/store";
-import { randomId } from "../runtime/util";
 import type { RunRecord } from "../types";
 import { farmjsInfra } from "./farmjs";
 
@@ -14,11 +13,12 @@ export type StoreOp =
   | { op: "get"; key: string }
   | { op: "set"; key: string; value: unknown }
   | { op: "del"; key: string }
-  | { op: "keys"; prefix: string }
+  | { op: "keys"; prefix: string; after?: string }
   | { op: "cas"; key: string; expected: number | null; value: RunRecord }
   | { op: "lease.acquire"; run: string; owner: string; ttl: number }
   | { op: "lease.renew"; run: string; owner: string; ttl: number }
-  | { op: "lease.release"; run: string; owner: string };
+  | { op: "lease.release"; run: string; owner: string }
+  | { op: "lease.expired"; run: string };
 
 export interface FarmjsStoreOptions {
   /**
@@ -28,9 +28,11 @@ export interface FarmjsStoreOptions {
   env?: Record<string, string | undefined>;
 }
 
-/** The store lists at most this many keys at a time. */
-const MAX_KEYS = 10_000;
+/** The store lists at most this many keys per request; a full page means there may be more. */
+const KEYS_PER_LIST = 10_000;
 const TOKEN_TIMEOUT_MS = 10_000;
+/** After a refresh fails, the token still valid is used this long before asking Infra again. */
+const REFRESH_RETRY_MS = 30_000;
 const OPS_TIMEOUT_MS = 30_000;
 /** A token is replaced once this share of its life has passed, and once on a 401. */
 const REFRESH_AT = 0.8;
@@ -42,8 +44,7 @@ const MIN_TOKEN_LIFE_MS = 30_000;
 /** What to do when runs are kept in Farm.js storage and FARMJS_API_KEY is not set where the server runs. */
 export const FARMJS_KEY_MISSING = `agent-unit: runs are kept in Farm.js storage here, but FARMJS_API_KEY is not set. Either:
   - add FARMJS_API_KEY (from app.farmjs.dev) to this server's environment
-  - set storage, e.g. { driver: "upstash" } or { driver: "redis", url: process.env.REDIS_URL }
-  - set it per target: presets: { <preset>: { storage: { ... } } }
+  - keep runs elsewhere: \`storage\` in agent-unit.config.ts (per host under \`presets\`), or createAgentUnit's \`storage\` option
   - or storage: "memory" if runs may be lost between requests`;
 
 interface Token {
@@ -54,15 +55,15 @@ interface Token {
   expiresAt: number;
 }
 
-/** Tokens per Infra, key, environment and project, shared by every store in this process. */
-const tokens = new Map<string, { current?: Token; pending?: Promise<Token> }>();
-
-const warned = new Set<string>();
-function warnOnce(topic: string, message: string) {
-  if (warned.has(topic)) return;
-  warned.add(topic);
-  console.warn(message);
+interface TokenSlot {
+  current?: Token;
+  pending?: Promise<Token>;
+  /** After a failed refresh: no new one before this while the current token is still valid. */
+  retryAt?: number;
 }
+
+/** Tokens per Infra, key, environment and project, shared by every store in this process. */
+const tokens = new Map<string, TokenSlot>();
 
 /** Why a fetch failed, with the system error under undici's "fetch failed". */
 function reason(error: unknown): string {
@@ -162,28 +163,37 @@ export class FarmjsStoreClient {
     return body.results;
   }
 
-  /** The cached token, or a new one once 80% of its life has passed. Calls at the same time share one request. */
-  private async token(slot: { current?: Token; pending?: Promise<Token> }, infra: { api: string; headers: Record<string, string> }): Promise<Token> {
+  /**
+   * The cached token. Once 80% of its life has passed it is refreshed in the background and still
+   * used until it expires, so a slow or unreachable Infra never delays a call while the token works.
+   * Calls at the same time share one request.
+   */
+  private async token(slot: TokenSlot, infra: { api: string; headers: Record<string, string> }): Promise<Token> {
     const current = slot.current;
-    if (current && Date.now() < current.refreshAt) return current;
-    slot.pending ??= fetchToken(infra).then(
-      (token) => {
-        slot.current = token;
-        slot.pending = undefined;
-        return token;
-      },
-      (error) => {
-        slot.pending = undefined;
-        throw error;
-      },
-    );
-    try {
-      return await slot.pending;
-    } catch (error) {
-      // Infra did not answer the refresh, but the token it gave still has time left: use it until then.
-      if (current && slot.current === current && Date.now() < current.expiresAt) return current;
-      throw error;
+    const now = Date.now();
+    if (current && now < current.refreshAt) return current;
+    const usable = current !== undefined && now < current.expiresAt;
+    if (!slot.pending && !(usable && now < (slot.retryAt ?? 0))) {
+      slot.pending = fetchToken(infra).then(
+        (token) => {
+          slot.current = token;
+          slot.pending = undefined;
+          slot.retryAt = undefined;
+          return token;
+        },
+        (error) => {
+          slot.pending = undefined;
+          slot.retryAt = Date.now() + REFRESH_RETRY_MS;
+          throw error;
+        },
+      );
     }
+    if (usable) {
+      // Its failure is reported by the first call that needs a new token, not by this one.
+      slot.pending?.catch(() => undefined);
+      return current;
+    }
+    return slot.pending!;
   }
 
   private async send(token: Token, ops: StoreOp[]): Promise<Response> {
@@ -230,11 +240,14 @@ export function farmjsDriver(client: FarmjsStoreClient): Driver {
     },
     getKeys: async (base) => {
       const prefix = base ?? "";
-      const keys = (await one({ op: "keys", prefix })) as string[];
-      if (keys.length >= MAX_KEYS) {
-        warnOnce("keys", `[agent-unit] Farm.js storage lists at most ${MAX_KEYS} keys at a time, and "${prefix}" has that many: a listing under it may be cut short.`);
+      // Page by page: a run's journal or events can pass one listing's 10,000 keys.
+      const keys: string[] = [];
+      for (let page: string[] = []; ; ) {
+        const after = page.at(-1);
+        page = (await one(after === undefined ? { op: "keys", prefix } : { op: "keys", prefix, after })) as string[];
+        keys.push(...page);
+        if (page.length < KEYS_PER_LIST) return keys;
       }
-      return keys;
     },
   };
 }
@@ -256,16 +269,7 @@ export function farmjsCoordination(client: FarmjsStoreClient): { atomic: AtomicW
       release: async (run, owner) => {
         await one({ op: "lease.release", run, owner });
       },
-      // No operation reads a lease. Taking it as an owner nobody else has and giving it back in the
-      // same transaction tells whether it was free, and no one ever sees it taken.
-      expired: async (run) => {
-        const owner = randomId("probe");
-        const [free] = await client.run([
-          { op: "lease.acquire", run, owner, ttl: 1 },
-          { op: "lease.release", run, owner },
-        ]);
-        return free === true;
-      },
+      expired: async (run) => (await one({ op: "lease.expired", run })) === true,
     },
   };
 }
