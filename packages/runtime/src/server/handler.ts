@@ -3,7 +3,7 @@ import { safeEqual } from "../runtime/util";
 import type { AgentEvent, RunInput, RunRecord, RunStatus } from "../types";
 import { agentCardDocument } from "./a2a";
 import { checkPost, readBody, RUN_ID, THREAD_ID } from "./body";
-import { farmClock, farmjsSignature, verifyFarmjsSignature } from "./farmjs";
+import { farmApprovals, farmClock, farmjsSignature, verifyFarmjsSignature } from "./farmjs";
 import { handleMcp } from "./mcp";
 import type { RunService } from "./service";
 
@@ -184,24 +184,72 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
     };
   }
 
+  /** The base URL Farm.js Infra calls this deployment at. */
+  const infraEndpoint = () => {
+    const origin = clockOrigin();
+    return origin && `${origin}${base}`;
+  };
+
   // Farm.js Infra wakes runs at their time on hosts with no scheduler of their own (see farmjs.ts).
   if (engine instanceof RunEngine && !engine.options.scheduleWake && !engine.options.clock) {
-    engine.options.clock = farmClock({
-      env: () => engine.env(),
-      endpoint: () => {
-        const origin = clockOrigin();
-        return origin && `${origin}${base}`;
-      },
-    });
+    engine.options.clock = farmClock({ env: () => engine.env(), endpoint: infraEndpoint });
+  }
+  // And shows the interrupts runs wait on as approvals, whoever wakes them.
+  if (engine instanceof RunEngine && !engine.options.approvals) {
+    engine.options.approvals = farmApprovals({ env: () => engine.env(), endpoint: infraEndpoint });
   }
 
-  /** The secret, or a fresh signature of this very call (method and path) with FARMJS_API_KEY. */
-  const internalAllowed = async (request: Request, method: string, pathname: string) => {
-    const token = secret();
-    if (token && safeEqual(request.headers.get("authorization") ?? "", `Bearer ${token}`)) return true;
+  /** A fresh signature of this very call (method and path) with FARMJS_API_KEY, as Farm.js Infra signs its calls. */
+  const signedByInfra = async (request: Request, method: string, pathname: string) => {
     const apiKey = engine.env().FARMJS_API_KEY;
     const signature = request.headers.get("farmjs-signature");
     return Boolean(apiKey && signature) && (await verifyFarmjsSignature(apiKey!, signature!, method, pathname));
+  };
+
+  /** The secret, or a signature from Farm.js Infra. */
+  const internalAllowed = async (request: Request, method: string, pathname: string) => {
+    const token = secret();
+    if (token && safeEqual(request.headers.get("authorization") ?? "", `Bearer ${token}`)) return true;
+    return signedByInfra(request, method, pathname);
+  };
+
+  /**
+   * Farm.js Infra's answer to an interrupt a person approved or rejected in its dashboard. Only Infra
+   * answers here, so only its signature is taken, never the secret. 409 `not_waiting` when the run
+   * no longer waits on that very pause (answered elsewhere, cancelled or already resumed).
+   */
+  const answer = async (request: Request, id: string, background: <T>(work: Promise<T>) => Promise<T | undefined>) => {
+    const body = await readJson(request, options.maxBodyBytes);
+    const { key, interrupt } = body;
+    const reply = body.answer as Record<string, unknown> | undefined;
+    if (typeof key !== "string" || !key || typeof interrupt !== "string" || !interrupt) {
+      throw new AgentUnitError(400, "invalid_answer", "`key` and `interrupt` must name the pause being answered.");
+    }
+    if (
+      !reply ||
+      typeof reply !== "object" ||
+      Array.isArray(reply) ||
+      typeof reply.approved !== "boolean" ||
+      typeof reply.by !== "string" ||
+      (reply.note !== undefined && (typeof reply.note !== "string" || reply.note.length > 500))
+    ) {
+      throw new AgentUnitError(400, "invalid_answer", "`answer` must be `{ approved: boolean, by: string, note?: string }`, with a note of at most 500 characters.");
+    }
+    if (!RUN_ID.test(id)) throw new AgentUnitError(404, "run_not_found", `No run with id "${id}".`);
+    const record = await engine.getRun(id);
+    const notWaiting = json({ error: "not_waiting" }, 409);
+    if (record.status !== "interrupted" || record.interrupt?.key !== key || record.interrupt.name !== interrupt) return notWaiting;
+    const answered = { approved: reply.approved, by: reply.by, ...(reply.note ? { note: reply.note } : {}) };
+    let resumed: Awaited<ReturnType<RunService["resume"]>>;
+    try {
+      resumed = await engine.resume(id, answered, { interrupt: key, answeredBy: "approvals" });
+    } catch (error) {
+      // Resumed or cancelled by another request between the check and the resume.
+      if (error instanceof AgentUnitError && error.status === 409) return notWaiting;
+      throw error;
+    }
+    const settled = await background(resumed.done);
+    return json({ status: (settled ?? resumed.run).status });
   };
 
   return async function handle(request: Request, context: RequestContext = {}): Promise<Response> {
@@ -254,6 +302,11 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
         return json(agentCardDocument(engine.manifest(), `${url.origin}${base}`, options.version));
       }
 
+      if (segments[0] === "__agent-unit" && segments[1] === "answer") {
+        if (method !== "POST" || !segments[2] || segments.length !== 3) return problem(404, "not_found", "Not found.");
+        if (!(await signedByInfra(request, method, url.pathname))) return problem(401, "unauthorized", "Missing or invalid Farm.js Infra signature.");
+        return await answer(request, segments[2], background);
+      }
       if (segments[0] === "__agent-unit") {
         if (!(await internalAllowed(request, method, url.pathname))) return problem(401, "unauthorized", "Missing or invalid agent-unit secret or signature.");
         if (method === "POST" && segments[1] === "continue" && segments[2] && engine.continue) {
