@@ -931,7 +931,11 @@ export default defineAgent({
   // With a test, the agent takes its model as an argument, so the test can give it a scripted one.
   const factory = answers.extras.includes("test");
   const imports = mastra
-    ? [`import { Agent } from "@mastra/core/agent";`, `import { createTool } from "@mastra/core/tools";`]
+    ? [
+        `import { Agent } from "@mastra/core/agent";`,
+        `import { createTool } from "@mastra/core/tools";`,
+        `import type { LanguageModel } from "ai";`,
+      ]
     : [factory ? `import { type LanguageModel, tool, ToolLoopAgent } from "ai";` : `import { tool, ToolLoopAgent } from "ai";`];
   imports.push(
     `import { ${provider.create} } from "${provider.package}";`,
@@ -950,7 +954,7 @@ export default defineAgent({
   id: "assistant",
   name: "Assistant",
   instructions: "${INSTRUCTIONS}",
-  ${factory ? "model" : `model: ${model}`},
+  model: mastraModel(${model}),
   tools: {
     refund: createTool({
       id: "refund",
@@ -971,10 +975,9 @@ export default defineAgent({
     }),
   },
 })`;
-  const modelType = mastra ? `ConstructorParameters<typeof Agent>[0]["model"]` : "LanguageModel";
   const body = factory
     ? `/** The agent on any model: the test gives it a scripted one. */
-export function createAssistant(model: ${modelType}) {
+export function createAssistant(model: LanguageModel) {
   return ${agent.replaceAll("\n", "\n  ")};
 }
 
@@ -987,7 +990,15 @@ export default createAssistant(provider("${provider.model}"));`
 // resumes after an approval, a restart or a redeploy picks up where it stopped.
 // POST /agents/assistant/runs {"input":{"prompt":"Please refund order o_42"}}
 const provider = ${provider.create}({ apiKey: env.${provider.key} });
-
+${
+  mastra
+    ? `
+// Mastra types models against its own copy of the AI SDK's model type, which can trail the \`ai\`
+// package installed here. The model object is the same at runtime.
+const mastraModel = (model: LanguageModel) => model as ConstructorParameters<typeof Agent>[0]["model"];
+`
+    : ""
+}
 ${body}
 `,
     ...(factory ? { "test/assistant.test.ts": modelAgentTest(mastra ? "mastra" : "ai-sdk") } : {}),
