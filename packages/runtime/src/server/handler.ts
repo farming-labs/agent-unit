@@ -252,6 +252,30 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
     return json({ status: (settled ?? resumed.run).status });
   };
 
+  /**
+   * Farm.js Infra cancelling a run from the approval it waits on. Like the answer route, only Infra's
+   * signature is taken. The run is cancelled only while it still waits on that very pause; otherwise
+   * 409 `not_waiting`, so a late cancel never stops a run that has moved on.
+   */
+  const cancelWaiting = async (request: Request, id: string) => {
+    const { key, interrupt } = await readJson(request, options.maxBodyBytes);
+    if (typeof key !== "string" || !key || typeof interrupt !== "string" || !interrupt) {
+      throw new AgentUnitError(400, "invalid_cancel", "`key` and `interrupt` must name the pause the run waits on.");
+    }
+    if (!RUN_ID.test(id)) throw new AgentUnitError(404, "run_not_found", `No run with id "${id}".`);
+    const record = await engine.getRun(id);
+    const notWaiting = json({ error: "not_waiting" }, 409);
+    if (record.status !== "interrupted" || record.interrupt?.key !== key || record.interrupt.name !== interrupt) return notWaiting;
+    try {
+      const cancelled = await engine.cancel(id, { interrupt: key, cancelledBy: "approvals" });
+      return json({ status: cancelled.status });
+    } catch (error) {
+      // Resumed or cancelled by another request between the check and the cancel.
+      if (error instanceof AgentUnitError && error.status === 409) return notWaiting;
+      throw error;
+    }
+  };
+
   return async function handle(request: Request, context: RequestContext = {}): Promise<Response> {
     // Hosts without waitUntil (AWS Lambda, Netlify Functions) freeze once the response is sent,
     // so there the work finishes inside the request instead of in the background.
@@ -306,6 +330,11 @@ export function createHandler(engine: RunService, options: HandlerOptions = {}) 
         if (method !== "POST" || !segments[2] || segments.length !== 3) return problem(404, "not_found", "Not found.");
         if (!(await signedByInfra(request, method, url.pathname))) return problem(401, "unauthorized", "Missing or invalid Farm.js Infra signature.");
         return await answer(request, segments[2], background);
+      }
+      if (segments[0] === "__agent-unit" && segments[1] === "cancel") {
+        if (method !== "POST" || !segments[2] || segments.length !== 3) return problem(404, "not_found", "Not found.");
+        if (!(await signedByInfra(request, method, url.pathname))) return problem(401, "unauthorized", "Missing or invalid Farm.js Infra signature.");
+        return await cancelWaiting(request, segments[2]);
       }
       if (segments[0] === "__agent-unit") {
         if (!(await internalAllowed(request, method, url.pathname))) return problem(401, "unauthorized", "Missing or invalid agent-unit secret or signature.");

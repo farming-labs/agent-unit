@@ -3,7 +3,7 @@ import { createStorage, type Storage } from "unstorage";
 import nullDriver from "unstorage/drivers/null";
 import { validateAdapter, type AgentAdapter } from "../adapter/types";
 import { functionAdapter, resolveAgent } from "../agents";
-import { AgentUnitError, RunEngine, type InterruptHook, type LoadedAgent, type ResumeOptions } from "../runtime/engine";
+import { AgentUnitError, RunEngine, type InterruptHook, type LoadedAgent, type ResumeOptions, type CancelOptions } from "../runtime/engine";
 import { RunStore, type ListRunsFilter } from "../runtime/store";
 import { parseDuration, randomId } from "../runtime/util";
 import { farmApprovals } from "../server/farmjs";
@@ -60,7 +60,7 @@ function unwrap<T>(result: Envelope<T>): T {
 interface RunStub {
   start(agent: string, input: RunInput, options: { threadId?: string }, id: string): Promise<Envelope<RunRecord>>;
   resume(id: string, answer: unknown, options?: ResumeOptions): Promise<Envelope<RunRecord>>;
-  cancel(id: string): Promise<Envelope<RunRecord>>;
+  cancel(id: string, options?: CancelOptions): Promise<Envelope<RunRecord>>;
   getRun(id: string): Promise<Envelope<RunRecord>>;
   settled(id: string): Promise<Envelope<RunRecord | undefined>>;
   deleteRun(id: string): Promise<Envelope<null>>;
@@ -218,8 +218,8 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
       });
     }
 
-    cancel(id: string) {
-      return envelope(() => this.engine.cancel(id));
+    cancel(id: string, options?: CancelOptions) {
+      return envelope(() => this.engine.cancel(id, options));
     }
 
     getRun(id: string) {
@@ -305,8 +305,8 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
       return { run, done: stub.settled(id).then(unwrap) };
     }
 
-    async cancel(id: string) {
-      return unwrap(await this.stub(id).cancel(id));
+    async cancel(id: string, options?: CancelOptions) {
+      return unwrap(await this.stub(id).cancel(id, options));
     }
 
     async getRun(id: string) {

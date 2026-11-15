@@ -3,8 +3,9 @@ import { safeEqual } from "../runtime/util";
 
 // Farm.js Infra as the clock that wakes runs on every host: the app registers each wake-up, and Infra
 // calls `POST {endpoint}/__agent-unit/wake/{run}` at that time, signed with the app's FARMJS_API_KEY.
-// It also shows the interrupts runs wait on as approvals, and answers one with
-// `POST {endpoint}/__agent-unit/answer/{run}`, signed the same way.
+// It also shows the interrupts runs wait on as approvals, answers one with
+// `POST {endpoint}/__agent-unit/answer/{run}`, and cancels a waiting run with
+// `POST {endpoint}/__agent-unit/cancel/{run}`, both signed the same way.
 // Web Crypto only, so it runs on Workers, Deno, Bun and Node alike.
 
 const encoder = new TextEncoder();

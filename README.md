@@ -328,6 +328,10 @@ const decision = await run.interrupt<{ approved: boolean; by: string; note?: str
 if (!decision.approved) return "declined";
 ```
 
+They can also cancel the run instead: Infra calls `POST /__agent-unit/cancel/<run>`, signed the
+same way, and the run ends `cancelled` only while it still waits on that pause. A run that has moved
+on (answered elsewhere, or paused again) is left alone.
+
 This works on every host, the Durable Objects runtime included, and on long-lived servers too, and
 `AGENT_UNIT_CLOCK=local` does not turn it off. An interrupt answered through your own
 `POST /runs/:id/resume`, or a run cancelled while it waits, is marked closed in Infra. Infra answers

@@ -1,4 +1,4 @@
-import type { HandleWakeOptions, ResumeOptions } from "../runtime/engine";
+import type { CancelOptions, HandleWakeOptions, ResumeOptions } from "../runtime/engine";
 import type { ListRunsFilter } from "../runtime/store";
 import type { AgentCard, AgentEvent, Manifest, RunInput, RunRecord } from "../types";
 
@@ -12,7 +12,8 @@ export interface RunService {
   start(agent: string, input?: RunInput, options?: { threadId?: string; id?: string }): Promise<{ run: RunRecord; done: Promise<RunRecord | undefined> }>;
   /** `options.interrupt`: the key of the interrupt being answered; another one pending is a 409. */
   resume(id: string, answer: unknown, options?: ResumeOptions): Promise<{ run: RunRecord; done: Promise<RunRecord | undefined> }>;
-  cancel(id: string): Promise<RunRecord>;
+  /** `options.interrupt`: the key of the interrupt the run must still wait on; otherwise a 409 and no cancel. */
+  cancel(id: string, options?: CancelOptions): Promise<RunRecord>;
   getRun(id: string): Promise<RunRecord>;
   listRuns(filter?: ListRunsFilter): Promise<RunRecord[]>;
   events(id: string, after?: number, signal?: AbortSignal): AsyncIterable<AgentEvent>;

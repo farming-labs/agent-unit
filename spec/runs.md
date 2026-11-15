@@ -129,13 +129,14 @@ header when `FARMJS_API_KEY` is set: `v1` is the HMAC-SHA256 of
 `"farmjs-agent-v1\n" + t + "\n" + method + " " + pathname` (the path as requested, base path
 included), keyed with the hex SHA-256 of `FARMJS_API_KEY` as text, and `t` must be within 300
 seconds of now. With neither configured they are disabled. They are not affected by the app's
-`authorize` hook. The answer endpoint takes only the signature: only Farm.js Infra answers there.
+`authorize` hook. The answer and cancel endpoints take only the signature: only Farm.js Infra calls them.
 
 | Method | Path | Purpose |
 | --- | --- | --- |
 | `POST` | `/__agent-unit/continue/:id` | Continue a run that yielded at its time budget |
 | `POST` | `/__agent-unit/wake/:id` | A clock's wake-up (Farm.js Infra): wake the run if its sleep is due, continue it if its executor died; returns `{ next }`, when to call again (an ISO time), or `null` |
 | `POST` | `/__agent-unit/answer/:id` | Farm.js Infra's answer to an interrupt: body `{ key, interrupt, answer: { approved, by, note? } }`. Resumes the run when it waits on that very pause `key` and returns `{ status }`; `409 { "error": "not_waiting" }` when it does not, `404` for an unknown run |
+| `POST` | `/__agent-unit/cancel/:id` | Farm.js Infra cancelling a run from its approval: body `{ key, interrupt }`. Cancels the run when it waits on that very pause `key` and returns `{ status: "cancelled" }`; `409 { "error": "not_waiting" }` when it does not (finished, resumed, or paused again), `404` for an unknown run |
 | `POST` | `/__agent-unit/sweep` | Wake due sleepers, recover stalled runs and delete finished runs past `retention`; returns `{ woken, recovered, deleted }` |
 
 The build schedules the sweep with the platform's own scheduler where Nitro supports one (Node, Bun,

@@ -75,10 +75,18 @@ function app(overrides: Record<string, string | undefined> = {}, agents: Record<
       body: JSON.stringify(body),
     });
   };
+  const cancel = async (id: string, body: unknown, key = KEY) => {
+    const path = `/__agent-unit/cancel/${encodeURIComponent(id)}`;
+    return call(path, {
+      method: "POST",
+      headers: { "content-type": "application/json", "farmjs-signature": await farmjsSignature(key, "POST", `/api/agent${path}`) },
+      body: JSON.stringify(body),
+    });
+  };
   const settle = async () => {
     while (pending.length) await Promise.allSettled(pending.splice(0));
   };
-  return { engine, handler, call, answer, settle };
+  return { engine, handler, call, answer, cancel, settle };
 }
 
 const approve = (key: string, note?: string) => ({ key, interrupt: "approve-refund", answer: { approved: true, by: "kinfe@example.com", ...(note ? { note } : {}) } });
@@ -290,6 +298,137 @@ describe("Farm.js approvals", () => {
   });
 });
 
+describe("Infra's cancel route", () => {
+  const pause = (key: string, interrupt = "approve-refund") => ({ key, interrupt });
+
+  it("accepts the cancel test vector Infra pins, and answers 404 for a run it does not know", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(1793544000 * 1000 + 30_000);
+    const header = "t=1793544000,v1=15a09f5536348e23201f6bba7cda7378774671ad850af13713841c2a6eb64aff";
+    expect(await farmjsSignature(KEY, "POST", "/api/agent/__agent-unit/cancel/run_test", 1793544000 * 1000)).toBe(header);
+    const { call } = app();
+    const response = await call("/__agent-unit/cancel/run_test", {
+      method: "POST",
+      headers: { "content-type": "application/json", "farmjs-signature": header },
+      body: JSON.stringify(pause("interrupt:approve-refund#0")),
+    });
+    expect(response.status).toBe(404);
+  });
+
+  it("cancels a run that waits on that pause, and sends no close for it", async () => {
+    const sent = infra();
+    const { engine, cancel } = app();
+    const { run, done } = await engine.start("refund");
+    await done;
+    const key = (await engine.getRun(run.id)).interrupt!.key;
+
+    const response = await cancel(run.id, pause(key));
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "cancelled" });
+    const cancelled = await engine.getRun(run.id);
+    expect(cancelled.status).toBe("cancelled");
+    expect(cancelled.interrupt).toBeUndefined();
+    const events = [];
+    for await (const event of engine.events(run.id)) events.push(event.type);
+    expect(events.at(-1)).toBe("RUN_CANCELLED");
+    // Infra already knows it cancelled: no close for that pause.
+    expect(sent.entries().map((entry) => entry.status)).toEqual(["open"]);
+
+    const again = await cancel(run.id, pause(key));
+    expect(again.status).toBe(409);
+    expect(await again.json()).toEqual({ error: "not_waiting" });
+  });
+
+  it("takes only Infra's signature, never the bearer secret", async () => {
+    infra();
+    const { engine, call, cancel } = app({ AGENT_UNIT_SECRET: "s3cret" });
+    const { run, done } = await engine.start("refund");
+    await done;
+    const key = (await engine.getRun(run.id)).interrupt!.key;
+    const body = JSON.stringify(pause(key));
+    const path = `/__agent-unit/cancel/${run.id}`;
+    expect((await call(path, { method: "POST", headers: { authorization: "Bearer s3cret", "content-type": "application/json" }, body })).status).toBe(401);
+    expect((await cancel(run.id, pause(key), "farmjs_other_key")).status).toBe(401);
+    // Neither an answer's signature for this run nor a cancel's for another run cancels it.
+    for (const signed of [`/api/agent/__agent-unit/answer/${run.id}`, "/api/agent/__agent-unit/cancel/run_aaaaaaaaaaaa"]) {
+      const signature = await farmjsSignature(KEY, "POST", signed);
+      expect((await call(path, { method: "POST", headers: { "farmjs-signature": signature }, body })).status, signed).toBe(401);
+    }
+    expect((await call(path, { method: "GET" })).status).toBe(404);
+    expect((await engine.getRun(run.id)).status).toBe("interrupted");
+  });
+
+  it("answers 409 for a run that is not waiting or waits on another pause, 400 for a malformed body, 404 for an unknown run", async () => {
+    infra();
+    const { engine, answer, cancel, settle } = app({}, { refund: refund(), quick: defineAgent(async () => "done") });
+    const quick = await engine.start("quick");
+    await quick.done;
+    expect((await cancel(quick.run.id, pause("interrupt:approve-refund#0"))).status).toBe(409);
+    expect((await engine.getRun(quick.run.id)).status).toBe("completed");
+
+    const { run, done } = await engine.start("refund", { twice: true });
+    await done;
+    const first = (await engine.getRun(run.id)).interrupt!.key;
+    expect((await cancel(run.id, pause("interrupt:approve-refund#7"))).status).toBe(409);
+    expect((await cancel(run.id, pause(first, "approve-other"))).status).toBe(409);
+    for (const body of [{}, { key: first }, { interrupt: "approve-refund" }, { key: "", interrupt: "approve-refund" }, { key: first, interrupt: 1 }]) {
+      expect((await cancel(run.id, body)).status, JSON.stringify(body)).toBe(400);
+    }
+    expect((await cancel("run_doesnotexist00", pause(first))).status).toBe(404);
+    expect((await cancel("not-a-run", pause(first))).status).toBe(404);
+
+    // Answered, then paused again on the same name: a late cancel of the first pause leaves the second.
+    expect((await answer(run.id, approve(first))).status).toBe(200);
+    await settle();
+    await vi.waitFor(async () => expect((await engine.getRun(run.id)).interrupt?.key).toBeDefined());
+    const second = (await engine.getRun(run.id)).interrupt!.key;
+    expect(second).not.toBe(first);
+    expect((await cancel(run.id, pause(first))).status).toBe(409);
+    expect((await engine.getRun(run.id)).status).toBe("interrupted");
+    expect((await cancel(run.id, pause(second))).status).toBe(200);
+    expect((await engine.getRun(run.id)).status).toBe("cancelled");
+  });
+
+  it("cancels nothing when the run moves on between the route's check and the engine's write", async () => {
+    infra();
+    const { engine, cancel } = app();
+    const { run, done } = await engine.start("refund");
+    await done;
+    const key = (await engine.getRun(run.id)).interrupt!.key;
+    // The app's own resume lands right after the route reads the run, before it cancels.
+    const read = engine.getRun.bind(engine);
+    let raced = false;
+    vi.spyOn(engine, "getRun").mockImplementation(async (id) => {
+      const record = await read(id);
+      if (!raced) {
+        raced = true;
+        await engine.resume(id, { approved: true, by: "app" }, { interrupt: key });
+      }
+      return record;
+    });
+    const response = await cancel(run.id, pause(key));
+    expect(response.status).toBe(409);
+    expect(await response.json()).toEqual({ error: "not_waiting" });
+    vi.restoreAllMocks();
+    await vi.waitFor(async () => expect((await engine.getRun(run.id)).status).toBe("completed"));
+  });
+
+  it("refuses at the engine a cancel for a pause the run no longer waits on", async () => {
+    infra();
+    const { engine } = app({}, { refund: refund(), quick: defineAgent(async () => "done") });
+    const { run, done } = await engine.start("refund");
+    await done;
+    const key = (await engine.getRun(run.id)).interrupt!.key;
+    await expect(engine.cancel(run.id, { interrupt: "interrupt:approve-refund#7" })).rejects.toMatchObject({ status: 409, code: "interrupt_mismatch" });
+    expect((await engine.getRun(run.id)).status).toBe("interrupted");
+    const quick = await engine.start("quick");
+    await quick.done;
+    // A finished run is not "already cancelled" for a conditional cancel.
+    await expect(engine.cancel(quick.run.id, { interrupt: key })).rejects.toMatchObject({ status: 409, code: "run_not_interrupted" });
+    expect(await engine.cancel(run.id, { interrupt: key })).toMatchObject({ status: "cancelled" });
+  });
+});
+
 describe("farmApprovals", () => {
   const run = { id: "run_aaaaaaaaaaaa", agent: "refund" } as RunRecord;
   const pause = (overrides: Partial<PendingInterrupt> = {}): PendingInterrupt => ({ key: "interrupt:approve#0", name: "approve", payload: { amount: 1 }, ...overrides });
@@ -409,6 +548,39 @@ describe("Durable Objects runtime", () => {
     expect(response.status).toBe(200);
     await settle();
     expect(await (await call(`/runs/${run.id}`, { method: "GET" })).json()).toMatchObject({ status: "completed", output: "refunded by kinfe@example.com" });
+    expect(sent.entries().map((entry) => entry.status)).toEqual(["open"]);
+  });
+
+  it("takes Infra's cancel in the run's object, only for the pause it waits on", async () => {
+    const sent = infra();
+    const unit = createDurableAgentUnit({ basePath: "/api/agent", agents: { refund: refund() } });
+    const runs = new FakeNamespace(unit.AgentUnitRun as never);
+    const index = new FakeNamespace(unit.AgentUnitIndex as never);
+    const bindings = { ...env, AGENT_UNIT_URL: "https://agents.example.com", AGENT_UNIT_RUNS: runs, AGENT_UNIT_INDEX: index };
+    runs.env = bindings;
+    index.env = bindings;
+    const pending: Promise<unknown>[] = [];
+    const call = (path: string, init?: RequestInit) =>
+      unit.fetch(new Request(`https://agents.example.com/api/agent${path}`, init), bindings, { waitUntil: (promise) => void pending.push(promise) });
+    const settle = async () => {
+      while (pending.length) await Promise.allSettled(pending.splice(0));
+      await runs.settle();
+    };
+    const cancel = async (id: string, key: string) =>
+      call(`/__agent-unit/cancel/${id}`, {
+        method: "POST",
+        headers: { "content-type": "application/json", "farmjs-signature": await farmjsSignature(KEY, "POST", `/api/agent/__agent-unit/cancel/${id}`) },
+        body: JSON.stringify({ key, interrupt: "approve-refund" }),
+      });
+
+    const run = await (await call("/agents/refund/runs", { method: "POST", headers: { "content-type": "application/json" }, body: "{}" })).json();
+    await settle();
+    expect((await cancel(run.id, "interrupt:approve-refund#7")).status).toBe(409);
+    const response = await cancel(run.id, "interrupt:approve-refund#0");
+    expect(response.status).toBe(200);
+    expect(await response.json()).toEqual({ status: "cancelled" });
+    await settle();
+    expect(await (await call(`/runs/${run.id}`, { method: "GET" })).json()).toMatchObject({ status: "cancelled" });
     expect(sent.entries().map((entry) => entry.status)).toEqual(["open"]);
   });
 });
