@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { scheduledRunId } from "../../packages/runtime/src/server/scheduled";
 import { buildFixture, cleanup, prepareFixture, ROOT, startServer, tempDir, type RunningServer } from "./helpers";
 import { startMiniflare } from "./hosts";
 
@@ -101,6 +102,101 @@ describe("scheduled tasks on other hosts", () => {
     const { build } = (await import(join(ROOT, "dist/build.mjs"))) as typeof import("../../src/build");
     await build({ root: prepareFixture("server-tasks"), preset: "netlify", outDir: out, logger: { info() {}, warn: (message) => void warnings.push(message) } });
     expect(warnings).toEqual([expect.stringMatching(/the "netlify" preset has no scheduler .* the tasks "tick" will not run on their own/)]);
+  });
+});
+
+// A task with `agent` starts a run of that agent on each fire, with the input the config gives where
+// the server runs, and one run per scheduled time.
+
+interface RunList {
+  runs: { id: string; status: string; input: { team?: string }; output?: { team?: string }; createdAt: string }[];
+}
+
+async function untilRuns(read: () => Promise<RunList>, done: (list: RunList) => boolean, ms: number): Promise<RunList> {
+  const deadline = Date.now() + ms;
+  for (;;) {
+    const list = await read();
+    if (done(list) || Date.now() > deadline) return list;
+    await new Promise((resolve) => setTimeout(resolve, 100));
+  }
+}
+
+const completed = (list: RunList) => list.runs.filter((run) => run.status === "completed");
+
+describe("agent tasks on node-server", () => {
+  let out: string;
+  let data: string;
+  let server: RunningServer;
+
+  beforeAll(async () => {
+    const root = prepareFixture("engine-tasks");
+    out = tempDir("agent-tasks-node-out");
+    data = tempDir("agent-tasks-node-data");
+    // The build sees another team than the server: the run must get the server's.
+    await buildFixture(root, "node-server", out, { TICK_SCHEDULE: "* * * * * *", DIGEST_TEAM: "build" });
+    server = await startServer(process.execPath, [join(out, "server/index.mjs")], { cwd: root, env: { TEST: "", DIGEST_TEAM: "support", AGENT_UNIT_DATA: data }, readyPath: "/runs" });
+  });
+
+  afterAll(async () => {
+    await server?.stop();
+    cleanup(out, data);
+  });
+
+  it("starts the agent once per tick, with the input the server reads", async () => {
+    const read = async () => (await (await fetch(`${server.url}/runs?agent=digest`)).json()) as RunList;
+    const list = await untilRuns(read, (l) => completed(l).length >= 3, 10_000);
+    const runs = completed(list);
+    expect(runs.length).toBeGreaterThanOrEqual(3);
+    for (const run of runs) expect(run).toMatchObject({ input: { team: "support" }, output: { team: "support" } });
+    // Each tick's run has the id of its task and second.
+    for (const run of runs) {
+      const second = Math.floor(Date.parse(run.createdAt) / 1000) * 1000;
+      expect(run.id).toBe(await scheduledRunId("digest", second));
+    }
+  });
+});
+
+describe("agent tasks on cloudflare-module", () => {
+  let out: string;
+  let data: string;
+  let worker: Awaited<ReturnType<typeof startMiniflare>>;
+
+  beforeAll(async () => {
+    out = tempDir("agent-tasks-cf-out");
+    data = tempDir("agent-tasks-cf-data");
+    // One time a year: both triggers below fall on the same scheduled time, whenever the test runs.
+    await buildFixture(prepareFixture("engine-tasks"), "cloudflare-module", out, { TICK_SCHEDULE: "0 0 1 1 *" });
+    worker = await startMiniflare(out, data);
+  });
+
+  afterAll(async () => {
+    await worker?.stop();
+    cleanup(out, data);
+  });
+
+  it("becomes a Cron Trigger, and two triggers for the same time start the agent once", async () => {
+    expect(worker.wrangler.triggers.crons).toEqual(["0 0 1 1 *"]);
+    expect((await worker.scheduled("0 0 1 1 *")).status).toBe(200);
+    expect((await worker.scheduled("0 0 1 1 *")).status).toBe(200);
+    const read = async () => (await (await worker.fetch("/runs?agent=digest")).json()) as RunList;
+    const list = await untilRuns(read, (l) => completed(l).length >= 1, 5_000);
+    expect(list.runs).toHaveLength(1);
+    // Workers run in UTC: this year's 1 January is the scheduled time.
+    const newYear = Date.UTC(new Date().getUTCFullYear(), 0, 1);
+    expect(list.runs[0]).toMatchObject({ id: await scheduledRunId("digest", newYear), status: "completed" });
+  });
+});
+
+describe("agent tasks on Vercel", () => {
+  it("become a Vercel Cron Job", async () => {
+    const out = tempDir("agent-tasks-vercel-out");
+    try {
+      await buildFixture(prepareFixture("engine-tasks"), "vercel", out);
+      const config = JSON.parse(readFileSync(join(out, "config.json"), "utf8")) as { crons?: { schedule: string; path: string }[] };
+      expect(config.crons).toEqual([expect.objectContaining({ schedule: "* * * * *" })]);
+    } finally {
+      cleanup(out);
+    }
   });
 });
 

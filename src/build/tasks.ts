@@ -1,13 +1,14 @@
 import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { createJiti } from "jiti";
+import type { TaskConfig } from "../config";
 import { runInScope } from "../env/scope";
-import { appNitro, toImport, type LoadedProject, type NitroImport } from "./load";
+import { appNitro, distEntry, toImport, type LoadedProject, type NitroImport } from "./load";
 import { checkSchedule, SCHEDULING_PRESETS } from "./schedule";
 
 // The app's scheduled tasks (`tasks` in agent-unit.config.ts), run by each host's own scheduler
 // through Nitro: in-process cron on servers, Cron Triggers on Workers, Vercel Cron Jobs on Vercel.
-
+// A task calls its module's default export, or starts a run of one of the app's agents.
 
 const TASK_NAME = /^[a-zA-Z0-9][\w:-]*$/;
 
@@ -18,42 +19,59 @@ export interface TaskOptions {
   scheduledTasks: Record<string, string[]>;
 }
 
-function checkTasks(project: LoadedProject, preset?: string) {
+const isPlainObject = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value) && [Object.prototype, null].includes(Object.getPrototypeOf(value));
+
+/** The agents the engine serves: `agents` in the config, or the files in `agents/`. */
+function agentNames(project: LoadedProject): string[] {
+  return Object.keys(project.config.agents ?? project.agentFiles);
+}
+
+function checkAgentTask(project: LoadedProject, name: string, task: TaskConfig & { agent: string }) {
+  const runs = `the task "${name}" runs the agent "${task.agent}"`;
+  if (project.config.server !== undefined) {
+    throw new Error(`agent-unit: ${runs}, which needs agent-unit's engine, and \`server\` replaces it with your own. Give the task a \`handler\` that starts the run on your server instead.`);
+  }
+  if (project.config.runtime === "durable-objects") {
+    throw new Error(`agent-unit: ${runs}, and runtime "durable-objects" does not run agent tasks yet. Use the default runtime with a storage driver (for example cloudflare-kv-binding), or a \`handler\` task.`);
+  }
+  const known = agentNames(project);
+  if (!known.includes(task.agent)) {
+    throw new Error(`agent-unit: ${runs}, and there is no such agent. ${known.length ? `Agents: ${known.join(", ")}.` : "Add it to agents/."}`);
+  }
+  if (task.input !== undefined) {
+    let json: string | undefined;
+    try {
+      json = isPlainObject(task.input) ? JSON.stringify(task.input) : undefined;
+    } catch {
+      json = undefined;
+    }
+    if (json === undefined) throw new Error(`agent-unit: the \`input\` of task "${name}" must be a JSON object, as \`POST /agents/${task.agent}/runs\` takes it.`);
+  }
+}
+
+function checkTasks(project: LoadedProject, preset?: string): Record<string, TaskConfig> {
   const tasks = project.config.tasks ?? {};
   for (const [name, task] of Object.entries(tasks)) {
     if (!TASK_NAME.test(name) || name.startsWith("agent-unit:")) {
       throw new Error(`agent-unit: the task name "${name}" must start with a letter or digit and use letters, digits, "-", "_" and ":" (names starting "agent-unit:" are reserved).`);
     }
-    if (!task || typeof task.schedule !== "string" || typeof task.handler !== "string") {
-      throw new Error(`agent-unit: the task "${name}" needs a \`schedule\` (a cron expression) and a \`handler\` (the path of its module).`);
+    const handler = typeof task?.handler === "string";
+    const agent = typeof task?.agent === "string";
+    if (!task || typeof task.schedule !== "string" || handler === agent) {
+      throw new Error(`agent-unit: the task "${name}" needs a \`schedule\` (a cron expression) and either an \`agent\` to run or a \`handler\` (the path of its module), not both.`);
     }
-    if (!existsSync(resolve(project.root, task.handler))) throw new Error(`agent-unit: the handler of task "${name}", "${task.handler}", does not exist.`);
+    if (handler && !existsSync(resolve(project.root, task.handler!))) throw new Error(`agent-unit: the handler of task "${name}", "${task.handler}", does not exist.`);
+    if (agent) checkAgentTask(project, name, task as TaskConfig & { agent: string });
     // Where Nitro runs no scheduler the schedule is unused: the build only warns that the task will not run.
     if (preset !== undefined && SCHEDULING_PRESETS.test(preset)) checkSchedule(task.schedule, `task "${name}"`, preset);
   }
   return tasks;
 }
 
-/** Writes a Nitro task for each of the app's tasks into `genDir/tasks`, and the schedules that run them. */
-export function prepareTasks(project: LoadedProject, genDir: string, preset: string, warn: (message: string) => void, nitro: NitroImport = appNitro): TaskOptions {
-  const tasks = checkTasks(project, preset);
-  const names = Object.keys(tasks);
-  if (!names.length) return { tasks: {}, scheduledTasks: {} };
-  if (!SCHEDULING_PRESETS.test(preset)) {
-    warn(
-      `agent-unit: the "${preset}" preset has no scheduler Nitro can drive, so the tasks ${names.map((name) => `"${name}"`).join(", ")} will not run on their own there. Trigger them from the platform's scheduler, or deploy them to a host that has one.`,
-    );
-  }
-  const dir = join(genDir, "tasks");
-  mkdirSync(dir, { recursive: true });
-  const options: TaskOptions = { tasks: {}, scheduledTasks: {} };
-  for (const [index, [name, task]] of Object.entries(tasks).entries()) {
-    const file = resolve(project.root, task.handler);
-    // The index keeps names that read the same once made file-safe (report:daily, report_daily) apart.
-    const entry = join(dir, `${index}-${name.replace(/[^\w-]/g, "_")}.mjs`);
-    writeFileSync(
-      entry,
-      `// Generated by agent-unit. Do not edit.
+/** A Nitro task that calls the module's default export. */
+function handlerTask(nitro: NitroImport, dir: string, file: string, name: string, task: TaskConfig): string {
+  return `// Generated by agent-unit. Do not edit.
 import { defineTask } from ${nitro("nitro/task")};
 import { runInScope } from "agent-unit/env";
 import * as task from ${toImport(dir, file)};
@@ -73,7 +91,58 @@ export default defineTask({
     return { result: result ?? null };
   },
 });
-`,
+`;
+}
+
+/**
+ * A Nitro task that starts a run of the agent on the engine in `runtime.mjs`. The agent and schedule
+ * are fixed at build, as the host's scheduler is; the input is read from the config where the server
+ * runs, so a value it takes from the environment is never written into the build.
+ */
+function agentTask(nitro: NitroImport, dir: string, runtime: string, name: string, task: TaskConfig & { agent: string }): string {
+  return `// Generated by agent-unit. Do not edit.
+import { defineTask } from ${nitro("nitro/task")};
+import { runAgentTask } from ${JSON.stringify(distEntry("tasks"))};
+import { getSettings, getUnit } from ${toImport(dir, runtime)};
+
+const name = ${JSON.stringify(name)};
+
+export default defineTask({
+  meta: { name${task.description ? `, description: ${JSON.stringify(task.description)}` : ""} },
+  async run() {
+    const result = await runAgentTask(getUnit().engine, {
+      name,
+      agent: ${JSON.stringify(task.agent)},
+      schedule: ${JSON.stringify(task.schedule)},
+      input: getSettings().tasks?.[name]?.input,
+    });
+    return { result };
+  },
+});
+`;
+}
+
+/** Writes a Nitro task for each of the app's tasks into `genDir/tasks`, and the schedules that run them. */
+export function prepareTasks(project: LoadedProject, genDir: string, preset: string, warn: (message: string) => void, nitro: NitroImport = appNitro): TaskOptions {
+  const tasks = checkTasks(project, preset);
+  const names = Object.keys(tasks);
+  if (!names.length) return { tasks: {}, scheduledTasks: {} };
+  if (!SCHEDULING_PRESETS.test(preset)) {
+    warn(
+      `agent-unit: the "${preset}" preset has no scheduler Nitro can drive, so the tasks ${names.map((name) => `"${name}"`).join(", ")} will not run on their own there. Trigger them from the platform's scheduler, or deploy them to a host that has one.`,
+    );
+  }
+  const dir = join(genDir, "tasks");
+  mkdirSync(dir, { recursive: true });
+  const options: TaskOptions = { tasks: {}, scheduledTasks: {} };
+  for (const [index, [name, task]] of Object.entries(tasks).entries()) {
+    // The index keeps names that read the same once made file-safe (report:daily, report_daily) apart.
+    const entry = join(dir, `${index}-${name.replace(/[^\w-]/g, "_")}.mjs`);
+    writeFileSync(
+      entry,
+      typeof task.agent === "string"
+        ? agentTask(nitro, dir, join(genDir, "runtime.mjs"), name, task as TaskConfig & { agent: string })
+        : handlerTask(nitro, dir, resolve(project.root, task.handler!), name, task),
     );
     options.tasks[name] = { handler: entry, ...(task.description ? { description: task.description } : {}) };
     (options.scheduledTasks[task.schedule] ??= []).push(name);
@@ -81,7 +150,10 @@ export default defineTask({
   return options;
 }
 
-/** Runs one of the app's tasks once, from source: `agent-unit task <name>`. */
+/**
+ * Runs one of the app's tasks once, from source: `agent-unit task <name>`. An agent task starts a run
+ * on a local engine, with the dev server's storage, and waits until it finishes or pauses.
+ */
 export async function runTask(project: LoadedProject, name: string): Promise<unknown> {
   const tasks = checkTasks(project);
   const task = tasks[name];
@@ -89,8 +161,19 @@ export async function runTask(project: LoadedProject, name: string): Promise<unk
     const known = Object.keys(tasks);
     throw new Error(`agent-unit: there is no task "${name}".${known.length ? ` Tasks: ${known.join(", ")}.` : " Add it under `tasks` in agent-unit.config.ts."}`);
   }
+  if (typeof task.agent === "string") {
+    const { createEngineApp } = await import("./engine-dev");
+    const app = await createEngineApp(project);
+    try {
+      const { run, done } = await app.unit!.engine.start(task.agent, task.input ?? {});
+      const settled = (await done) ?? run;
+      return { run: settled.id, status: settled.status, ...(settled.output !== undefined ? { output: settled.output } : {}), ...(settled.error ? { error: settled.error } : {}) };
+    } finally {
+      app.close();
+    }
+  }
   const jiti = createJiti(join(project.root, "package.json"), { moduleCache: false, fsCache: false });
-  const module = (await jiti.import(resolve(project.root, task.handler))) as { default?: unknown };
+  const module = (await jiti.import(resolve(project.root, task.handler!))) as { default?: unknown };
   if (typeof module.default !== "function") throw new Error(`agent-unit: ${task.handler} must export default the task's function.`);
   const handler = module.default as (task: { name: string; scheduledTime: number }) => unknown;
   return runInScope(undefined, () => handler({ name, scheduledTime: Date.now() }));

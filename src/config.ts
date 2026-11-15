@@ -43,13 +43,33 @@ export interface ServerPresetContext {
   preset: string;
 }
 
-export interface TaskConfig {
+interface TaskSchedule {
   /** When it runs: a cron expression (`"0 8 * * *"` is every day at 08:00). Servers also take a seconds field; Workers and Vercel take five fields. */
   schedule: string;
-  /** The module whose default export runs the task. */
-  handler: string;
   description?: string;
 }
+
+/** A task that runs a module's default export. */
+export interface HandlerTaskConfig extends TaskSchedule {
+  /** The module whose default export runs the task. */
+  handler: string;
+  agent?: undefined;
+  input?: undefined;
+}
+
+/**
+ * A task that starts a run of one of your agents, on agent-unit's engine. Each scheduled time starts
+ * one run, even when the host's scheduler fires twice for it.
+ */
+export interface AgentTaskConfig extends TaskSchedule {
+  /** The agent each fire runs, by name (`agents/digest.ts` is `"digest"`). */
+  agent: string;
+  /** The run's input, as `POST /agents/{agent}/runs` takes it. Read where the server runs. */
+  input?: Record<string, unknown>;
+  handler?: undefined;
+}
+
+export type TaskConfig = HandlerTaskConfig | AgentTaskConfig;
 
 /** Agent frameworks agent-unit's engine has a built-in adapter for. */
 export type AgentFramework = "ai-sdk" | "mastra" | "langgraph" | "openai-agents";
@@ -66,12 +86,16 @@ export interface AgentUnitConfig extends Pick<HandlerOptions, "basePath" | "auth
   server?: string | ServerPreset;
   /**
    * Work on a schedule, run by the host's own scheduler: in-process cron on Node, Bun and Deno,
-   * Cron Triggers on Workers, Vercel Cron Jobs on Vercel. Each task's module default-exports a
-   * function called with `{ name, scheduledTime }`; hand follow-up work to `waitUntil` from
-   * `agent-unit/env`. Run one now with `agent-unit task <name>`.
+   * Cron Triggers on Workers, Vercel Cron Jobs on Vercel. A task either starts a run of one of your
+   * agents (`agent`, with an optional `input`), or calls a module's default export (`handler`) with
+   * `{ name, scheduledTime }`; hand follow-up work to `waitUntil` from `agent-unit/env`. Run one now
+   * with `agent-unit task <name>`.
    *
    * ```ts
-   * tasks: { "send-digest": { schedule: "0 8 * * *", handler: "./src/tasks/digest.ts" } }
+   * tasks: {
+   *   "morning-digest": { schedule: "0 8 * * *", agent: "digest", input: { team: "support" } },
+   *   "send-invoices": { schedule: "0 2 * * *", handler: "./src/tasks/invoices.ts" },
+   * }
    * ```
    */
   tasks?: Record<string, TaskConfig>;

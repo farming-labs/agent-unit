@@ -17,6 +17,8 @@ export default defineConfig({
     testing: "src/exports/testing.ts",
     cloudflare: "src/exports/cloudflare.ts",
     redis: "src/exports/redis.ts",
+    // Internal, not a package export: generated agent tasks import it by path.
+    tasks: "src/exports/tasks.ts",
     "adapters/ai-sdk": "src/exports/adapters/ai-sdk.ts",
     "adapters/langgraph": "src/exports/adapters/langgraph.ts",
     "adapters/mastra": "src/exports/adapters/mastra.ts",
