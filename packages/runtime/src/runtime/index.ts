@@ -3,6 +3,7 @@ export {
   RunEngine,
   AgentUnitError,
   type ApprovalRegistry,
+  type CancelOptions,
   type EngineOptions,
   type HandleWakeOptions,
   type InterruptHook,

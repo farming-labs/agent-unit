@@ -140,6 +140,19 @@ export interface ResumeOptions {
   answeredBy?: "approvals";
 }
 
+export interface CancelOptions {
+  /**
+   * The `key` of the interrupt the run must still wait on. A run that waits on another pause, or no
+   * longer waits, is not cancelled: `409 interrupt_mismatch` or `409 run_not_interrupted`.
+   */
+  interrupt?: string;
+  /**
+   * Internal: the cancel came through `EngineOptions.approvals` (Farm.js Infra's cancel route), which
+   * already knows, so it is not also told the interrupt closed. The HTTP cancel route never sets it.
+   */
+  cancelledBy?: "approvals";
+}
+
 export class AgentUnitError extends Error {
   constructor(
     readonly status: 400 | 404 | 409 | 413 | 415,
@@ -589,22 +602,31 @@ export class RunEngine {
     });
   }
 
-  async cancel(id: string): Promise<RunRecord> {
+  async cancel(id: string, options: CancelOptions = {}): Promise<RunRecord> {
     // Queued under the lock, awaited after it, so a slow Infra never holds up other changes to the run.
     const notices: Promise<void>[] = [];
-    const run = await this.locked(id, () => this.cancelNow(id, notices));
+    const run = await this.locked(id, () => this.cancelNow(id, options, notices));
     await Promise.all(notices);
     return run;
   }
 
-  private async cancelNow(id: string, notices: Promise<void>[], tries = 0): Promise<RunRecord> {
+  private async cancelNow(id: string, options: CancelOptions, notices: Promise<void>[], tries = 0): Promise<RunRecord> {
     const run = await this.getRun(id);
+    // Checked on every try: the conditional write below fails if the run moved on since this read.
+    if (options.interrupt !== undefined) {
+      if (run.status !== "interrupted" || !run.interrupt) {
+        throw new AgentUnitError(409, "run_not_interrupted", `Run "${id}" is ${run.status}, not interrupted.`);
+      }
+      if (run.interrupt.key !== options.interrupt) {
+        throw new AgentUnitError(409, "interrupt_mismatch", `Run "${id}" is waiting on interrupt "${run.interrupt.key}", not "${options.interrupt}".`);
+      }
+    }
     if (TERMINAL.has(run.status)) return run;
     const previous = structuredClone(run);
     // Another process changed the run between our read and our write: decide again on what it did.
     const retry = () => {
       if (tries >= 5) throw new AgentUnitError(409, "run_conflict", `Run "${id}" kept changing; try again.`);
-      return this.cancelNow(id, notices, tries + 1);
+      return this.cancelNow(id, options, notices, tries + 1);
     };
     const execution = this.active.get(id);
     if (execution) {
@@ -636,7 +658,9 @@ export class RunEngine {
     const event = { type: "RUN_CANCELLED", seq: ++run.eventCount, runId: id, timestamp: Date.now() } as AgentEvent;
     run.updatedAt = nowIso();
     if (!(await this.store.putRun(run, previous))) return retry();
-    if (previous.status === "interrupted" && previous.interrupt && this.options.approvals) notices.push(this.options.approvals.close(run, previous.interrupt));
+    if (previous.status === "interrupted" && previous.interrupt && this.options.approvals && options.cancelledBy !== "approvals") {
+      notices.push(this.options.approvals.close(run, previous.interrupt));
+    }
     await this.store.appendEvents(id, [event]);
     this.publish(event);
     this.clearTimer(id);

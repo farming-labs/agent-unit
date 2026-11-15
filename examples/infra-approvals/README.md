@@ -36,6 +36,7 @@ curl http://localhost:3030/runs/run_…
 | `run.interrupt("approve-refund", order)` | The run parks, and agent-unit sends the pause to `POST {FARMJS_API_URL}/api/agents/approvals` |
 | Approve or Reject in Infra | Infra signs `{ key, interrupt, answer }` with your key and calls `POST {AGENT_UNIT_URL}/__agent-unit/answer/<run>` |
 | The answer route | Checks the signature, resumes the run with `{ approved, by, note? }`, and returns 200 |
+| Cancel run in Infra | Infra signs `{ key, interrupt }` and calls `POST {AGENT_UNIT_URL}/__agent-unit/cancel/<run>`; the run ends `cancelled` if it still waits on that pause |
 | Answered some other way | Your own `POST /runs/:id/resume`, or a cancel, marks it closed in Infra |
 
 Owners and admins of the project's organization can answer; other members see the list read-only.
