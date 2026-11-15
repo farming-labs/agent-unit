@@ -1,0 +1,12 @@
+{
+  "name": "agent-unit-infra-approvals",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "agent-unit dev",
+    "build": "agent-unit build"
+  },
+  "dependencies": {
+    "agent-unit": "file:../.."
+  }
+}
