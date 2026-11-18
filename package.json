@@ -1,6 +1,6 @@
 {
   "name": "agent-unit",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "Build any agent server for any host: your own server, Mastra's, or durable runs for any agent framework.",
   "keywords": [
     "agents",
