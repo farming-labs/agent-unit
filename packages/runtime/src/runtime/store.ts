@@ -48,7 +48,7 @@ export interface LeaseBackend {
 }
 
 /**
- * Conditional writes of run records. `compareAndSet` must check and write in one atomic operation
+ * Conditional writes of versioned records. `compareAndSet` must check and write in one atomic operation
  * (a Redis script, a database `UPDATE … WHERE version = ?`, a Durable Object's single thread).
  * Without one, the store checks then writes, which leaves a gap of one storage round trip.
  */
@@ -57,7 +57,11 @@ export interface AtomicWrites {
    * Writes `record` at `key` only if the stored record's version is `expectedVersion` (a record
    * without one counts as 0), or, when `expectedVersion` is undefined, only if there is none.
    */
-  compareAndSet(key: string, expectedVersion: number | undefined, record: RunRecord): Promise<boolean>;
+  compareAndSet(
+    key: string,
+    expectedVersion: number | undefined,
+    record: { version?: number },
+  ): Promise<boolean>;
 }
 
 export interface RunStoreOptions {
@@ -66,9 +70,10 @@ export interface RunStoreOptions {
 }
 
 const TERMINAL: ReadonlySet<RunStatus> = new Set(["completed", "failed", "cancelled"]);
-const INDEX_VERSION = 1;
+const INDEX_VERSION = 2;
 const MAX_TIME = 9_999_999_999_999;
-const time = (ms: number) => String(Math.max(0, Math.min(MAX_TIME, Math.floor(ms)))).padStart(13, "0");
+const time = (ms: number) =>
+  String(Math.max(0, Math.min(MAX_TIME, Math.floor(ms)))).padStart(13, "0");
 
 /** Journal keys contain `:`, `#` and anything an adapter chose; storage keys get a safe encoding. */
 function encodeSegment(value: string): string {
@@ -80,6 +85,17 @@ function decodeSegment(value: string): string {
   const binary = atob(value.replaceAll("-", "+").replaceAll("_", "/"));
   return new TextDecoder().decode(Uint8Array.from(binary, (char) => char.charCodeAt(0)));
 }
+
+/** Fixed-size segments keep event indexes within bounded stores, including UTF-8 input. */
+async function eventSegment(value: string): Promise<string> {
+  const digest = await crypto.subtle.digest(
+    "SHA-256",
+    new TextEncoder().encode(JSON.stringify(value)),
+  );
+  return Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+type StoredEvent = { version: number; key: string; event: SentEvent };
 
 /**
  * Persists runs, journals, events, state and leases on any unstorage driver: memory, the
@@ -134,22 +150,31 @@ export class RunStore {
       if (!(await this.atomic.compareAndSet(key, expected, next))) return false;
       run.version = next.version;
     }
-    const keys = this.indexKeys(run);
-    for (const old of before ? this.indexKeys(before) : []) if (!keys.includes(old)) await this.storage.removeItem(old);
+    const keys = await this.indexKeys(run);
+    for (const old of before ? await this.indexKeys(before) : [])
+      if (!keys.includes(old)) await this.storage.removeItem(old);
     for (const indexKey of keys) await this.storage.setItem(indexKey, run as never);
     return true;
   }
 
   /** Index entries carry a copy of the record, so a listing never reads the runs themselves. */
-  private indexKeys(run: RunRecord): string[] {
+  private async indexKeys(run: RunRecord): Promise<string[]> {
     const created = time(MAX_TIME - Date.parse(run.createdAt));
-    const keys = [`index:all:${created}:${run.id}`, `index:status:${run.status}:${created}:${run.id}`];
+    const keys = [
+      `index:all:${created}:${run.id}`,
+      `index:status:${run.status}:${created}:${run.id}`,
+    ];
     // Sleepers, and interrupts and event waits with a timeout: all wait for a time the sweep must notice.
-    if ((run.status === "sleeping" || run.status === "interrupted" || run.status === "waiting") && run.wakeAt) {
+    if (
+      (run.status === "sleeping" || run.status === "interrupted" || run.status === "waiting") &&
+      run.wakeAt
+    ) {
       keys.push(`index:wake:${time(Date.parse(run.wakeAt))}:${run.id}`);
     }
-    if (run.status === "waiting" && run.wait) keys.push(`index:wait:${encodeSegment(run.wait.event)}:${run.id}`);
-    if (TERMINAL.has(run.status)) keys.push(`index:done:${time(Date.parse(run.updatedAt))}:${run.id}`);
+    if (run.status === "waiting" && run.wait)
+      keys.push(`index:wait:${await eventSegment(run.wait.event)}:${run.id}`);
+    if (TERMINAL.has(run.status))
+      keys.push(`index:done:${time(Date.parse(run.updatedAt))}:${run.id}`);
     return keys;
   }
 
@@ -159,7 +184,9 @@ export class RunStore {
       if ((await this.storage.getItem("index:version")) === INDEX_VERSION) return;
       for (const key of await this.storage.getKeys("runs")) {
         const run = (await this.storage.getItem(key)) as RunRecord | null;
-        if (run) for (const indexKey of this.indexKeys(run)) await this.storage.setItem(indexKey, run as never);
+        if (run)
+          for (const indexKey of await this.indexKeys(run))
+            await this.storage.setItem(indexKey, run as never);
       }
       await this.storage.setItem("index:version", INDEX_VERSION as never);
     })().catch((error) => {
@@ -203,7 +230,7 @@ export class RunStore {
   /** Runs waiting for an event with this name, according to the index. */
   async waitingFor(event: string): Promise<RunRecord[]> {
     const runs: RunRecord[] = [];
-    for (const key of await this.indexed(`index:wait:${encodeSegment(event)}`)) {
+    for (const key of await this.indexed(`index:wait:${await eventSegment(event)}`)) {
       const run = (await this.storage.getItem(key)) as RunRecord | null;
       if (run?.status === "waiting" && run.wait?.event === event) runs.push(run);
     }
@@ -215,40 +242,49 @@ export class RunStore {
    * it. False when an event with this id is kept already: a repeated send is not delivered twice.
    */
   async putEvent(event: SentEvent): Promise<boolean> {
-    const byId = `inbox:by-id:${encodeSegment(event.id)}`;
+    const id = await eventSegment(event.id);
+    const byId = `inbox:by-id:${id}`;
     if (await this.storage.hasItem(byId)) return false;
-    const key = `inbox:by-name:${encodeSegment(event.name)}:${time(Date.parse(event.sentAt))}:${encodeSegment(event.id)}`;
-    await this.storage.setItem(key, event as never);
-    await this.storage.setItem(byId, key as never);
-    return true;
+    const key = `inbox:by-name:${await eventSegment(event.name)}:${time(Date.parse(event.sentAt))}:${id}`;
+    // Index first: a failed write cannot reserve the ID. Readers only trust the winning claim.
+    await this.storage.setItem(key, true as never);
+    return this.atomic.compareAndSet(byId, undefined, { version: 1, key, event } as StoredEvent);
   }
 
   /** Kept events with this name sent at or after `since`, earliest first. */
   async eventsSince(event: string, since: number): Promise<SentEvent[]> {
     const events: SentEvent[] = [];
-    for (const key of (await this.storage.getKeys(`inbox:by-name:${encodeSegment(event)}`)).sort()) {
+    for (const key of (
+      await this.storage.getKeys(`inbox:by-name:${await eventSegment(event)}`)
+    ).sort()) {
       if (Number(key.split(":")[3]) < since) continue;
-      const kept = (await this.storage.getItem(key)) as SentEvent | null;
-      if (kept) events.push(kept);
+      const id = key.split(":")[4];
+      const kept = (await this.storage.getItem(`inbox:by-id:${id}`)) as StoredEvent | null;
+      if (kept?.key === key && kept.event.name === event) events.push(kept.event);
     }
     return events;
   }
 
   /** Deletes kept events sent before `cutoff`: with this name, or every name. */
   async pruneEvents(cutoff: number, event?: string): Promise<void> {
-    for (const key of await this.storage.getKeys(event === undefined ? "inbox:by-name" : `inbox:by-name:${encodeSegment(event)}`)) {
+    for (const key of await this.storage.getKeys(
+      event === undefined ? "inbox:by-name" : `inbox:by-name:${await eventSegment(event)}`,
+    )) {
       const [, , , at, id] = key.split(":");
       if (Number(at) >= cutoff) continue;
       await this.storage.removeItem(key);
       const byId = `inbox:by-id:${id}`;
       // Sent again with this id after this one expired: that one keeps its entry.
-      if ((await this.storage.getItem(byId)) === key) await this.storage.removeItem(byId);
+      if (((await this.storage.getItem(byId)) as StoredEvent | null)?.key === key)
+        await this.storage.removeItem(byId);
     }
   }
 
   /** Runs that are running according to the index (live, yielded or orphaned). */
   async runningRuns(): Promise<string[]> {
-    return (await this.indexed("index:status:running")).map((key) => key.slice(key.lastIndexOf(":") + 1));
+    return (await this.indexed("index:status:running")).map((key) =>
+      key.slice(key.lastIndexOf(":") + 1),
+    );
   }
 
   /** Finished (completed, failed, cancelled) runs last updated at or before `cutoff`, oldest first. */
@@ -265,7 +301,7 @@ export class RunStore {
   /** Deletes a run with its journal, events, lease and index entries. */
   async deleteRun(id: string): Promise<void> {
     const run = await this.getRun(id);
-    for (const key of run ? this.indexKeys(run) : []) await this.storage.removeItem(key);
+    for (const key of run ? await this.indexKeys(run) : []) await this.storage.removeItem(key);
     for (const base of [`steps:${id}`, `events:${id}`]) {
       for (const key of await this.storage.getKeys(base)) await this.storage.removeItem(key);
     }

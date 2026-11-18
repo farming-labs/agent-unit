@@ -1,5 +1,4 @@
 import type { AtomicWrites, LeaseBackend } from "./runtime/store";
-import type { RunRecord } from "./types";
 
 /** The one method agent-unit needs from a Redis client (ioredis, node-redis via a small wrapper, Upstash). */
 export interface RedisLike {
@@ -77,7 +76,7 @@ export function redisCoordination(options: RedisCoordinationOptions): { atomic: 
     Number(await (await client()).eval(script, 1, key(name), ...args));
   return {
     atomic: {
-      async compareAndSet(name: string, expectedVersion: number | undefined, record: RunRecord) {
+      async compareAndSet(name: string, expectedVersion: number | undefined, record: { version?: number }) {
         return (await run(COMPARE_AND_SET, name, expectedVersion === undefined ? "" : String(expectedVersion), JSON.stringify(record))) === 1;
       },
     },

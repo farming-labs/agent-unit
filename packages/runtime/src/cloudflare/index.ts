@@ -323,7 +323,12 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
 
     /** Keeps the event in the index object, then hands it to the object of each run that waits for it. */
     send(name: string, data?: unknown, sendOptions: { id?: string } = {}) {
-      const store = new RunStore(sharedStorage(this.bindings, undefined));
+      const store = new RunStore(sharedStorage(this.bindings, undefined), {
+        atomic: {
+          compareAndSet: (key, expected, record) =>
+            (indexStub(this.bindings) as IndexStub & { kvCompareAndSet: IndexCas }).kvCompareAndSet(key, expected ?? null, JSON.stringify(record)),
+        },
+      });
       return sendEvent(store, name, data ?? null, sendOptions, DEFAULT_EVENT_RETENTION_MS, async (run, event) => {
         const stub = this.stub(run.id);
         if (!unwrap(await stub.deliver(run.id, run.wait!.key, event))) return undefined;

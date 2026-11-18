@@ -76,6 +76,11 @@ An event sent with an `id` it was sent with before (a retried webhook) is not st
 second time while the first one is kept. A run journals the event it took, with its id, so replay
 returns the same data and a later `waitFor` of the same name takes a later event.
 
+Concurrent sends claim the ID through the configured atomic-write backend (including Farm.js
+storage, Redis coordination and Durable Objects). Without atomic coordination, this guarantee
+is limited to stores sharing one storage instance in one process. Inbox and waiting-index keys
+use fixed-size hashes; the original event names and IDs remain in the records.
+
 ## Continuation on any host
 
 - **Interrupt:** the run parks; `POST /runs/:id/resume` continues it. An interrupt with a timeout
