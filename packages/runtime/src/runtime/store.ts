@@ -139,22 +139,35 @@ export class RunStore {
    */
   async putRun(run: RunRecord, previous?: RunRecord | null): Promise<boolean> {
     const key = `runs:${run.id}`;
-    let before: RunRecord | null | undefined = previous;
-    if (previous === undefined) {
-      before = (await this.getRun(run.id)) ?? null;
-      run.version = (before?.version ?? 0) + 1;
-      await this.storage.setItem(key, run as never);
-    } else {
-      const expected = previous === null ? undefined : (previous.version ?? 0);
-      const next = { ...run, version: (expected ?? 0) + 1 };
-      if (!(await this.atomic.compareAndSet(key, expected, next))) return false;
-      run.version = next.version;
+    const before = previous === undefined ? ((await this.getRun(run.id)) ?? null) : previous;
+    const expected = before === null ? undefined : (before.version ?? 0);
+    const next = { ...run, version: (expected ?? 0) + 1 };
+    const keys = await this.indexKeys(next);
+    // Entries go in before the record, so a reader that sees the record also finds it listed under
+    // its status. Whatever acts on an entry re-reads the record first, except the retention sweep:
+    // its entry goes in after, so a run is never deleted before its record says it finished.
+    const ahead = keys.filter((indexKey) => !indexKey.startsWith("index:done:"));
+    for (const indexKey of ahead) await this.storage.setItem(indexKey, next as never);
+    if (previous === undefined) await this.storage.setItem(key, next as never);
+    else if (!(await this.atomic.compareAndSet(key, expected, next))) {
+      await this.restoreIndex(run.id, ahead);
+      return false;
     }
-    const keys = await this.indexKeys(run);
+    run.version = next.version;
     for (const old of before ? await this.indexKeys(before) : [])
       if (!keys.includes(old)) await this.storage.removeItem(old);
-    for (const indexKey of keys) await this.storage.setItem(indexKey, run as never);
+    for (const indexKey of keys) if (!ahead.includes(indexKey)) await this.storage.setItem(indexKey, next as never);
     return true;
+  }
+
+  /** After a lost write: drops the entries it put in ahead, or puts the stored record's copy back. */
+  private async restoreIndex(id: string, written: string[]): Promise<void> {
+    const current = await this.getRun(id);
+    const kept = current ? await this.indexKeys(current) : [];
+    for (const indexKey of written) {
+      if (current && kept.includes(indexKey)) await this.storage.setItem(indexKey, current as never);
+      else await this.storage.removeItem(indexKey);
+    }
   }
 
   /** Index entries carry a copy of the record, so a listing never reads the runs themselves. */

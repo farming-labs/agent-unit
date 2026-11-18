@@ -133,6 +133,12 @@ overwritten. Farm.js storage (its `cas` and `lease.*` operations), Redis (`agent
 in automatically for the `redis` driver) and the Durable Objects index save atomically; other stores fall back to check-then-write, serialized within
 a process.
 
+Index entries carry a copy of the record and are saved before it, so once a client reads a run with
+a status, `GET /runs?status=` lists it under that status. Whatever acts on an entry (a delivery, a
+wake, a recovery) reads the record again first, so an entry ahead of its record is harmless. A save
+that loses its version check takes its entries back. The finished-runs entry, which retention
+deletes by, is saved after the record instead, so a run is never deleted before it finished.
+
 ## Runtimes
 
 A runtime decides where runs live and what wakes them; agent code and the HTTP contract are the same
