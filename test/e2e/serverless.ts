@@ -1,4 +1,4 @@
-import { readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
 import { afterAll, beforeAll, expect, it } from "vitest";
@@ -60,7 +60,7 @@ export function serverlessSuite(host: ServerlessHost) {
   it("serves the manifest behind authorize", async () => {
     expect((await call("/manifest.json", { headers: { authorization: "Bearer nope" } })).status).toBe(401);
     const manifest = await json(await call("/manifest.json"));
-    expect(manifest.agents.map((agent: { name: string }) => agent.name).sort()).toEqual(["greeter", "napper", "refund"]);
+    expect(manifest.agents.map((agent: { name: string }) => agent.name).sort()).toEqual(["greeter", "napper", "payer", "refund"]);
     const card = await json(await call("/.well-known/agent.json"));
     expect(card.url).toBe(ORIGIN);
   });
@@ -88,6 +88,19 @@ export function serverlessSuite(host: ServerlessHost) {
     expect(body.match(/^id: /gm)).toHaveLength(7);
   });
 
+  it("takes an event from POST /events in another invocation", async () => {
+    const started = await call("/agents/payer/runs", { method: "POST", body: JSON.stringify({ input: { orderId: "o_evt" } }) });
+    const run = await json(started);
+    await settle();
+    expect(await json(await call(`/runs/${run.id}`))).toMatchObject({ status: "waiting", wait: { event: "payment.succeeded" } });
+
+    const sent = await call("/events", { method: "POST", body: JSON.stringify({ name: "payment.succeeded", data: { orderId: "o_evt", amount: 5 } }) });
+    expect(sent.status).toBe(202);
+    expect((await json(sent)).runs).toEqual([run.id]);
+    await settle();
+    expect(await json(await call(`/runs/${run.id}`))).toMatchObject({ status: "completed", attempt: 2, output: { status: "paid", amount: 5 } });
+  });
+
   it("answers MCP tool calls", async () => {
     const result = await json(
       await call("/mcp", {
@@ -106,7 +119,16 @@ export function serverlessSuite(host: ServerlessHost) {
     const file = join(data, "runs", run.id);
     const record = JSON.parse(readFileSync(file, "utf8"));
     expect(record.status).toBe("sleeping");
-    writeFileSync(file, JSON.stringify({ ...record, wakeAt: new Date(Date.now() - 1_000).toISOString() }));
+    const due = { ...record, wakeAt: new Date(Date.now() - 1_000).toISOString() };
+    writeFileSync(file, JSON.stringify(due));
+    // The sweep reads sleepers from the wake index, by time, so move the run's entry there too.
+    const wake = join(data, "index", "wake");
+    const entries = readdirSync(wake).filter((at) => existsSync(join(wake, at, run.id)));
+    expect(entries).toHaveLength(1);
+    rmSync(join(wake, entries[0]!, run.id));
+    const at = String(Date.parse(due.wakeAt)).padStart(13, "0");
+    mkdirSync(join(wake, at), { recursive: true });
+    writeFileSync(join(wake, at, run.id), JSON.stringify(due));
 
     if (host.cron) {
       await host.cron(module, out, (request) => host.invoke(module, request, (promise) => pending.push(promise)));

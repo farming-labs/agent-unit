@@ -550,7 +550,39 @@ export default defineConfig({
 
 It is best effort: awaited for at most two seconds, and an error is logged, never failing or holding
 up the run. A process that stops right after the run parks can skip it, so treat the run's status,
-not the message, as the record (`GET /runs?status=interrupted` lists everything waiting).
+not the message, as the record (`GET /runs?status=interrupted` lists every run waiting for an answer).
+
+#### Wait for an event
+
+`run.waitFor(event, { match, timeout })` parks the run until another system sends that event: a
+payment webhook, a deploy finishing, a reply from another service. It returns the event's `data`:
+
+```ts
+const order = await run.step("create checkout", () => createCheckout(input.cart));
+const paid = await run.waitFor<{ orderId: string; amount: number }>("payment.succeeded", {
+  match: { orderId: order.id },
+  timeout: "1h",
+});
+```
+
+Send events with `POST /events`, from your webhook route once it has checked the provider's
+signature (or with `agents.send(name, data)` from the client):
+
+```http
+POST /events
+{ "name": "payment.succeeded", "data": { "orderId": "o_1", "amount": 1840 }, "id": "evt_3Q…" }
+```
+
+Every run waiting for that name whose `match` keys equal the same keys of `data` takes it, and
+continues; the answer lists them (`202 { id, runs }`). Events are kept for 24 hours, so one sent
+before the run got to its `waitFor` (a webhook that beats the step that asked for it) still counts,
+as long as it was sent after the run started. Pass the provider's event id as `id`, and a retried
+webhook is not delivered twice. With `timeout`, `waitFor` throws `EventTimeoutError` once it passes
+without the event, ended by the same wake-ups as an interrupt's timeout. `authorize` sees sends as
+`{ action: "send", event }`, so decide there who may send which events.
+
+A waiting run has status `waiting` and the `wait` it waits on (`GET /runs?status=waiting`), and
+streams `RUN_WAITING`. It works on every host and in the Durable Objects runtime.
 
 #### Run an agent on a schedule
 
@@ -647,6 +679,7 @@ Inside any run, `useRun()` (or the `run` argument of `defineAgent`) gives you:
 | `run.idempotencyKey()` | The key of the step or tool call running now |
 | `run.interrupt(name, payload, { timeout? })` | Park until `POST /runs/:id/resume` answers, then return the answer; with `timeout`, throw `InterruptTimeoutError` once it passes |
 | `run.sleep("10m")` | Park until the time passes |
+| `run.waitFor(event, { match?, timeout? })` | Park until `POST /events` sends a matching event, then return its data; with `timeout`, throw `EventTimeoutError` once it passes |
 | `run.state.get/set/delete(key, { scope })` | State scoped to the `thread` (default), the `agent` or the `app` |
 | `run.secrets.get(name)` | Read a secret from the host environment (Workers bindings included) |
 | `run.emit(name, value)` | Emit a `CUSTOM` event |
@@ -754,8 +787,8 @@ export default { fetch: unit.fetch };
 #### HTTP and events
 
 The full contract is in [`spec/`](./spec). Events follow [AG-UI](https://docs.ag-ui.com) (`RUN_STARTED`,
-`TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, …) plus `RUN_INTERRUPTED`, `RUN_SLEEPING` and
-`RUN_CANCELLED`. Every event has a `seq`; it is the SSE event id, so `EventSource` reconnects with
+`TEXT_MESSAGE_CONTENT`, `TOOL_CALL_START`, …) plus `RUN_INTERRUPTED`, `RUN_SLEEPING`, `RUN_WAITING`
+and `RUN_CANCELLED`. Every event has a `seq`; it is the SSE event id, so `EventSource` reconnects with
 `Last-Event-ID` and picks up exactly where it left off.
 
 #### Typed client
@@ -771,6 +804,7 @@ for await (const event of agents.run("refund", { orderId: "o_1" })) {
 for await (const event of agents.resume(runId, { approved: true })) console.log(event.type);
 
 await agents.list({ status: "interrupted" }); // an approvals inbox in one call
+await agents.send("payment.succeeded", { orderId: "o_1" }, { id: "evt_1" }); // runs waiting for it continue
 await agents.delete(runId);                   // remove a finished run and its history
 ```
 
@@ -779,7 +813,7 @@ The client reconnects dropped streams from the last event it saw.
 #### MCP and A2A
 
 `POST /mcp` speaks MCP over streamable HTTP: every agent is a tool, so Claude, Cursor or any MCP
-client can call your agents. A run that pauses returns its run id and the pending interrupt.
+client can call your agents. A run that pauses returns its run id and the interrupt or event it waits on.
 `GET /.well-known/agent.json` is an A2A agent card with one skill per agent.
 
 ### Testing
@@ -795,7 +829,8 @@ const done = await unit.resume(parked.id, { approved: true });
 expect(done.output).toBe("refunded");
 ```
 
-Pass the same `storage` to a second `createTestUnit` to test a restart.
+`unit.send(name, data)` sends an event to the runs waiting for it and returns them once they finish
+or park again. Pass the same `storage` to a second `createTestUnit` to test a restart.
 
 A framework's agent runs the same way, on a scripted model so the test needs no API key. Builds find
 the framework's adapter on their own; a test unit is given it:
@@ -1073,6 +1108,12 @@ conditional write, such as a database `UPDATE … WHERE version = ?`.
 - Streamed text and tool-argument deltas that arrive within 50ms of each other are merged into one
   event, so a long answer costs a few writes instead of one per token, and live clients see text up
   to 50ms later. `deltaBatchMs: 0` on `createAgentUnit` keeps every delta its own event.
+- Sending an event reads every run waiting for that name, and a `waitFor` reads every kept event
+  of its name, then compares `match` in memory: cheap for the few waits of a name an app usually
+  has, slower for a name thousands of runs wait on, or one sent thousands of times a day. `match`
+  compares top-level keys by JSON value. The sweep deletes kept events after 24 hours
+  (`eventRetentionMs` on `RunEngine`); the Durable Objects runtime, which has no sweep, deletes a
+  name's expired events when that name is sent again.
 
 ## Examples
 

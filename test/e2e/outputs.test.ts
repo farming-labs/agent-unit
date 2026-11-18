@@ -20,7 +20,7 @@ describe("explicit output directories", () => {
     // The manifest is written beside every build, without running the server.
     const manifest = JSON.parse(readFileSync(join(out, "node/agent-unit.json"), "utf8"));
     expect(manifest).toMatchObject({ version: 1, name: "basic" });
-    expect(manifest.agents.map((agent: { name: string }) => agent.name).sort()).toEqual(["greeter", "napper", "refund"]);
+    expect(manifest.agents.map((agent: { name: string }) => agent.name).sort()).toEqual(["greeter", "napper", "payer", "refund"]);
   });
 });
 

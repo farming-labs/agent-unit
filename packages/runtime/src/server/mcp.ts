@@ -54,11 +54,13 @@ async function callTool(engine: RunService, params: Record<string, unknown>, con
   if (final.status === "failed") {
     return { content: [{ type: "text", text: final.error?.message ?? "The run failed." }], isError: true };
   }
-  const parked = { status: final.status, runId: final.id, interrupt: final.interrupt, wakeAt: final.wakeAt };
+  const parked = { status: final.status, runId: final.id, interrupt: final.interrupt, wait: final.wait, wakeAt: final.wakeAt };
   const text =
     final.status === "interrupted"
       ? `The run is waiting for input (${final.interrupt?.name}). Resume it with POST /runs/${final.id}/resume.`
-      : `The run is ${final.status}. Follow it at /runs/${final.id}/events.`;
+      : final.status === "waiting"
+        ? `The run is waiting for the event "${final.wait?.event}". Send it with POST /events.`
+        : `The run is ${final.status}. Follow it at /runs/${final.id}/events.`;
   return { content: [{ type: "text", text }], structuredContent: parked };
 }
 

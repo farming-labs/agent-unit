@@ -15,6 +15,7 @@ Inside a run, `useRun()` (from `agent-unit/runtime`) returns the run context:
 | `run.step(name, fn)` | Runs `fn` once. Its result is journaled; on replay the result is returned without calling `fn`. |
 | `run.interrupt(name, payload, { timeout? })` | Parks the run with `RUN_INTERRUPTED`. After `resume`, returns the answer. With `timeout`, once it passes unanswered, throws `InterruptTimeoutError` (`code: "interrupt_timeout"`, `interrupt`, `expiresAt`); the replay throws it again. |
 | `run.sleep(duration)` | Parks the run with `RUN_SLEEPING` until the time passes. `duration` is ms or `"30s"`, `"5m"`, `"2h"`, `"1d"`. |
+| `run.waitFor(event, { match?, timeout? })` | Returns the `data` of the first event named `event` that matches, sent since the run started and not taken by an earlier `waitFor` of this run. Until one is sent, parks the run with `RUN_WAITING`. With `timeout`, once it passes, throws `EventTimeoutError` (`code: "event_timeout"`, `event`, `expiresAt`); the replay throws it again. See [Events sent to runs](#events-sent-to-runs). |
 | `run.state` | Key–value storage scoped to the `thread` (default), the `agent` or the whole `app`. |
 | `run.secrets.get(name)` | Reads a secret from the host environment. |
 | `run.emit(name, value)` | Emits a `CUSTOM` event. |
@@ -55,10 +56,37 @@ belongs inside a step. Model calls and tool calls already are, through the adapt
 Step results are stored as JSON with support for `undefined`, `Date`, `BigInt`, `Map`, `Set`,
 `Uint8Array` and `Error`. Anything else must be converted inside the step.
 
+## Events sent to runs
+
+`POST /events` (or `RunService.send`) sends an event `{ name, data?, id? }` to every run that waits
+for it: a run waiting with `run.waitFor(name, { match })` takes it when, for each key of `match`,
+the event's `data` has that key with an equal JSON value (`match: { orderId: "o_1" }` takes
+`{ orderId: "o_1", amount: 1840 }`). No `match` takes any event of that name. Each waiting run
+gets the event once; several runs can take the same event.
+
+Events are also kept for a while (24 hours by default, `eventRetentionMs`), because the thing a run
+waits for often happens before it parks: a webhook can answer within milliseconds of the step that
+asked for it. `run.waitFor` first looks for an event named `event` that matches, sent at or after the
+run's `createdAt`, that no earlier `waitFor` of this run took, and returns the earliest one at once.
+Only when there is none does the run park. Once the waiting run is saved, the engine looks again, so
+an event sent between that first look and the save is not missed either. An event sent before the
+run started, or kept past the retention, is not delivered.
+
+An event sent with an `id` it was sent with before (a retried webhook) is not stored or delivered a
+second time while the first one is kept. A run journals the event it took, with its id, so replay
+returns the same data and a later `waitFor` of the same name takes a later event.
+
+Concurrent sends claim the ID through the configured atomic-write backend (including Farm.js
+storage, Redis coordination and Durable Objects). Without atomic coordination, this guarantee
+is limited to stores sharing one storage instance in one process. Inbox and waiting-index keys
+use fixed-size hashes; the original event names and IDs remain in the records.
+
 ## Continuation on any host
 
 - **Interrupt:** the run parks; `POST /runs/:id/resume` continues it. An interrupt with a timeout
   also sets the run's `wakeAt` to its deadline, so whatever wakes sleepers (below) ends the wait.
+- **Event:** the run parks; an event it takes continues it. A wait with a timeout sets `wakeAt` to
+  its deadline, as an interrupt does.
 - **Sleep:** the run parks; a scheduled sweep, on the host's own scheduler, wakes runs whose time
   has passed. It runs every minute unless the app sets another schedule (`sweep`); on a plan whose
   scheduler runs only daily, sleeps end up to a day late. Long-lived servers also wake them with an
@@ -78,8 +106,9 @@ Step results are stored as JSON with support for `undefined`, `Date`, `BigInt`, 
 ## Storage
 
 Everything lives in one unstorage namespace: `runs:`, `steps:<run>:<entry>` (one key per journal
-entry), `events:<run>:<seq>`, `index:` (runs by recency and status, sleepers by wake time, finished
-runs by finish time), `state:`, `lease:` and `kv:` (adapter storage). Events are read in seq order
+entry), `events:<run>:<seq>`, `index:` (runs by recency and status, sleepers by wake time, waiting
+runs by event name, finished runs by finish time), `inbox:` (events sent to runs, by name and time,
+and by id), `state:`, `lease:` and `kv:` (adapter storage). Events are read in seq order
 and a reader stops at a gap until the run settles, so a reader never skips an event that is still
 being written. Any driver works; serverless hosts need a shared one (Farm.js storage, Redis,
 Upstash, Cloudflare KV, Netlify Blobs, a database), because their filesystem does not
@@ -117,4 +146,6 @@ in every runtime.
 - **Durable Objects** (Cloudflare): one object per run, named by its id, holds the journal and events
   and is the only executor. The object's alarm is armed as a watchdog while the run executes, set to
   the wake time when it sleeps, and set to now when it yields; when it fires, the object wakes,
-  continues or recovers the run. One shared index object holds `runs:`, `state:` and `kv:`.
+  continues or recovers the run. One shared index object holds `runs:`, `index:`, `inbox:`, `state:`
+  and `kv:`, so a Worker sending an event finds the waiting runs there and hands the event to each
+  run's object.

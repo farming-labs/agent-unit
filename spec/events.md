@@ -1,8 +1,8 @@
 # Events
 
-Runs stream [AG-UI](https://docs.ag-ui.com) events, so existing AG-UI clients render them. Three
-extension types cover what AG-UI does not define: a run parking for a human, a run sleeping, and a
-run being cancelled.
+Runs stream [AG-UI](https://docs.ag-ui.com) events, so existing AG-UI clients render them. Four
+extension types cover what AG-UI does not define: a run parking for a human, a run sleeping, a run
+waiting for an event, and a run being cancelled.
 
 ## Envelope
 
@@ -41,6 +41,7 @@ Over SSE each event is one message: `id:` is `seq`, `data:` is the JSON event.
 | `RUN_ERROR` | `message`, `code?` | Terminal: the run failed |
 | **`RUN_INTERRUPTED`** | `interrupt: { key, name, payload, expiresAt? }` | Parked: waiting for an answer, until `expiresAt` when the interrupt has a timeout |
 | **`RUN_SLEEPING`** | `wakeAt` | Parked: waiting for a time |
+| **`RUN_WAITING`** | `wait: { key, event, match?, expiresAt? }` | Parked: waiting for an event sent with `POST /events`, until `expiresAt` when the wait has a timeout |
 | **`RUN_CANCELLED`** | | Terminal: the run was cancelled |
 
 Reasoning comes from every adapter that sees it: AI SDK and Mastra reasoning parts, OpenAI Agents
@@ -53,7 +54,7 @@ that arrive within a short window (50ms by default) are merged into one event be
 `seq`, so live and replayed streams are identical and a long answer is a few events, not one per
 token. Concatenating the deltas of a message always gives its full text.
 
-`RUN_INTERRUPTED`, `RUN_SLEEPING` and `RUN_CANCELLED` are the agent-unit extensions. AG-UI clients
+`RUN_INTERRUPTED`, `RUN_SLEEPING`, `RUN_WAITING` and `RUN_CANCELLED` are the agent-unit extensions. AG-UI clients
 that do not know them ignore them, as AG-UI requires.
 
 ## Delivery rules

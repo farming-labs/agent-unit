@@ -12,7 +12,7 @@ export interface TestUnitOptions extends Partial<Omit<AgentUnitOptions, "agents"
 }
 
 /**
- * An in-memory agent-unit for tests: start runs, answer interrupts and inspect events without a server.
+ * An in-memory agent-unit for tests: start runs, answer interrupts, send events and inspect events without a server.
  * Pass the same `storage` to a second test unit to simulate a restart.
  */
 export function createTestUnit(agents: Record<string, unknown>, options: TestUnitOptions = {}) {
@@ -38,6 +38,12 @@ export function createTestUnit(agents: Record<string, unknown>, options: TestUni
     async resume(runId: string, answer: unknown): Promise<RunRecord> {
       const { done } = await engine.resume(runId, answer);
       return (await done) ?? engine.getRun(runId);
+    },
+    /** Sends an event to the runs waiting for it (`run.waitFor`) and returns them once they finish or park again. */
+    async send(name: string, data?: unknown, init: { id?: string } = {}): Promise<RunRecord[]> {
+      const sent = await engine.send(name, data, init);
+      await sent.done;
+      return Promise.all(sent.runs.map((id) => engine.getRun(id)));
     },
     events,
   };

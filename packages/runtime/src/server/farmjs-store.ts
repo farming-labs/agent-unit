@@ -1,6 +1,5 @@
 import { createStorage, type Driver } from "unstorage";
 import { RunStore, type AtomicWrites, type LeaseBackend } from "../runtime/store";
-import type { RunRecord } from "../types";
 import { farmjsInfra } from "./farmjs";
 
 // Farm.js storage: runs, journals, events, state and leases kept by Farm.js, in one store per project
@@ -14,7 +13,7 @@ export type StoreOp =
   | { op: "set"; key: string; value: unknown }
   | { op: "del"; key: string }
   | { op: "keys"; prefix: string; after?: string }
-  | { op: "cas"; key: string; expected: number | null; value: RunRecord }
+  | { op: "cas"; key: string; expected: number | null; value: { version?: number } }
   | { op: "lease.acquire"; run: string; owner: string; ttl: number }
   | { op: "lease.renew"; run: string; owner: string; ttl: number }
   | { op: "lease.release"; run: string; owner: string }

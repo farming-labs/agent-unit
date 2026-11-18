@@ -3,13 +3,13 @@ import { createStorage, type Storage } from "unstorage";
 import nullDriver from "unstorage/drivers/null";
 import { validateAdapter, type AgentAdapter } from "../adapter/types";
 import { functionAdapter, resolveAgent } from "../agents";
-import { AgentUnitError, RunEngine, type InterruptHook, type LoadedAgent, type ResumeOptions, type CancelOptions } from "../runtime/engine";
+import { AgentUnitError, DEFAULT_EVENT_RETENTION_MS, RunEngine, sendEvent, type InterruptHook, type LoadedAgent, type ResumeOptions, type CancelOptions } from "../runtime/engine";
 import { RunStore, type ListRunsFilter } from "../runtime/store";
 import { parseDuration, randomId } from "../runtime/util";
 import { farmApprovals } from "../server/farmjs";
 import { createHandler, type HandlerOptions, type RequestContext } from "../server/handler";
 import type { RunService } from "../server/service";
-import type { AgentEvent, Manifest, RunInput, RunRecord } from "../types";
+import type { AgentEvent, Manifest, RunInput, RunRecord, SentEvent } from "../types";
 import { durableStorageDriver, indexStorageDriver, type IndexStub } from "./storage";
 import type { DurableObjectNamespaceLike, DurableObjectStateLike, ExecutionContextLike } from "./types";
 
@@ -19,7 +19,8 @@ export type * from "./types";
 // One Durable Object per run executes it: the object's storage holds the run's journal and events,
 // only that object ever runs it (no leases to race), and its alarm wakes sleepers, continues
 // yields and recovers a run whose isolate died. One shared index object holds what spans runs:
-// the run list, thread/agent/app state and adapter storage.
+// the run list and its indexes (waiting runs by event among them), events kept for runs that wait
+// for them, thread/agent/app state and adapter storage.
 
 export interface DurableAgentUnitOptions
   extends Pick<HandlerOptions, "basePath" | "authorize" | "heartbeatMs" | "version" | "maxBodyBytes" | "maxBatch"> {
@@ -61,6 +62,7 @@ interface RunStub {
   start(agent: string, input: RunInput, options: { threadId?: string }, id: string): Promise<Envelope<RunRecord>>;
   resume(id: string, answer: unknown, options?: ResumeOptions): Promise<Envelope<RunRecord>>;
   cancel(id: string, options?: CancelOptions): Promise<Envelope<RunRecord>>;
+  deliver(id: string, key: string, event: SentEvent): Promise<Envelope<RunRecord | null>>;
   getRun(id: string): Promise<Envelope<RunRecord>>;
   settled(id: string): Promise<Envelope<RunRecord | undefined>>;
   deleteRun(id: string): Promise<Envelope<null>>;
@@ -119,10 +121,10 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
     const ns = namespace<IndexStub>(env, indexBinding);
     return ns.get(ns.idFromName("index"));
   };
-  /** Storage where `runs`, the run index, `state` and `kv` live in the shared index object; journal and events in `local`. */
+  /** Storage where `runs`, the run index, kept events, `state` and `kv` live in the shared index object; journal and events in `local`. */
   const sharedStorage = (env: Bindings, local: ReturnType<typeof durableStorageDriver> | undefined): Storage => {
     const storage = createStorage({ driver: local ?? nullDriver() });
-    for (const base of ["runs", "index", "state", "kv"]) storage.mount(base, indexStorageDriver(() => indexStub(env), base));
+    for (const base of ["runs", "index", "inbox", "state", "kv"]) storage.mount(base, indexStorageDriver(() => indexStub(env), base));
     return storage;
   };
 
@@ -222,6 +224,16 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
       return envelope(() => this.engine.cancel(id, options));
     }
 
+    /** Gives the run the event its wait matched in the index, if it still waits on that wait. */
+    deliver(id: string, key: string, event: SentEvent) {
+      return envelope(async () => {
+        const started = await this.engine.deliver(id, key, event);
+        if (!started) return null;
+        this.#track(id, started.done);
+        return started.run;
+      });
+    }
+
     getRun(id: string) {
       return envelope(() => this.engine.getRun(id));
     }
@@ -307,6 +319,21 @@ export function createDurableAgentUnit(options: DurableAgentUnitOptions): Durabl
 
     async cancel(id: string, options?: CancelOptions) {
       return unwrap(await this.stub(id).cancel(id, options));
+    }
+
+    /** Keeps the event in the index object, then hands it to the object of each run that waits for it. */
+    send(name: string, data?: unknown, sendOptions: { id?: string } = {}) {
+      const store = new RunStore(sharedStorage(this.bindings, undefined), {
+        atomic: {
+          compareAndSet: (key, expected, record) =>
+            (indexStub(this.bindings) as IndexStub & { kvCompareAndSet: IndexCas }).kvCompareAndSet(key, expected ?? null, JSON.stringify(record)),
+        },
+      });
+      return sendEvent(store, name, data ?? null, sendOptions, DEFAULT_EVENT_RETENTION_MS, async (run, event) => {
+        const stub = this.stub(run.id);
+        if (!unwrap(await stub.deliver(run.id, run.wait!.key, event))) return undefined;
+        return { done: stub.settled(run.id).then(unwrap) };
+      });
     }
 
     async getRun(id: string) {

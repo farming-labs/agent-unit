@@ -70,7 +70,7 @@ for (const runtime of RUNTIMES) {
 
       const manifest = await client().manifest();
       expect(manifest.name).toBe("basic");
-      expect(manifest.agents.map((agent) => agent.name).sort()).toEqual(["greeter", "napper", "refund"]);
+      expect(manifest.agents.map((agent) => agent.name).sort()).toEqual(["greeter", "napper", "payer", "refund"]);
       expect(manifest.agents.find((agent) => agent.name === "refund")).toMatchObject({
         framework: "agent-unit",
         tools: [{ name: "charge", description: "Refunds the card." }],
@@ -109,7 +109,7 @@ for (const runtime of RUNTIMES) {
           body: JSON.stringify(body),
         }).then((response) => response.json());
       const tools = await rpc({ jsonrpc: "2.0", id: 1, method: "tools/list" });
-      expect(tools.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(["greeter", "napper", "refund"]);
+      expect(tools.result.tools.map((tool: { name: string }) => tool.name).sort()).toEqual(["greeter", "napper", "payer", "refund"]);
       const call = await rpc({ jsonrpc: "2.0", id: 2, method: "tools/call", params: { name: "greeter", arguments: { message: "mcp" } } });
       expect(call.result.content).toEqual([{ type: "text", text: "hey mcp" }]);
     });
@@ -139,6 +139,18 @@ for (const runtime of RUNTIMES) {
       const swept = await fetch(`${server.url}/__agent-unit/sweep`, { method: "POST", headers: { authorization: `Bearer ${SECRET}` } });
       expect(await swept.json()).toMatchObject({ woken: [sleeping.runId] });
       expect(await waitForStatus(client(), sleeping.runId, "completed")).toMatchObject({ output: { slept: true }, attempt: 2 });
+    });
+
+    it("waits for an event across a restart and takes it from POST /events", async () => {
+      const run = await client().start("payer", { orderId: "o_paid" });
+      expect(await waitForStatus(client(), run.id, "waiting")).toMatchObject({ wait: { event: "payment.succeeded", match: { orderId: "o_paid" } } });
+
+      await restart();
+
+      expect(await client().send("payment.succeeded", { orderId: "o_other", amount: 1 })).toMatchObject({ runs: [] });
+      expect(await client().send("payment.succeeded", { orderId: "o_paid", amount: 1840 }, { id: "evt_e2e" })).toEqual({ id: "evt_e2e", runs: [run.id] });
+      expect(await waitForStatus(client(), run.id, "completed")).toMatchObject({ output: { status: "paid", order: "o_paid", amount: 1840 }, attempt: 2 });
+      expect(await client().send("payment.succeeded", { orderId: "o_paid", amount: 1840 }, { id: "evt_e2e" })).toMatchObject({ runs: [], duplicate: true });
     });
 
     it("cancels a parked run", async () => {

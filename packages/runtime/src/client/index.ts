@@ -56,7 +56,7 @@ export async function* parseEventStream(body: ReadableStream<Uint8Array>): Async
   }
 }
 
-const SETTLING = new Set(["RUN_FINISHED", "RUN_ERROR", "RUN_INTERRUPTED", "RUN_SLEEPING", "RUN_CANCELLED"]);
+const SETTLING = new Set(["RUN_FINISHED", "RUN_ERROR", "RUN_INTERRUPTED", "RUN_SLEEPING", "RUN_WAITING", "RUN_CANCELLED"]);
 
 /** A typed client for the agent-unit HTTP API (spec/runs.md). Works in browsers, Node, Bun, Deno and Workers. */
 export function createAgentClient(options: AgentClientOptions) {
@@ -176,6 +176,15 @@ export function createAgentClient(options: AgentClientOptions) {
     },
     // A JSON body, so a page on another site may cancel through CORS (see the server's checkPost).
     cancel: (runId: string) => getJson<RunRecord>(`/runs/${encodeURIComponent(runId)}/cancel`, { method: "POST", body: "{}" }),
+    /**
+     * Sends an event to the runs that wait for it (`run.waitFor`). Pass the source's own `id` (a
+     * webhook's event id) so a retried send is not delivered twice. Returns the runs that took it now.
+     */
+    send: (name: string, data?: unknown, init: { id?: string } = {}) =>
+      getJson<{ id: string; runs: string[]; duplicate?: true }>("/events", {
+        method: "POST",
+        body: JSON.stringify({ name, data, id: init.id }),
+      }),
     /** Deletes a finished run with its journal and events. */
     delete: async (runId: string): Promise<void> => {
       await request(`/runs/${encodeURIComponent(runId)}`, { method: "DELETE" });

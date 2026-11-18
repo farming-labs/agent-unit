@@ -84,7 +84,7 @@ describe.skipIf(!workerd)("cloudflare-module worker in workerd", () => {
 
   it("serves the manifest with bindings as secrets", async () => {
     expect((await fetch(`${server.url}/manifest.json`)).status).toBe(401);
-    expect((await client().manifest()).agents).toHaveLength(3);
+    expect((await client().manifest()).agents).toHaveLength(4);
     const greeting = await collect(client().run("greeter", { name: "worker" }));
     expect(greeting.at(-1)).toMatchObject({ type: "RUN_FINISHED", result: "hey worker" });
   });

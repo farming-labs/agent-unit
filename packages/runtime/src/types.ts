@@ -1,6 +1,6 @@
 // The contract types from spec/. Everything a client, UI or service can rely on.
 
-export type RunStatus = "running" | "interrupted" | "sleeping" | "completed" | "failed" | "cancelled";
+export type RunStatus = "running" | "interrupted" | "sleeping" | "waiting" | "completed" | "failed" | "cancelled";
 
 export interface PendingInterrupt {
   key: string;
@@ -8,6 +8,26 @@ export interface PendingInterrupt {
   payload: unknown;
   /** When the wait ends without an answer (ISO 8601), for an interrupt given a `timeout`. */
   expiresAt?: string;
+}
+
+/** The event a waiting run waits for (`run.waitFor`). */
+export interface PendingWait {
+  key: string;
+  /** The event's name. */
+  event: string;
+  /** Keys the event's `data` must have, with equal JSON values. */
+  match?: Record<string, unknown>;
+  /** When the wait ends without an event (ISO 8601), for a wait given a `timeout`. */
+  expiresAt?: string;
+}
+
+/** An event sent to runs with `POST /events` or `RunService.send`. */
+export interface SentEvent {
+  id: string;
+  name: string;
+  data: unknown;
+  /** When it was sent (ISO 8601). */
+  sentAt: string;
 }
 
 export interface RunRecord {
@@ -19,7 +39,9 @@ export interface RunRecord {
   output?: unknown;
   error?: { name: string; message: string };
   interrupt?: PendingInterrupt;
-  /** When a sleeping run wakes, or when an interrupted run's timeout ends the wait. */
+  /** The event a waiting run waits for. */
+  wait?: PendingWait;
+  /** When a sleeping run wakes, or when an interrupted or waiting run's timeout ends the wait. */
   wakeAt?: string;
   /** Set when a cancel arrived while another process was executing the run; that executor finishes the cancel. */
   cancelRequested?: boolean;
@@ -89,6 +111,7 @@ export type AgentEventBody =
   | { type: "RUN_ERROR"; message: string; code?: string }
   | { type: "RUN_INTERRUPTED"; interrupt: PendingInterrupt }
   | { type: "RUN_SLEEPING"; wakeAt: string }
+  | { type: "RUN_WAITING"; wait: PendingWait }
   | { type: "RUN_CANCELLED" };
 
 export type AgentEvent = AgentEventBody & EventBase;
@@ -99,6 +122,7 @@ export const SETTLING_EVENTS: ReadonlySet<string> = new Set([
   "RUN_ERROR",
   "RUN_INTERRUPTED",
   "RUN_SLEEPING",
+  "RUN_WAITING",
   "RUN_CANCELLED",
 ]);
 
